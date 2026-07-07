@@ -1,10 +1,11 @@
 """PointCloudBuilder public API."""
 
 from pointcloud_builder.builder import PointCloudBuilder
+from pointcloud_builder.camera_model import CameraIntrinsics
 from pointcloud_builder.config import (
     CameraConfig,
-    CameraIntrinsics,
     CropConfig,
+    PointCloudConfig,
     PointCloudBuilderConfig,
     SamplingConfig,
     load_config,
@@ -17,6 +18,7 @@ __all__ = [
     "CropConfig",
     "Meta",
     "PointCloudBuilder",
+    "PointCloudConfig",
     "PointCloudBuilderConfig",
     "RGBDFrame",
     "SamplingConfig",

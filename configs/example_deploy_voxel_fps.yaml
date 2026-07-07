@@ -1,21 +1,29 @@
-device: auto
+device: "cuda"
 
 camera:
-  width: 640
-  height: 480
-  depth_scale: 0.001
+  name: "head"
   aligned_depth_to_color: true
-  intrinsics:
-    fx: 605.0
-    fy: 605.0
-    cx: 319.5
-    cy: 239.5
+  depth_scale: 0.001
 
-crop:
-  enabled: true
-  x: [-0.55, 0.55]
-  y: [-0.45, 0.45]
-  z: [0.18, 1.2]
+  color_intrinsics:
+    width: 640
+    height: 480
+    fx: 600.0
+    fy: 600.0
+    cx: 320.0
+    cy: 240.0
+
+  depth_intrinsics:
+    width: 640
+    height: 480
+    fx: 600.0
+    fy: 600.0
+    cx: 320.0
+    cy: 240.0
+
+pointcloud:
+  use_rgb: true
+  output_format: "xyzrgb"
 
 sampling:
   mode: voxel_fps

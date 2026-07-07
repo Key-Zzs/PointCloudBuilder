@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from pointcloud_builder.camera_model import CameraIntrinsics
 
 SamplingMode = Literal[
     "fps",
@@ -19,24 +21,22 @@ SamplingMode = Literal[
 
 
 @dataclass(frozen=True)
-class CameraIntrinsics:
-    """Pinhole camera intrinsics."""
-
-    fx: float
-    fy: float
-    cx: float
-    cy: float
-
-
-@dataclass(frozen=True)
 class CameraConfig:
     """Camera model and depth interpretation settings."""
 
-    width: int
-    height: int
+    name: str
     depth_scale: float
     aligned_depth_to_color: bool
-    intrinsics: CameraIntrinsics
+    color_intrinsics: CameraIntrinsics
+    depth_intrinsics: CameraIntrinsics
+
+
+@dataclass(frozen=True)
+class PointCloudConfig:
+    """Raw point-cloud output settings."""
+
+    use_rgb: bool
+    output_format: str
 
 
 @dataclass(frozen=True)
@@ -64,9 +64,19 @@ class PointCloudBuilderConfig:
     """Top-level runtime configuration."""
 
     camera: CameraConfig
-    crop: CropConfig
-    sampling: SamplingConfig
+    pointcloud: PointCloudConfig
     device: str = "auto"
+    crop: CropConfig = field(
+        default_factory=lambda: CropConfig(
+            enabled=False,
+            x=(-float("inf"), float("inf")),
+            y=(-float("inf"), float("inf")),
+            z=(0.0, float("inf")),
+        )
+    )
+    sampling: SamplingConfig = field(
+        default_factory=lambda: SamplingConfig(mode="voxel_random", num_points=1024)
+    )
 
 
 def load_config(path: str | Path) -> PointCloudBuilderConfig:
@@ -84,48 +94,86 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
     """Parse a raw YAML mapping into typed dataclasses."""
 
     camera_raw = _require_mapping(raw, "camera")
-    crop_raw = _require_mapping(raw, "crop")
-    sampling_raw = _require_mapping(raw, "sampling")
-    intrinsics_raw = _require_mapping(camera_raw, "intrinsics")
+    pointcloud_raw = _require_mapping(raw, "pointcloud")
 
-    intrinsics = CameraIntrinsics(
-        fx=float(_require_value(intrinsics_raw, "fx")),
-        fy=float(_require_value(intrinsics_raw, "fy")),
-        cx=float(_require_value(intrinsics_raw, "cx")),
-        cy=float(_require_value(intrinsics_raw, "cy")),
-    )
     camera = CameraConfig(
-        width=int(_require_value(camera_raw, "width")),
-        height=int(_require_value(camera_raw, "height")),
+        name=str(camera_raw.get("name", "camera")),
         depth_scale=float(camera_raw.get("depth_scale", 0.001)),
         aligned_depth_to_color=bool(camera_raw.get("aligned_depth_to_color", False)),
-        intrinsics=intrinsics,
+        color_intrinsics=_parse_intrinsics(
+            _require_mapping(camera_raw, "color_intrinsics"),
+            "camera.color_intrinsics",
+        ),
+        depth_intrinsics=_parse_intrinsics(
+            _require_mapping(camera_raw, "depth_intrinsics"),
+            "camera.depth_intrinsics",
+        ),
     )
-    crop = CropConfig(
-        enabled=bool(crop_raw.get("enabled", True)),
-        x=_parse_range(crop_raw.get("x", [-float("inf"), float("inf")]), "crop.x"),
-        y=_parse_range(crop_raw.get("y", [-float("inf"), float("inf")]), "crop.y"),
-        z=_parse_range(crop_raw.get("z", [0.0, float("inf")]), "crop.z"),
+    pointcloud = PointCloudConfig(
+        use_rgb=bool(pointcloud_raw.get("use_rgb", False)),
+        output_format=str(pointcloud_raw.get("output_format", "xyz")).lower(),
     )
-    mode = str(sampling_raw.get("mode", "voxel_random")).lower()
+    if pointcloud.output_format not in {"xyz", "xyzrgb"}:
+        raise ValueError("pointcloud.output_format must be 'xyz' or 'xyzrgb'")
+    crop = _parse_crop(raw.get("crop"))
+    sampling = _parse_sampling(raw.get("sampling"))
+    return PointCloudBuilderConfig(
+        camera=camera,
+        pointcloud=pointcloud,
+        device=str(raw.get("device", "auto")),
+        crop=crop,
+        sampling=sampling,
+    )
+
+
+def _parse_intrinsics(raw: dict[str, Any], name: str) -> CameraIntrinsics:
+    return CameraIntrinsics(
+        width=int(_require_value(raw, "width")),
+        height=int(_require_value(raw, "height")),
+        fx=float(_require_value(raw, "fx")),
+        fy=float(_require_value(raw, "fy")),
+        cx=float(_require_value(raw, "cx")),
+        cy=float(_require_value(raw, "cy")),
+    )
+
+
+def _parse_crop(value: Any) -> CropConfig:
+    if value is None:
+        return CropConfig(
+            enabled=False,
+            x=(-float("inf"), float("inf")),
+            y=(-float("inf"), float("inf")),
+            z=(0.0, float("inf")),
+        )
+    if not isinstance(value, dict):
+        raise ValueError("crop must be a mapping when provided")
+    return CropConfig(
+        enabled=bool(value.get("enabled", True)),
+        x=_parse_range(value.get("x", [-float("inf"), float("inf")]), "crop.x"),
+        y=_parse_range(value.get("y", [-float("inf"), float("inf")]), "crop.y"),
+        z=_parse_range(value.get("z", [0.0, float("inf")]), "crop.z"),
+    )
+
+
+def _parse_sampling(value: Any) -> SamplingConfig:
+    if value is None:
+        return SamplingConfig(mode="voxel_random", num_points=1024)
+    if not isinstance(value, dict):
+        raise ValueError("sampling must be a mapping when provided")
+    mode = str(value.get("mode", "voxel_random")).lower()
     if mode not in {"fps", "stride", "random", "voxel", "voxel_random", "voxel_fps"}:
         raise ValueError(f"Unsupported sampling mode: {mode}")
     sampling = SamplingConfig(
         mode=mode,  # type: ignore[arg-type]
-        num_points=int(sampling_raw.get("num_points", 1024)),
-        stride=max(1, int(sampling_raw.get("stride", 1))),
-        voxel_size=float(sampling_raw.get("voxel_size", 0.01)),
+        num_points=int(value.get("num_points", 1024)),
+        stride=max(1, int(value.get("stride", 1))),
+        voxel_size=float(value.get("voxel_size", 0.01)),
     )
     if sampling.num_points <= 0:
         raise ValueError("sampling.num_points must be positive")
     if sampling.voxel_size <= 0.0:
         raise ValueError("sampling.voxel_size must be positive")
-    return PointCloudBuilderConfig(
-        camera=camera,
-        crop=crop,
-        sampling=sampling,
-        device=str(raw.get("device", "auto")),
-    )
+    return sampling
 
 
 def _require_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

@@ -1,0 +1,22 @@
+device: cuda
+camera:
+  name: head
+  aligned_depth_to_color: true
+  depth_scale: 0.0010000000474974513
+  color_intrinsics:
+    width: 424
+    height: 240
+    fx: 303.0887145996094
+    fy: 303.31781005859375
+    cx: 212.41064453125
+    cy: 128.03280639648438
+  depth_intrinsics:
+    width: 424
+    height: 240
+    fx: 303.0887145996094
+    fy: 303.31781005859375
+    cx: 212.41064453125
+    cy: 128.03280639648438
+pointcloud:
+  use_rgb: true
+  output_format: xyzrgb

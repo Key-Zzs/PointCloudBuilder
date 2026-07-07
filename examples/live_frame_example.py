@@ -11,7 +11,7 @@ def main() -> int:
     builder = PointCloudBuilder.from_yaml("configs/example_head_aligned.yaml")
     frame = {
         "depth": torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32),
-        "color": torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32),
+        "rgb": torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32),
     }
     pc, meta = builder.from_live_frame(frame)
     print(pc.shape)

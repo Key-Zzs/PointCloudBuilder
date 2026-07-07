@@ -1,0 +1,64 @@
+# Local editor / agent state
+.codex/
+.agent/
+.agents/
+.vscode/
+.idea/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Test, benchmark, and runtime logs
+*.log
+logs/
+runs/
+outputs/
+benchmark_results/
+
+# RGB-D captures and generated point-cloud artifacts
+# Keep YAML camera/config files trackable; ignore heavy frame data and exports.
+captures/**/*.npz
+captures/**/*.npy
+captures/**/*.ply
+captures/**/*.pcd
+captures/**/*.bag
+captures/**/*.png
+captures/**/*.jpg
+captures/**/*.jpeg
+configs/captures/**/*.npz
+configs/captures/**/*.npy
+configs/captures/**/*.ply
+configs/captures/**/*.pcd
+configs/captures/**/*.bag
+configs/captures/**/*.png
+configs/captures/**/*.jpg
+configs/captures/**/*.jpeg
+
+# OS metadata
+.DS_Store
+Thumbs.db

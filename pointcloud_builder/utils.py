@@ -40,7 +40,7 @@ def get_optional_frame_value(frame: RGBDFrame | dict[str, Any], key: str) -> Any
     """Extract an optional frame field from a dataclass or mapping."""
 
     if isinstance(frame, RGBDFrame):
-        return getattr(frame, key)
+        return getattr(frame, key, None)
     return frame.get(key)
 
 

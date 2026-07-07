@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
-from pointcloud_builder.config import CameraConfig
 from pointcloud_builder.types import Tensor
 
 
 @dataclass(frozen=True)
-class CameraModel:
-    """Camera intrinsics used for depth deprojection."""
+class CameraIntrinsics:
+    """Pinhole camera intrinsics for one image stream."""
 
     width: int
     height: int
@@ -20,29 +20,55 @@ class CameraModel:
     fy: float
     cx: float
     cy: float
+
+
+@dataclass(frozen=True)
+class CameraModel:
+    """Camera model containing depth and color stream intrinsics."""
+
+    name: str
     depth_scale: float
     aligned_depth_to_color: bool
+    color_intrinsics: CameraIntrinsics
+    depth_intrinsics: CameraIntrinsics
 
     @classmethod
-    def from_config(cls, config: CameraConfig) -> "CameraModel":
+    def from_config(cls, config: Any) -> "CameraModel":
         """Create a camera model from typed config."""
 
-        intrinsics = config.intrinsics
         return cls(
-            width=config.width,
-            height=config.height,
-            fx=intrinsics.fx,
-            fy=intrinsics.fy,
-            cx=intrinsics.cx,
-            cy=intrinsics.cy,
+            name=config.name,
             depth_scale=config.depth_scale,
             aligned_depth_to_color=config.aligned_depth_to_color,
+            color_intrinsics=config.color_intrinsics,
+            depth_intrinsics=config.depth_intrinsics,
         )
+
+    @property
+    def active_intrinsics(self) -> CameraIntrinsics:
+        """Return intrinsics matching the configured depth alignment mode."""
+
+        if self.aligned_depth_to_color:
+            return self.color_intrinsics
+        return self.depth_intrinsics
+
+    @property
+    def width(self) -> int:
+        """Return active image width."""
+
+        return self.active_intrinsics.width
+
+    @property
+    def height(self) -> int:
+        """Return active image height."""
+
+        return self.active_intrinsics.height
 
     def pixel_grid(self, device: torch.device) -> tuple[Tensor, Tensor]:
         """Return image-space x and y coordinate grids."""
 
-        ys = torch.arange(self.height, dtype=torch.float32, device=device)
-        xs = torch.arange(self.width, dtype=torch.float32, device=device)
+        intrinsics = self.active_intrinsics
+        ys = torch.arange(intrinsics.height, dtype=torch.float32, device=device)
+        xs = torch.arange(intrinsics.width, dtype=torch.float32, device=device)
         grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
         return grid_x, grid_y

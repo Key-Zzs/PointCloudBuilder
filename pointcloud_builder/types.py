@@ -17,9 +17,9 @@ class RGBDFrame:
     """Container for one RGB-D frame."""
 
     depth: Any
-    color: Any | None = None
+    rgb: Any | None = None
     timestamp: float | None = None
-    frame_id: str | None = None
+    global_frame_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -27,5 +27,3 @@ class PointCloudStages:
     """Intermediate tensors for offline inspection and visualization."""
 
     raw: Tensor
-    cropped: Tensor
-    sampled: Tensor

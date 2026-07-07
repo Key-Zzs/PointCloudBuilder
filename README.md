@@ -1,23 +1,26 @@
 # PointCloudBuilder
 
-PointCloudBuilder is a lightweight, reusable RGB-D to point-cloud module for
-robot learning pipelines. It is designed to be shared by training conversion
-jobs and real-time deployment code, so the same camera intrinsics, crop ranges,
-sampling policy, and fixed output size are used in both paths.
+PointCloudBuilder is a reusable RGB-D to camera-frame point-cloud module for
+robot learning pipelines. Training data conversion and real-time deployment must
+share the same `PointCloudBuilder` implementation and YAML schema.
 
-The project is intentionally small at this stage. It provides an extensible
-package skeleton with a minimal working PyTorch tensor pipeline:
+This repository currently implements stage 1: raw RGB-D deprojection.
 
-- Load YAML camera, crop, sampling, and alignment configuration.
-- Back-project depth images into camera-frame XYZ point clouds.
-- Optionally attach RGB when aligned depth-to-color mode is enabled.
-- Crop by configured 3D bounds.
-- Return a fixed number of points with stride, random, FPS, voxel, voxel-random,
-  or voxel-FPS sampling modes.
-- Fall back to CPU when CUDA is unavailable while keeping the public API stable.
+## Stage 1 Scope
 
-Offline visualization and benchmark scripts are kept outside the real-time path.
-The `PointCloudBuilder` runtime package does not depend on Open3D.
+- Load camera intrinsics from YAML.
+- Use PyTorch tensors for depth deprojection.
+- Prefer CUDA when requested and available; fall back to CPU when CUDA is not
+  available.
+- Select color intrinsics when `camera.aligned_depth_to_color: true`.
+- Select depth intrinsics when `camera.aligned_depth_to_color: false`.
+- Attach RGB only when depth is aligned to color, `pointcloud.use_rgb: true`,
+  `pointcloud.output_format: "xyzrgb"`, and the input frame contains `rgb`.
+- Filter invalid `depth <= 0` points.
+- Keep Open3D and GUI visualization out of the real-time builder path.
+
+Crop and sampling modules remain in the package as extension points for later
+stages, but the stage 1 builder output is the raw point cloud.
 
 ## Install
 
@@ -26,7 +29,7 @@ conda create -n pointcloud-builder python=3.10 -y
 conda run -n pointcloud-builder python -m pip install -e ".[dev]"
 ```
 
-Optional offline visualization dependencies are separate:
+Optional offline visualization dependency:
 
 ```bash
 conda run -n pointcloud-builder python -m pip install -e ".[viz]"
@@ -39,55 +42,81 @@ from pointcloud_builder import PointCloudBuilder
 
 builder = PointCloudBuilder.from_yaml("configs/example_head_aligned.yaml")
 
-# Offline zarr or recorded-frame conversion.
 pc, meta = builder.from_recorded_frame(frame)
-
-# Real-time inference.
 pc, meta = builder.from_live_frame(frame)
 ```
 
-`frame` may be a mapping with at least a `depth` entry and optionally a `color`
-entry:
+`frame` is a mapping with required `depth` and optional `rgb`:
 
 ```python
 frame = {
-    "depth": depth_image,  # H x W, uint16 millimeters or float depth units
-    "color": color_image,  # H x W x 3, optional and used only when aligned
+    "depth": depth_image,  # H x W numpy array or torch tensor
+    "rgb": rgb_image,      # H x W x 3 optional numpy array or torch tensor
+    "timestamp": 1.23,
+    "global_frame_index": 42,
 }
 ```
 
-The returned `pc` is a fixed-size `torch.Tensor` with shape `(num_points, 3)` for
-XYZ-only output or `(num_points, 6)` when RGB is enabled. `meta` contains counts
-for raw, cropped, and sampled stages plus the selected device and sampling mode.
+`pc` is a `torch.Tensor` shaped `N x 3` for XYZ or `N x 6` for XYZRGB. `meta`
+contains `stage`, `aligned_depth_to_color`, `use_rgb`, `num_raw_points`,
+`device`, `timestamp`, and `global_frame_index`.
 
-## Configuration
+## YAML
 
-YAML files define:
+```yaml
+device: "cuda"
 
-- camera intrinsics: `fx`, `fy`, `cx`, `cy`, width, height, and depth scale;
-- aligned depth-to-color behavior;
-- crop bounds in camera coordinates;
-- sampling mode and fixed number of output points;
-- device policy, where `auto` means CUDA when available and CPU otherwise.
+camera:
+  name: "head"
+  aligned_depth_to_color: true
+  depth_scale: 0.001
 
-Example configs live in `configs/`:
+  color_intrinsics:
+    width: 640
+    height: 480
+    fx: 600.0
+    fy: 600.0
+    cx: 320.0
+    cy: 240.0
 
-- `example_head_aligned.yaml`
-- `example_head_depth_raw.yaml`
+  depth_intrinsics:
+    width: 640
+    height: 480
+    fx: 600.0
+    fy: 600.0
+    cx: 320.0
+    cy: 240.0
 
-Training defaults should prefer `voxel_random` or `fps`.
-Deployment defaults should prefer `voxel_random` or `voxel_fps`.
+pointcloud:
+  use_rgb: true
+  output_format: "xyzrgb"
+```
 
-## Shared Training and Deployment Constraint
+## Offline Visualization
 
-Training and deployment must use the same `PointCloudBuilder` package and the
-same YAML schema. Do not duplicate RGB-D conversion, crop, or sampling logic in
-training-only zarr conversion scripts or robot-control code. Deployment code may
-call `from_live_frame`, while offline conversion may call `from_recorded_frame`,
-but both routes resolve to the same builder implementation.
+Visualization is intentionally separate from the real-time builder:
+
+```bash
+python scripts/visualize_raw_pointcloud.py \
+  --config configs/example_head_aligned.yaml \
+  --input examples/sample_rgbd.npz
+```
+
+## Benchmark
+
+```bash
+python scripts/benchmark_deprojection.py \
+  --config configs/example_head_aligned.yaml \
+  --iters 1000 \
+  --warmup 100
+```
+
+The benchmark prints p50, p95, and mean latency in milliseconds, plus point
+count, device, and image resolution.
 
 ## Tests
 
 ```bash
-conda run -n pointcloud-builder python -m pytest
+pytest -q
+python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 100 --warmup 10
 ```

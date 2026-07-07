@@ -9,9 +9,7 @@ import torch
 
 from pointcloud_builder.camera_model import CameraModel
 from pointcloud_builder.config import PointCloudBuilderConfig, load_config
-from pointcloud_builder.crop import crop_points
 from pointcloud_builder.deprojection import deproject_depth
-from pointcloud_builder.sampling import sample_points
 from pointcloud_builder.types import Meta, RGBDFrame, Tensor
 from pointcloud_builder.utils import (
     as_tensor,
@@ -38,69 +36,63 @@ class PointCloudBuilder:
         return cls(load_config(path))
 
     def from_recorded_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a fixed-size point cloud from an offline recorded frame."""
+        """Build a raw camera-frame point cloud from an offline recorded frame."""
 
-        return self._from_frame(frame, source="recorded")
+        return self._build_from_frame(frame, mode="recorded")
 
     def from_live_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a fixed-size point cloud from a live inference frame."""
+        """Build a raw camera-frame point cloud from a live inference frame."""
 
-        return self._from_frame(frame, source="live")
+        return self._build_from_frame(frame, mode="live")
 
     def build_stages(self, frame: RGBDFrame | dict[str, Any]) -> tuple[dict[str, Tensor], Meta]:
-        """Return raw, cropped, and sampled stages for offline inspection."""
+        """Return raw stage tensors for offline inspection."""
 
-        pc, meta, stages = self._process_frame(frame, source="staged")
-        stages["output"] = pc
-        return stages, meta
+        pc, meta = self._build_from_frame(frame, mode="staged")
+        return {"raw": pc}, meta
 
-    def _from_frame(self, frame: RGBDFrame | dict[str, Any], source: str) -> tuple[Tensor, Meta]:
-        pc, meta, _ = self._process_frame(frame, source=source)
-        return pc, meta
-
-    def _process_frame(
-        self,
-        frame: RGBDFrame | dict[str, Any],
-        source: str,
-    ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
+    def _build_from_frame(self, frame: RGBDFrame | dict[str, Any], mode: str) -> tuple[Tensor, Meta]:
         depth = as_tensor(get_frame_value(frame, "depth"), self.device, torch.float32)
-        raw_points, valid_mask = deproject_depth(depth, self.camera)
-        raw_colors = self._aligned_colors(frame, valid_mask)
-        cropped_points, cropped_colors, _ = crop_points(raw_points, self.config.crop, raw_colors)
-        sampled_points, sampled_colors, sampling_meta = sample_points(
-            cropped_points,
-            self.config.sampling,
-            cropped_colors,
+        intrinsics = self.camera.active_intrinsics
+        points, valid_mask = deproject_depth(
+            depth,
+            intrinsics,
+            self.camera.depth_scale,
+            flatten=True,
         )
-        raw_pc = pack_point_cloud(raw_points, raw_colors)
-        cropped_pc = pack_point_cloud(cropped_points, cropped_colors)
-        sampled_pc = pack_point_cloud(sampled_points, sampled_colors)
+        colors = self._rgb_for_raw_points(frame, valid_mask)
+        point_cloud = pack_point_cloud(points, colors)
         meta: Meta = {
-            "source": source,
-            "device": str(self.device),
+            "stage": "raw",
+            "mode": mode,
             "aligned_depth_to_color": self.camera.aligned_depth_to_color,
-            "has_rgb": sampled_colors is not None,
-            "raw_count": int(raw_points.shape[0]),
-            "cropped_count": int(cropped_points.shape[0]),
-            "sampled_count": int(sampled_points.shape[0]),
-            "sampling": sampling_meta,
+            "use_rgb": colors is not None,
+            "num_raw_points": int(points.shape[0]),
+            "device": str(self.device),
+            "timestamp": get_optional_frame_value(frame, "timestamp"),
+            "global_frame_index": get_optional_frame_value(frame, "global_frame_index"),
+            "camera_name": self.camera.name,
+            "intrinsics": "color" if self.camera.aligned_depth_to_color else "depth",
         }
-        return sampled_pc, meta, {
-            "raw": raw_pc,
-            "cropped": cropped_pc,
-            "sampled": sampled_pc,
-        }
+        return point_cloud, meta
 
-    def _aligned_colors(self, frame: RGBDFrame | dict[str, Any], valid_mask: Tensor) -> Tensor | None:
+    def _rgb_for_raw_points(self, frame: RGBDFrame | dict[str, Any], valid_mask: Tensor) -> Tensor | None:
         if not self.camera.aligned_depth_to_color:
             return None
-        color_value = get_optional_frame_value(frame, "color")
-        if color_value is None:
+        if not self.config.pointcloud.use_rgb:
             return None
-        color = normalize_color(as_tensor(color_value, self.device, torch.float32))
-        if int(color.shape[0]) != self.camera.height or int(color.shape[1]) != self.camera.width:
+        if self.config.pointcloud.output_format != "xyzrgb":
+            return None
+        rgb_value = get_optional_frame_value(frame, "rgb")
+        if rgb_value is None:
+            rgb_value = get_optional_frame_value(frame, "color")
+        if rgb_value is None:
+            return None
+        rgb = normalize_color(as_tensor(rgb_value, self.device, torch.float32))
+        intrinsics = self.camera.color_intrinsics
+        if int(rgb.shape[0]) != intrinsics.height or int(rgb.shape[1]) != intrinsics.width:
             raise ValueError(
-                f"Color shape {tuple(color.shape)} does not match "
-                f"camera height/width {(self.camera.height, self.camera.width)}"
+                f"RGB shape {tuple(rgb.shape)} does not match "
+                f"color height/width {(intrinsics.height, intrinsics.width)}"
             )
-        return color.reshape(-1, 3)[valid_mask]
+        return rgb.reshape(-1, 3)[valid_mask]

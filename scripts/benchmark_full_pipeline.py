@@ -21,7 +21,7 @@ def main() -> int:
     width = builder.camera.width
     frame = {
         "depth": torch.ones((height, width), dtype=torch.float32, device=builder.device),
-        "color": torch.ones((height, width, 3), dtype=torch.float32, device=builder.device),
+        "rgb": torch.ones((height, width, 3), dtype=torch.float32, device=builder.device),
     }
     result = benchmark_callable(lambda: builder.from_live_frame(frame), iterations=args.iterations)
     print(result)
