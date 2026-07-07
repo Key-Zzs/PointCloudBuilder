@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pointcloud-builder"
+version = "0.1.0"
+description = "Reusable PyTorch RGB-D to point-cloud builder for robot learning pipelines."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [
+  {name = "PointCloudBuilder contributors"}
+]
+dependencies = [
+  "numpy>=1.23",
+  "PyYAML>=6.0",
+  "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+viz = [
+  "open3d>=0.18",
+]
+
+[tool.setuptools.packages.find]
+include = ["pointcloud_builder*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

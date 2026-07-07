@@ -1,0 +1,24 @@
+device: auto
+
+camera:
+  width: 640
+  height: 480
+  depth_scale: 0.001
+  aligned_depth_to_color: true
+  intrinsics:
+    fx: 605.0
+    fy: 605.0
+    cx: 319.5
+    cy: 239.5
+
+crop:
+  enabled: true
+  x: [-0.6, 0.6]
+  y: [-0.5, 0.5]
+  z: [0.15, 1.5]
+
+sampling:
+  mode: voxel_random
+  num_points: 4096
+  stride: 2
+  voxel_size: 0.008

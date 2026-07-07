@@ -1,0 +1,31 @@
+"""Shared type definitions for PointCloudBuilder."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping, TypeAlias
+
+import torch
+
+Tensor: TypeAlias = torch.Tensor
+FrameMapping: TypeAlias = Mapping[str, Any]
+Meta: TypeAlias = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RGBDFrame:
+    """Container for one RGB-D frame."""
+
+    depth: Any
+    color: Any | None = None
+    timestamp: float | None = None
+    frame_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PointCloudStages:
+    """Intermediate tensors for offline inspection and visualization."""
+
+    raw: Tensor
+    cropped: Tensor
+    sampled: Tensor
