@@ -4,7 +4,13 @@ import torch
 
 from pointcloud_builder import PointCloudBuilder
 from pointcloud_builder.camera_model import CameraIntrinsics
-from pointcloud_builder.config import CameraConfig, CropConfig, PointCloudBuilderConfig, PointCloudConfig
+from pointcloud_builder.config import (
+    CameraConfig,
+    CropConfig,
+    PointCloudBuilderConfig,
+    PointCloudConfig,
+    SamplingConfig,
+)
 from pointcloud_builder.crop import crop_point_cloud
 
 
@@ -112,6 +118,7 @@ def test_recorded_and_live_frames_use_same_crop_logic() -> None:
         ),
         pointcloud=PointCloudConfig(use_rgb=False, output_format="xyz"),
         crop=CropConfig(enabled=True, frame="camera", x=(-0.1, 0.1), y=(-0.1, 0.1), z=(0.5, 1.5)),
+        sampling=SamplingConfig(enabled=True, mode="stride", num_points=1),
     )
     builder = PointCloudBuilder(config)
     frame = {"depth": torch.ones((3, 3), dtype=torch.float32)}
@@ -121,5 +128,6 @@ def test_recorded_and_live_frames_use_same_crop_logic() -> None:
     assert recorded.shape == (1, 3)
     assert recorded_meta["num_raw_points"] == 9
     assert recorded_meta["num_cropped_points"] == 1
-    assert recorded_meta["stage"] == "cropped"
+    assert recorded_meta["num_sampled_points"] == 1
+    assert recorded_meta["stage"] == "sampled"
     assert live_meta["num_cropped_points"] == recorded_meta["num_cropped_points"]

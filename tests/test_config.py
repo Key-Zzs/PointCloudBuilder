@@ -13,3 +13,7 @@ def test_yaml_config_parses() -> None:
     assert config.crop.enabled is True
     assert config.crop.frame == "camera"
     assert config.crop.x == (-0.5, 0.5)
+    assert config.sampling.enabled is True
+    assert config.sampling.mode == "voxel_random"
+    assert config.sampling.num_points == 1024
+    assert config.sampling.pad_mode == "repeat"

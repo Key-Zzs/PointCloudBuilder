@@ -11,6 +11,7 @@ from pointcloud_builder.camera_model import CameraModel
 from pointcloud_builder.config import PointCloudBuilderConfig, load_config
 from pointcloud_builder.crop import crop_point_cloud
 from pointcloud_builder.deprojection import deproject_depth
+from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.types import Meta, RGBDFrame, Tensor
 from pointcloud_builder.utils import (
     as_tensor,
@@ -37,19 +38,19 @@ class PointCloudBuilder:
         return cls(load_config(path))
 
     def from_recorded_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a cropped camera-frame point cloud from an offline recorded frame."""
+        """Build a fixed-size camera-frame point cloud from an offline recorded frame."""
 
         pc, meta, _ = self._build_from_frame(frame, mode="recorded")
         return pc, meta
 
     def from_live_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a cropped camera-frame point cloud from a live inference frame."""
+        """Build a fixed-size camera-frame point cloud from a live inference frame."""
 
         pc, meta, _ = self._build_from_frame(frame, mode="live")
         return pc, meta
 
     def build_stages(self, frame: RGBDFrame | dict[str, Any]) -> tuple[dict[str, Tensor], Meta]:
-        """Return raw and cropped stage tensors for offline inspection."""
+        """Return raw, cropped, and sampled stage tensors for offline inspection."""
 
         _, meta, stages = self._build_from_frame(frame, mode="staged")
         return stages, meta
@@ -70,7 +71,8 @@ class PointCloudBuilder:
         colors = self._rgb_for_raw_points(frame, valid_mask)
         raw_point_cloud = pack_point_cloud(points, colors)
         cropped_point_cloud, _ = crop_point_cloud(raw_point_cloud, self.config.crop)
-        output_stage = "cropped" if self.config.crop.enabled else "raw"
+        sampled_point_cloud, sampling_meta = sample_point_cloud(cropped_point_cloud, self.config.sampling)
+        output_stage = "sampled" if self.config.sampling.enabled else ("cropped" if self.config.crop.enabled else "raw")
         meta: Meta = {
             "stage": output_stage,
             "mode": mode,
@@ -78,6 +80,7 @@ class PointCloudBuilder:
             "use_rgb": colors is not None,
             "num_raw_points": int(points.shape[0]),
             "num_cropped_points": int(cropped_point_cloud.shape[0]),
+            "num_sampled_points": int(sampled_point_cloud.shape[0]),
             "crop_enabled": self.config.crop.enabled,
             "crop_range": {
                 "frame": self.config.crop.frame,
@@ -86,13 +89,25 @@ class PointCloudBuilder:
                 "z": self.config.crop.z,
             },
             "crop_empty": self.config.crop.enabled and int(cropped_point_cloud.shape[0]) == 0,
+            "sampling_enabled": self.config.sampling.enabled,
+            "sampling_mode": self.config.sampling.mode,
+            "target_num_points": self.config.sampling.num_points,
+            "input_empty": bool(sampling_meta["input_empty"]),
+            "padded": bool(sampling_meta["padded"]),
+            "pad_mode": self.config.sampling.pad_mode,
+            "voxel_size": self.config.sampling.voxel_size,
+            "sampling": sampling_meta,
             "device": str(self.device),
             "timestamp": get_optional_frame_value(frame, "timestamp"),
             "global_frame_index": get_optional_frame_value(frame, "global_frame_index"),
             "camera_name": self.camera.name,
             "intrinsics": "color" if self.camera.aligned_depth_to_color else "depth",
         }
-        return cropped_point_cloud, meta, {"raw": raw_point_cloud, "cropped": cropped_point_cloud}
+        return sampled_point_cloud, meta, {
+            "raw": raw_point_cloud,
+            "cropped": cropped_point_cloud,
+            "sampled": sampled_point_cloud,
+        }
 
     def _rgb_for_raw_points(self, frame: RGBDFrame | dict[str, Any], valid_mask: Tensor) -> Tensor | None:
         if not self.camera.aligned_depth_to_color:

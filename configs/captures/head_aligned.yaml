@@ -32,3 +32,11 @@ crop:
   z:
   - 0.05
   - 1.2
+sampling:
+  enabled: true
+  mode: "random"   # fps | stride | random | voxel | voxel_random | voxel_fps
+  num_points: 1024
+  voxel_size: 0.005
+  seed: 42
+  deterministic: false
+  pad_mode: repeat

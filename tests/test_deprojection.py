@@ -7,7 +7,7 @@ import torch
 
 from pointcloud_builder import PointCloudBuilder
 from pointcloud_builder.camera_model import CameraIntrinsics
-from pointcloud_builder.config import CameraConfig, PointCloudBuilderConfig, PointCloudConfig
+from pointcloud_builder.config import CameraConfig, PointCloudBuilderConfig, PointCloudConfig, SamplingConfig
 from pointcloud_builder.deprojection import deproject_depth
 
 
@@ -30,6 +30,7 @@ def make_builder(
             depth_intrinsics=depth_intrinsics,
         ),
         pointcloud=PointCloudConfig(use_rgb=use_rgb, output_format=output_format),
+        sampling=SamplingConfig(enabled=True, mode="stride", num_points=9),
     )
     return PointCloudBuilder(config)
 
@@ -82,7 +83,7 @@ def test_use_rgb_true_and_aligned_outputs_xyzrgb() -> None:
     )
     assert pc.shape == (9, 6)
     assert torch.allclose(pc[:, 3:6], torch.ones((9, 3)))
-    assert meta["stage"] == "raw"
+    assert meta["stage"] == "sampled"
     assert meta["use_rgb"] is True
     assert meta["num_raw_points"] == 9
     assert meta["timestamp"] == 12.5
@@ -144,6 +145,10 @@ camera:
 pointcloud:
   use_rgb: true
   output_format: "xyzrgb"
+sampling:
+  enabled: true
+  mode: "stride"
+  num_points: 9
 """,
         encoding="utf-8",
     )

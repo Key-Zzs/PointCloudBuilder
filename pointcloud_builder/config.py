@@ -18,6 +18,7 @@ SamplingMode = Literal[
     "voxel_random",
     "voxel_fps",
 ]
+PadMode = Literal["repeat", "zero"]
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,12 @@ class SamplingConfig:
 
     mode: SamplingMode
     num_points: int
+    enabled: bool = True
     stride: int = 1
     voxel_size: float = 0.01
+    seed: int | None = None
+    deterministic: bool = False
+    pad_mode: PadMode = "repeat"
 
 
 @dataclass(frozen=True)
@@ -167,11 +172,19 @@ def _parse_sampling(value: Any) -> SamplingConfig:
     mode = str(value.get("mode", "voxel_random")).lower()
     if mode not in {"fps", "stride", "random", "voxel", "voxel_random", "voxel_fps"}:
         raise ValueError(f"Unsupported sampling mode: {mode}")
+    pad_mode = str(value.get("pad_mode", "repeat")).lower()
+    if pad_mode not in {"repeat", "zero"}:
+        raise ValueError("sampling.pad_mode must be 'repeat' or 'zero'")
+    seed_value = value.get("seed")
     sampling = SamplingConfig(
         mode=mode,  # type: ignore[arg-type]
+        enabled=bool(value.get("enabled", True)),
         num_points=int(value.get("num_points", 1024)),
         stride=max(1, int(value.get("stride", 1))),
         voxel_size=float(value.get("voxel_size", 0.01)),
+        seed=int(seed_value) if seed_value is not None else None,
+        deterministic=bool(value.get("deterministic", False)),
+        pad_mode=pad_mode,  # type: ignore[arg-type]
     )
     if sampling.num_points <= 0:
         raise ValueError("sampling.num_points must be positive")

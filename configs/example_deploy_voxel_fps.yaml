@@ -33,7 +33,11 @@ crop:
   z: [0.05, 1.5]
 
 sampling:
-  mode: voxel_fps
+  enabled: true
+  mode: "voxel_fps"
   num_points: 2048
   stride: 2
   voxel_size: 0.01
+  seed: 42
+  deterministic: true
+  pad_mode: "repeat"
