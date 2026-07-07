@@ -45,7 +45,8 @@ def main() -> int:
 
     builder = PointCloudBuilder.from_yaml(args.config)
     frame = load_frame(args.input)
-    point_cloud, meta = builder.from_recorded_frame(frame)
+    stages, meta = builder.build_stages(frame)
+    point_cloud = stages["raw"]
     print(meta)
     if args.output:
         save_ascii_ply(point_cloud, Path(args.output))

@@ -24,3 +24,10 @@ camera:
 pointcloud:
   use_rgb: false
   output_format: "xyz"
+
+crop:
+  enabled: true
+  frame: "camera"
+  x: [-0.5, 0.5]
+  y: [-0.5, 0.5]
+  z: [0.05, 1.5]

@@ -25,6 +25,13 @@ pointcloud:
   use_rgb: true
   output_format: "xyzrgb"
 
+crop:
+  enabled: true
+  frame: "camera"
+  x: [-0.5, 0.5]
+  y: [-0.5, 0.5]
+  z: [0.05, 1.5]
+
 sampling:
   mode: voxel_random
   num_points: 4096

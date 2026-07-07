@@ -10,3 +10,6 @@ def test_yaml_config_parses() -> None:
     assert config.camera.aligned_depth_to_color is True
     assert config.pointcloud.use_rgb is True
     assert config.pointcloud.output_format == "xyzrgb"
+    assert config.crop.enabled is True
+    assert config.crop.frame == "camera"
+    assert config.crop.x == (-0.5, 0.5)

@@ -9,6 +9,7 @@ import torch
 
 from pointcloud_builder.camera_model import CameraModel
 from pointcloud_builder.config import PointCloudBuilderConfig, load_config
+from pointcloud_builder.crop import crop_point_cloud
 from pointcloud_builder.deprojection import deproject_depth
 from pointcloud_builder.types import Meta, RGBDFrame, Tensor
 from pointcloud_builder.utils import (
@@ -36,22 +37,28 @@ class PointCloudBuilder:
         return cls(load_config(path))
 
     def from_recorded_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a raw camera-frame point cloud from an offline recorded frame."""
+        """Build a cropped camera-frame point cloud from an offline recorded frame."""
 
-        return self._build_from_frame(frame, mode="recorded")
+        pc, meta, _ = self._build_from_frame(frame, mode="recorded")
+        return pc, meta
 
     def from_live_frame(self, frame: RGBDFrame | dict[str, Any]) -> tuple[Tensor, Meta]:
-        """Build a raw camera-frame point cloud from a live inference frame."""
+        """Build a cropped camera-frame point cloud from a live inference frame."""
 
-        return self._build_from_frame(frame, mode="live")
+        pc, meta, _ = self._build_from_frame(frame, mode="live")
+        return pc, meta
 
     def build_stages(self, frame: RGBDFrame | dict[str, Any]) -> tuple[dict[str, Tensor], Meta]:
-        """Return raw stage tensors for offline inspection."""
+        """Return raw and cropped stage tensors for offline inspection."""
 
-        pc, meta = self._build_from_frame(frame, mode="staged")
-        return {"raw": pc}, meta
+        _, meta, stages = self._build_from_frame(frame, mode="staged")
+        return stages, meta
 
-    def _build_from_frame(self, frame: RGBDFrame | dict[str, Any], mode: str) -> tuple[Tensor, Meta]:
+    def _build_from_frame(
+        self,
+        frame: RGBDFrame | dict[str, Any],
+        mode: str,
+    ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
         depth = as_tensor(get_frame_value(frame, "depth"), self.device, torch.float32)
         intrinsics = self.camera.active_intrinsics
         points, valid_mask = deproject_depth(
@@ -61,20 +68,31 @@ class PointCloudBuilder:
             flatten=True,
         )
         colors = self._rgb_for_raw_points(frame, valid_mask)
-        point_cloud = pack_point_cloud(points, colors)
+        raw_point_cloud = pack_point_cloud(points, colors)
+        cropped_point_cloud, _ = crop_point_cloud(raw_point_cloud, self.config.crop)
+        output_stage = "cropped" if self.config.crop.enabled else "raw"
         meta: Meta = {
-            "stage": "raw",
+            "stage": output_stage,
             "mode": mode,
             "aligned_depth_to_color": self.camera.aligned_depth_to_color,
             "use_rgb": colors is not None,
             "num_raw_points": int(points.shape[0]),
+            "num_cropped_points": int(cropped_point_cloud.shape[0]),
+            "crop_enabled": self.config.crop.enabled,
+            "crop_range": {
+                "frame": self.config.crop.frame,
+                "x": self.config.crop.x,
+                "y": self.config.crop.y,
+                "z": self.config.crop.z,
+            },
+            "crop_empty": self.config.crop.enabled and int(cropped_point_cloud.shape[0]) == 0,
             "device": str(self.device),
             "timestamp": get_optional_frame_value(frame, "timestamp"),
             "global_frame_index": get_optional_frame_value(frame, "global_frame_index"),
             "camera_name": self.camera.name,
             "intrinsics": "color" if self.camera.aligned_depth_to_color else "depth",
         }
-        return point_cloud, meta
+        return cropped_point_cloud, meta, {"raw": raw_point_cloud, "cropped": cropped_point_cloud}
 
     def _rgb_for_raw_points(self, frame: RGBDFrame | dict[str, Any], valid_mask: Tensor) -> Tensor | None:
         if not self.camera.aligned_depth_to_color:

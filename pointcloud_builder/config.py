@@ -47,6 +47,7 @@ class CropConfig:
     x: tuple[float, float]
     y: tuple[float, float]
     z: tuple[float, float]
+    frame: str = "camera"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class PointCloudBuilderConfig:
             x=(-float("inf"), float("inf")),
             y=(-float("inf"), float("inf")),
             z=(0.0, float("inf")),
+            frame="camera",
         )
     )
     sampling: SamplingConfig = field(
@@ -144,6 +146,7 @@ def _parse_crop(value: Any) -> CropConfig:
             x=(-float("inf"), float("inf")),
             y=(-float("inf"), float("inf")),
             z=(0.0, float("inf")),
+            frame="camera",
         )
     if not isinstance(value, dict):
         raise ValueError("crop must be a mapping when provided")
@@ -152,6 +155,7 @@ def _parse_crop(value: Any) -> CropConfig:
         x=_parse_range(value.get("x", [-float("inf"), float("inf")]), "crop.x"),
         y=_parse_range(value.get("y", [-float("inf"), float("inf")]), "crop.y"),
         z=_parse_range(value.get("z", [0.0, float("inf")]), "crop.z"),
+        frame=str(value.get("frame", "camera")),
     )
 
 

@@ -4,12 +4,13 @@ PointCloudBuilder is a reusable RGB-D to camera-frame point-cloud module for
 robot learning pipelines. Training data conversion and real-time deployment must
 share the same `PointCloudBuilder` implementation and YAML schema.
 
-This repository currently implements stage 1: raw RGB-D deprojection, plus
+This repository currently implements stage 2: raw RGB-D deprojection plus
+workspace crop, plus
 offline tools for capturing one aligned D435i RGB-D frame, visualizing the
 resulting point cloud, and benchmarking the deprojection/crop/sampling building
 blocks.
 
-## Stage 1 Scope
+## Stage 2 Scope
 
 - Load camera intrinsics from YAML.
 - Use PyTorch tensors for depth deprojection.
@@ -20,17 +21,20 @@ blocks.
 - Attach RGB only when depth is aligned to color, `pointcloud.use_rgb: true`,
   `pointcloud.output_format: "xyzrgb"`, and the input frame contains `rgb`.
 - Filter invalid `depth <= 0` points.
+- Load workspace crop bounds from YAML.
+- Crop `N x 3` XYZ and `N x 6` XYZRGB point clouds by XYZ while preserving RGB
+  columns.
+- Return an empty `0 x C` tensor without crashing when the crop contains no
+  points.
+- Expose raw and cropped stages through `build_stages()` for offline debugging.
 - Keep Open3D and GUI visualization out of the real-time builder path.
 - Capture a single RealSense D435i aligned RGB-D frame as a local `.npz` debug
   artifact and write a matching YAML config from the camera intrinsics.
-- Provide standalone crop and fixed-size sampling utilities (`stride`,
-  `random`, `voxel`, `fps`, `voxel_random`, `voxel_fps`) for offline testing and
-  later pipeline stages.
+- Provide fixed-size sampling utilities (`stride`, `random`, `voxel`, `fps`,
+  `voxel_random`, `voxel_fps`) for offline testing and later pipeline stages.
 
-The high-level `PointCloudBuilder` output is still the raw point cloud in this
-stage. Crop and sampling modules are available as extension points and are
-benchmarked independently, but they are not yet the default high-level builder
-output.
+The high-level `PointCloudBuilder` output is the cropped point cloud when
+`crop.enabled: true`; otherwise it is the raw point cloud.
 
 ## Install
 
@@ -67,13 +71,15 @@ frame = {
 }
 ```
 
-`pc` is a `torch.Tensor` shaped `N x 3` for XYZ or `N x 6` for XYZRGB. `meta`
-contains `stage`, `aligned_depth_to_color`, `use_rgb`, `num_raw_points`,
-`device`, `timestamp`, and `global_frame_index`.
+`pc` is a `torch.Tensor` shaped `N x 3` for XYZ or `N x 6` for XYZRGB. With
+`crop.enabled: true`, `N` is the cropped point count. `meta` contains `stage`,
+`aligned_depth_to_color`, `use_rgb`, `num_raw_points`, `num_cropped_points`,
+`crop_enabled`, `crop_range`, `crop_empty`, `device`, `timestamp`, and
+`global_frame_index`.
 
-`N` is the number of valid depth pixels after filtering `depth <= 0`. XYZ values
-are in meters after applying `camera.depth_scale`. RGB values are normalized to
-`[0, 1]` when `pointcloud.output_format: "xyzrgb"` is enabled.
+Raw `N` starts as the number of valid depth pixels after filtering `depth <= 0`.
+XYZ values are in meters after applying `camera.depth_scale`. RGB values are
+normalized to `[0, 1]` when `pointcloud.output_format: "xyzrgb"` is enabled.
 
 ## YAML
 
@@ -104,6 +110,13 @@ camera:
 pointcloud:
   use_rgb: true
   output_format: "xyzrgb"
+
+crop:
+  enabled: true
+  frame: "camera"
+  x: [-0.5, 0.5]
+  y: [-0.5, 0.5]
+  z: [0.05, 1.5]
 
 sampling:
   mode: voxel_random
@@ -183,6 +196,16 @@ python scripts/visualize_raw_pointcloud.py \
   --no-show
 ```
 
+Visualize raw and cropped stages:
+
+```bash
+python scripts/visualize_cropped_pointcloud.py \
+  --config configs/captures/head_aligned.yaml \
+  --input captures/head_frame_000000.npz \
+  --raw-output captures/head_raw.ply \
+  --output captures/head_cropped.ply
+```
+
 ## Benchmark
 
 Benchmark raw deprojection with the captured camera resolution and intrinsics:
@@ -201,9 +224,10 @@ Crop and sampling utilities can be benchmarked independently:
 
 ```bash
 python scripts/benchmark_crop.py \
-  --config configs/example_train_voxel_random.yaml \
-  --points 307200 \
-  --iterations 50
+  --config configs/example_head_aligned.yaml \
+  --num-points 307200 \
+  --iters 1000 \
+  --warmup 100
 
 python scripts/benchmark_sampling.py \
   --config configs/example_train_voxel_random.yaml \
@@ -226,4 +250,5 @@ configuration.
 ```bash
 pytest -q
 python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 100 --warmup 10
+python scripts/benchmark_crop.py --config configs/example_head_aligned.yaml --num-points 307200 --iters 100 --warmup 10
 ```
