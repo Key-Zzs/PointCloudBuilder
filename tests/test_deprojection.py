@@ -90,6 +90,18 @@ def test_use_rgb_true_and_aligned_outputs_xyzrgb() -> None:
     assert meta["global_frame_index"] == 7
 
 
+def test_use_rgb_true_controls_rgb_even_with_legacy_xyz_output_format() -> None:
+    builder = make_builder(aligned_depth_to_color=True, use_rgb=True, output_format="xyz")
+    pc, meta = builder.from_live_frame(
+        {
+            "depth": torch.ones((3, 3)),
+            "rgb": torch.full((3, 3, 3), 255, dtype=torch.uint8),
+        }
+    )
+    assert pc.shape == (9, 6)
+    assert meta["use_rgb"] is True
+
+
 def test_use_rgb_false_outputs_xyz() -> None:
     builder = make_builder(aligned_depth_to_color=True, use_rgb=False, output_format="xyz")
     pc, meta = builder.from_live_frame(

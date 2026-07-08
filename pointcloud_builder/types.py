@@ -27,3 +27,5 @@ class PointCloudStages:
     """Intermediate tensors for offline inspection and visualization."""
 
     raw: Tensor
+    cropped: Tensor
+    sampled: Tensor

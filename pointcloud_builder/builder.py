@@ -114,8 +114,6 @@ class PointCloudBuilder:
             return None
         if not self.config.pointcloud.use_rgb:
             return None
-        if self.config.pointcloud.output_format != "xyzrgb":
-            return None
         rgb_value = get_optional_frame_value(frame, "rgb")
         if rgb_value is None:
             rgb_value = get_optional_frame_value(frame, "color")

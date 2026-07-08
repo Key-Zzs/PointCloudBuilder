@@ -12,6 +12,10 @@ from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.utils import resolve_device
 
 MODES = ("fps", "stride", "random", "voxel", "voxel_random", "voxel_fps")
+FPS_MODES = {"fps", "voxel_fps"}
+CPU_FPS_MAX_INPUT_POINTS = 20_000
+CPU_FPS_MAX_ITERS = 3
+CPU_FPS_MAX_WARMUP = 1
 
 
 def synchronize_if_cuda(device: torch.device) -> None:
@@ -52,6 +56,19 @@ def run_case(
 ) -> None:
     """Benchmark one sampler/memory-layout pair."""
 
+    requested_input_points = int(point_cloud.shape[0])
+    requested_iters = iters
+    requested_warmup = warmup
+    if point_cloud.device.type == "cpu" and mode in FPS_MODES and requested_input_points > CPU_FPS_MAX_INPUT_POINTS:
+        point_cloud = point_cloud[:CPU_FPS_MAX_INPUT_POINTS].contiguous()
+        iters = min(iters, CPU_FPS_MAX_ITERS)
+        warmup = min(warmup, CPU_FPS_MAX_WARMUP)
+        print(
+            "cpu_fallback: FPS is quadratic in target count; "
+            f"using effective_input_points={point_cloud.shape[0]}, "
+            f"effective_iters={iters}, effective_warmup={warmup}"
+        )
+
     config = SamplingConfig(
         enabled=True,
         mode=mode,  # type: ignore[arg-type]
@@ -79,8 +96,13 @@ def run_case(
     print(f"device: {point_cloud.device}")
     print(f"mode: {mode}")
     print(f"with_rgb: {point_cloud.shape[1] == 6}")
+    print(f"requested_input_points: {requested_input_points}")
+    print(f"requested_iters: {requested_iters}")
+    print(f"requested_warmup: {requested_warmup}")
     print(f"input_points: {point_cloud.shape[0]}")
     print(f"output_points: {output_points}")
+    print(f"iters: {iters}")
+    print(f"warmup: {warmup}")
     print(f"latency_ms_mean: {mean_ms:.4f}")
     print(f"latency_ms_p50: {percentile(latencies_ms, 0.50):.4f}")
     print(f"latency_ms_p95: {percentile(latencies_ms, 0.95):.4f}")

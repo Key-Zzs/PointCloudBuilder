@@ -1,110 +1,74 @@
 # PointCloudBuilder
 
-PointCloudBuilder is a reusable RGB-D to camera-frame point-cloud module for
-robot learning pipelines. Training data conversion and real-time deployment must
-share the same `PointCloudBuilder` implementation and YAML schema.
+PointCloudBuilder is a plug-and-play real-time RGB-D point cloud construction module for robot learning pipelines. It uses PyTorch CUDA tensors to deproject RGB-D frames into camera-frame point clouds from YAML-configured camera intrinsics, optionally produces RGB point clouds when aligned_depth_to_color is enabled, applies YAML-configured workspace cropping, and outputs fixed-size point clouds using FPS, stride, random, voxel, voxel_random, or voxel_fps sampling. Offline visualization and benchmark tools are provided for raw, cropped, and sampled point clouds, while realtime control remains decoupled from visualization.
 
-This repository currently implements stage 3: raw RGB-D deprojection,
-workspace crop, and fixed-size sampling, plus
-offline tools for capturing one aligned D435i RGB-D frame, visualizing the
-resulting point cloud, and benchmarking the deprojection/crop/sampling building
-blocks.
+Training and deployment must share the same PointCloudBuilder.
 
-## Stage 3 Scope
+## Repository Description
 
-- Load camera intrinsics from YAML.
-- Use PyTorch tensors for depth deprojection.
-- Prefer CUDA when requested and available; fall back to CPU when CUDA is not
-  available.
-- Select color intrinsics when `camera.aligned_depth_to_color: true`.
-- Select depth intrinsics when `camera.aligned_depth_to_color: false`.
-- Attach RGB only when depth is aligned to color, `pointcloud.use_rgb: true`,
-  `pointcloud.output_format: "xyzrgb"`, and the input frame contains `rgb`.
-- Filter invalid `depth <= 0` points.
-- Load workspace crop bounds from YAML.
-- Crop `N x 3` XYZ and `N x 6` XYZRGB point clouds by XYZ while preserving RGB
-  columns.
-- Return an empty `0 x C` tensor without crashing when the crop contains no
-  points.
-- Sample the cropped point cloud to a fixed number of points.
-- Support `fps`, `stride`, `random`, `voxel`, `voxel_random`, and `voxel_fps`.
-- Preserve RGB columns through sampling for `N x 6` XYZRGB point clouds.
-- Pad short or empty inputs with repeated points or zeros according to
-  `sampling.pad_mode`.
-- Expose raw, cropped, and sampled stages through `build_stages()` for offline
-  debugging.
-- Keep Open3D and GUI visualization out of the real-time builder path.
-- Capture a single RealSense D435i aligned RGB-D frame as a local `.npz` debug
-  artifact and write a matching YAML config from the camera intrinsics.
+This repository provides one reusable pipeline for offline training data conversion and realtime robot inference:
 
-The high-level `PointCloudBuilder` output is the sampled fixed-size point cloud
-when `sampling.enabled: true`. Training defaults should use `voxel_random` or
-`fps`; deployment defaults should use `voxel_random` or `voxel_fps`.
+1. deproject RGB-D to raw camera-frame point cloud;
+2. crop point cloud by YAML workspace bounds;
+3. sample point cloud to a fixed number of points;
+4. return a `torch.Tensor` point cloud and metadata.
 
-## Install
+The realtime builder path does not import Open3D, matplotlib, or GUI code. Visualization lives in offline scripts and `pointcloud_builder.visualization`.
+
+## Installation
 
 ```bash
-conda create -n pointcloud-builder python=3.10 -y
-conda run -n pointcloud-builder python -m pip install -e ".[dev]"
+python -m pip install -e .
+python -m pip install pytest
 ```
 
 Optional offline visualization dependency:
 
 ```bash
-conda run -n pointcloud-builder python -m pip install -e ".[viz]"
+python -m pip install -e ".[viz]"
 ```
 
-## Core API
+## Quick Start
 
 ```python
+import torch
+
 from pointcloud_builder import PointCloudBuilder
 
 builder = PointCloudBuilder.from_yaml("configs/example_head_aligned.yaml")
 
-# Offline zarr conversion
-pc, meta = builder.from_recorded_frame(frame)
+depth = torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32)
+rgb = torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32)
+frame = {"depth": depth, "rgb": rgb, "timestamp": 1.23, "global_frame_index": 42}
 
-# Real-time inference
+pc, meta = builder.from_live_frame(frame)
+print(pc.shape)
+print(meta["sampling_mode"], meta["num_sampled_points"])
+```
+
+Stable public API:
+
+```python
+from pointcloud_builder import PointCloudBuilder
+
+builder = PointCloudBuilder.from_yaml(config_path)
+
+pc, meta = builder.from_recorded_frame(frame)
 pc, meta = builder.from_live_frame(frame)
 ```
 
-`frame` is a mapping with required `depth` and optional `rgb`:
+`from_recorded_frame` and `from_live_frame` share the same internal pipeline. All point cloud outputs are `torch.Tensor` objects.
 
-```python
-frame = {
-    "depth": depth_image,  # H x W numpy array or torch tensor
-    "rgb": rgb_image,      # H x W x 3 optional numpy array or torch tensor
-    "timestamp": 1.23,
-    "global_frame_index": 42,
-}
-```
+## YAML Config Example
 
-`pc` is a fixed-size `torch.Tensor` shaped `num_points x 3` for XYZ or
-`num_points x 6` for XYZRGB. `meta` contains `stage`,
-`aligned_depth_to_color`, `use_rgb`, `num_raw_points`, `num_cropped_points`,
-`num_sampled_points`, `crop_enabled`, `crop_range`, `crop_empty`,
-`sampling_enabled`, `sampling_mode`, `target_num_points`, `input_empty`,
-`padded`, `pad_mode`, `voxel_size`, `device`, `timestamp`, and
-`global_frame_index`.
+The repository includes:
 
-Raw `N` starts as the number of valid depth pixels after filtering `depth <= 0`.
-XYZ values are in meters after applying `camera.depth_scale`. RGB values are
-normalized to `[0, 1]` when `pointcloud.output_format: "xyzrgb"` is enabled.
-If crop removes all points, sampling still returns a fixed-size zero tensor.
+- `configs/example_head_aligned.yaml`
+- `configs/example_head_depth_raw.yaml`
+- `configs/example_train_voxel_random.yaml`
+- `configs/example_deploy_voxel_fps.yaml`
 
-## Sampling Modes
-
-- `stride`: select points at a fixed interval, then pad or trim to
-  `num_points`.
-- `random`: randomly select points without replacement when enough points are
-  available.
-- `fps`: PyTorch farthest point sampling over XYZ.
-- `voxel`: voxel downsample by XYZ, keeping the first input point in each voxel,
-  then pad or trim to `num_points`.
-- `voxel_random`: voxel downsample first, then random sample to fixed size.
-- `voxel_fps`: voxel downsample first, then FPS to fixed size.
-
-## YAML
+Example:
 
 ```yaml
 device: "cuda"
@@ -145,39 +109,144 @@ sampling:
   enabled: true
   mode: "voxel_random"
   num_points: 1024
+  stride: 2
   voxel_size: 0.005
   seed: 42
   deterministic: false
-  pad_mode: "repeat"   # repeat | zero
+  pad_mode: "repeat"
 ```
+
+`device: "cuda"` gracefully falls back to CPU when CUDA is unavailable.
+
+## Offline Zarr Conversion Example
+
+Use the recorded-frame API inside the dataset conversion loop. The builder call is independent of the storage backend:
+
+```python
+from pointcloud_builder import PointCloudBuilder
+
+builder = PointCloudBuilder.from_yaml("configs/example_train_voxel_random.yaml")
+
+def convert_recorded_frame(frame: dict[str, object]) -> tuple[object, dict[str, object]]:
+    pc, meta = builder.from_recorded_frame(frame)
+    return pc, meta
+```
+
+`examples/export_zarr_example.py` contains the same minimal conversion helper.
+
+## Realtime Inference Example
+
+```python
+import torch
+
+from pointcloud_builder import PointCloudBuilder
+
+builder = PointCloudBuilder.from_yaml("configs/example_deploy_voxel_fps.yaml")
+
+frame = {
+    "depth": torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32),
+    "rgb": torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32),
+}
+pc, meta = builder.from_live_frame(frame)
+```
+
+Realtime control code should only depend on `pointcloud_builder.PointCloudBuilder`, not visualization scripts.
+
+## Sampling Modes Explanation
+
+- `fps`: farthest point sampling over XYZ.
+- `stride`: select points at a fixed interval, then pad or trim.
+- `random`: random sample without replacement when enough points exist.
+- `voxel`: voxel downsample by XYZ, keep one representative per voxel, then pad or trim.
+- `voxel_random`: voxel downsample first, then random sample to fixed size.
+- `voxel_fps`: voxel downsample first, then FPS to fixed size.
+
+Training default: `voxel_random` or `fps`.
+
+Deployment default: `voxel_random` or `voxel_fps`.
+
+## Aligned Depth To Color Explanation
+
+When `camera.aligned_depth_to_color: true`, depth is interpreted on the color pixel grid and deprojected with `color_intrinsics`. RGB columns are attached only when all of these are true:
+
+- `camera.aligned_depth_to_color: true`
+- `pointcloud.use_rgb: true`
+- the frame contains `rgb` or `color`
+
+When `camera.aligned_depth_to_color: false`, depth is deprojected with `depth_intrinsics` and the output remains XYZ even if the frame also contains RGB.
+
+## Fixed-Size Output Explanation
+
+The public builder output is the sampled point cloud. With the provided configs, output shape is always:
+
+- `sampling.num_points x 3` for XYZ;
+- `sampling.num_points x 6` for XYZRGB.
+
+If the sampler receives fewer than `sampling.num_points`, it pads with repeated points or zeros according to `sampling.pad_mode`.
+
+## Empty Crop No-Crash Behavior Explanation
+
+If cropping removes every point, the crop stage returns an empty `0 x C` tensor and sampling returns a fixed-size zero tensor. The builder does not crash; metadata marks `crop_empty`, `input_empty`, and `padded`.
+
+## Offline Visualization Commands
+
+Visualization is offline only.
+
+```bash
+python scripts/visualize_raw_pointcloud.py \
+  --config configs/example_head_aligned.yaml \
+  --input captures/head_frame_000000.npz \
+  --output captures/head_raw.ply \
+  --no-show
+
+python scripts/visualize_cropped_pointcloud.py \
+  --config configs/example_head_aligned.yaml \
+  --input captures/head_frame_000000.npz \
+  --raw-output captures/head_raw.ply \
+  --output captures/head_cropped.ply \
+  --no-show
+
+python scripts/visualize_sampled_pointcloud.py \
+  --config configs/example_train_voxel_random.yaml \
+  --input captures/head_frame_000000.npz \
+  --raw-output captures/head_raw.ply \
+  --cropped-output captures/head_cropped.ply \
+  --output captures/head_sampled.ply \
+  --no-show
+```
+
+Required offline script names:
+
+- `visualize_raw_pointcloud.py`
+- `visualize_cropped_pointcloud.py`
+- `visualize_sampled_pointcloud.py`
+
+## Benchmark Commands
+
+CUDA is used when available. CPU fallback is allowed and must not crash.
+
+```bash
+python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 20 --warmup 5
+python scripts/benchmark_crop.py --config configs/example_head_aligned.yaml --num-points 307200 --iters 20 --warmup 5
+python scripts/benchmark_sampling.py --num-points 50000 --target-num-points 1024 --iters 20 --warmup 5
+python scripts/benchmark_full_pipeline.py --config configs/example_train_voxel_random.yaml --iters 20 --warmup 5
+```
+
+Required benchmark script names:
+
+- `benchmark_deprojection.py`
+- `benchmark_crop.py`
+- `benchmark_sampling.py`
+- `benchmark_full_pipeline.py`
 
 ## Real D435i One-Frame Capture
 
-Use this path to validate that the local RealSense RGB-D frame matches the data
-shape that will later be stored by LeRobot plus RGB-D sidecar data.
-
-`pyrealsense2` is intentionally not a package dependency. Run the camera tools in
-an environment that already has the RealSense Python wrapper, for example the
-`dual_arm_teleop` environment on the Flexiv workstation:
+`pyrealsense2` is intentionally not a package dependency. Run the camera tools in an environment that already has the RealSense Python wrapper:
 
 ```bash
-cd /home/deepcybo/workspace/3D-Diffusion-Policy/PointCloudBuilder
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python -m pip install -e ".[viz]"
-```
+python tools/camera/detect_realsense.py
 
-Quick camera sanity check:
-
-```bash
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python \
-  tools/camera/detect_realsense.py
-```
-
-Find the camera serial with `rs-enumerate-devices`, then capture one aligned
-RGB-D frame:
-
-```bash
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python \
-  tools/camera/capture_d435i_aligned_rgbd.py \
+python tools/camera/capture_d435i_aligned_rgbd.py \
   --serial 344522070241 \
   --width 424 \
   --height 240 \
@@ -186,114 +255,11 @@ RGB-D frame:
   --config-out configs/captures/head_aligned.yaml
 ```
 
-The `.npz` contains:
-
-```text
-rgb: uint8 [H, W, 3], depth-to-color aligned color frame
-depth: uint16 [H, W], depth aligned to the color pixel grid
-rgb_timestamp, depth_timestamp
-depth_scale
-width, height, fx, fy, cx, cy
-```
-
-The generated YAML uses the color intrinsics because
-`camera.aligned_depth_to_color: true`. Heavy capture artifacts under `captures/`
-are ignored by `.gitignore`; generated YAML files under `configs/captures/` can
-be kept for reproducible local tests.
-
-## Offline Visualization
-
-Visualization is intentionally separate from the real-time builder:
-
-```bash
-python scripts/visualize_raw_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --output captures/head_raw.ply
-```
-
-Disable the Open3D window when running headless:
-
-```bash
-python scripts/visualize_raw_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --output captures/head_raw.ply \
-  --no-show
-```
-
-Visualize raw and cropped stages:
-
-```bash
-python scripts/visualize_cropped_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --output captures/head_cropped.ply
-```
-
-Visualize raw, cropped, and sampled stages:
-
-```bash
-python scripts/visualize_sampled_pointcloud.py \
-  --config configs/example_train_voxel_random.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --cropped-output captures/head_cropped.ply \
-  --output captures/head_sampled.ply
-```
-
-## Benchmark
-
-Benchmark raw deprojection with the captured camera resolution and intrinsics:
-
-```bash
-python scripts/benchmark_deprojection.py \
-  --config configs/captures/head_aligned.yaml \
-  --iters 1000 \
-  --warmup 100
-```
-
-The benchmark prints p50, p95, and mean latency in milliseconds, plus point
-count, device, and image resolution.
-
-Crop and sampling utilities can be benchmarked independently:
-
-```bash
-python scripts/benchmark_crop.py \
-  --config configs/example_head_aligned.yaml \
-  --num-points 307200 \
-  --iters 1000 \
-  --warmup 100
-
-python scripts/benchmark_sampling.py \
-  --num-points 50000 \
-  --target-num-points 1024 \
-  --iters 100 \
-  --warmup 10
-
-python scripts/benchmark_full_pipeline.py \
-  --config configs/example_train_voxel_random.yaml \
-  --iters 100 \
-  --warmup 10
-```
-
-## Data Boundary
-
-The `.npz` capture format is for one-frame debugging and visualization only. It
-is not the planned LeRobot dataset format. For later integration, RGB should
-remain in LeRobot video fields, while depth/IR should be stored in a sidecar
-array store such as zarr and joined by `episode_index`, `frame_index`, and
-`camera_name`. PointCloudBuilder should be reused by both offline conversion and
-real-time deployment so training and inference share the same deprojection
-configuration.
+The `.npz` contains `rgb`, `depth`, timestamps, depth scale, and camera intrinsics. The generated YAML uses color intrinsics because `camera.aligned_depth_to_color: true`.
 
 ## Tests
 
 ```bash
+pip install -e .
 pytest -q
-python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 100 --warmup 10
-python scripts/benchmark_crop.py --config configs/example_head_aligned.yaml --num-points 307200 --iters 100 --warmup 10
-python scripts/benchmark_sampling.py --num-points 50000 --target-num-points 1024 --iters 20 --warmup 5
-python scripts/benchmark_full_pipeline.py --config configs/example_train_voxel_random.yaml --iters 20 --warmup 5
 ```

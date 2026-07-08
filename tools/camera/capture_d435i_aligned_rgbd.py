@@ -1,3 +1,7 @@
+"""Capture one aligned RealSense RGB-D frame for offline PointCloudBuilder tests."""
+
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 
@@ -6,7 +10,9 @@ import pyrealsense2 as rs
 import yaml
 
 
-def main():
+def main() -> int:
+    """Capture an aligned color/depth frame and write a matching YAML config."""
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--serial", default=None)
     parser.add_argument("--width", type=int, default=424)
@@ -108,7 +114,8 @@ def main():
 
     finally:
         pipeline.stop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
