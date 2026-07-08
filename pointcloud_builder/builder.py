@@ -68,7 +68,7 @@ class PointCloudBuilder:
             self.camera.depth_scale,
             flatten=True,
         )
-        colors = self._rgb_for_raw_points(frame, valid_mask)
+        colors, rgb_meta = self._rgb_for_raw_points(frame, points, valid_mask)
         raw_point_cloud = pack_point_cloud(points, colors)
         cropped_point_cloud, _ = crop_point_cloud(raw_point_cloud, self.config.crop)
         sampled_point_cloud, sampling_meta = sample_point_cloud(cropped_point_cloud, self.config.sampling)
@@ -102,6 +102,7 @@ class PointCloudBuilder:
             "global_frame_index": get_optional_frame_value(frame, "global_frame_index"),
             "camera_name": self.camera.name,
             "intrinsics": "color" if self.camera.aligned_depth_to_color else "depth",
+            "rgb": rgb_meta,
         }
         return sampled_point_cloud, meta, {
             "raw": raw_point_cloud,
@@ -109,16 +110,22 @@ class PointCloudBuilder:
             "sampled": sampled_point_cloud,
         }
 
-    def _rgb_for_raw_points(self, frame: RGBDFrame | dict[str, Any], valid_mask: Tensor) -> Tensor | None:
-        if not self.camera.aligned_depth_to_color:
-            return None
-        if not self.config.pointcloud.use_rgb:
-            return None
+    def _rgb_for_raw_points(
+        self,
+        frame: RGBDFrame | dict[str, Any],
+        points: Tensor,
+        valid_mask: Tensor,
+    ) -> tuple[Tensor | None, Meta]:
+        if not self._wants_rgb_output():
+            return None, {
+                "enabled": False,
+                "mapping": self.config.pointcloud.rgb_mapping,
+            }
         rgb_value = get_optional_frame_value(frame, "rgb")
         if rgb_value is None:
             rgb_value = get_optional_frame_value(frame, "color")
         if rgb_value is None:
-            return None
+            raise ValueError("RGB point cloud requested but frame has no 'rgb' or 'color' field")
         rgb = normalize_color(as_tensor(rgb_value, self.device, torch.float32))
         intrinsics = self.camera.color_intrinsics
         if int(rgb.shape[0]) != intrinsics.height or int(rgb.shape[1]) != intrinsics.width:
@@ -126,4 +133,54 @@ class PointCloudBuilder:
                 f"RGB shape {tuple(rgb.shape)} does not match "
                 f"color height/width {(intrinsics.height, intrinsics.width)}"
             )
-        return rgb.reshape(-1, 3)[valid_mask]
+        if self.camera.aligned_depth_to_color:
+            return rgb.reshape(-1, 3)[valid_mask], {
+                "enabled": True,
+                "mapping": "aligned",
+                "sampling": "nearest",
+                "invalid_projection_count": 0,
+            }
+        if self.config.pointcloud.rgb_mapping != "project_depth_to_color":
+            return None, {
+                "enabled": False,
+                "mapping": self.config.pointcloud.rgb_mapping,
+                "reason": "raw_depth_rgb_mapping_not_configured",
+            }
+        return self._project_depth_points_to_color(points, rgb)
+
+    def _wants_rgb_output(self) -> bool:
+        return self.config.pointcloud.use_rgb
+
+    def _project_depth_points_to_color(self, points_depth: Tensor, rgb: Tensor) -> tuple[Tensor, Meta]:
+        extrinsics = self.camera.depth_to_color_extrinsics
+        if extrinsics is None:
+            raise ValueError("camera.depth_to_color_extrinsics is required for RGB mapping")
+        rotation = torch.tensor(extrinsics.rotation, dtype=points_depth.dtype, device=points_depth.device)
+        translation = torch.tensor(extrinsics.translation, dtype=points_depth.dtype, device=points_depth.device)
+        points_color = points_depth @ rotation.T + translation
+        z = points_color[:, 2]
+        finite_depth = torch.isfinite(points_color).all(dim=-1) & (z > 0.0)
+
+        intrinsics = self.camera.color_intrinsics
+        u = points_color[:, 0] * intrinsics.fx / z + intrinsics.cx
+        v = points_color[:, 1] * intrinsics.fy / z + intrinsics.cy
+        u_nearest = torch.round(u).to(dtype=torch.long)
+        v_nearest = torch.round(v).to(dtype=torch.long)
+        in_bounds = (
+            finite_depth
+            & (u_nearest >= 0)
+            & (u_nearest < intrinsics.width)
+            & (v_nearest >= 0)
+            & (v_nearest < intrinsics.height)
+        )
+
+        colors = torch.zeros((points_depth.shape[0], 3), dtype=rgb.dtype, device=rgb.device)
+        if bool(in_bounds.any()):
+            colors[in_bounds] = rgb[v_nearest[in_bounds], u_nearest[in_bounds], :3]
+        return colors, {
+            "enabled": True,
+            "mapping": "project_depth_to_color",
+            "sampling": "nearest",
+            "invalid_projection_count": int((~in_bounds).sum().item()),
+            "valid_projection_count": int(in_bounds.sum().item()),
+        }

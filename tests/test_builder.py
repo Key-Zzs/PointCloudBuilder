@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import yaml
 
 from pointcloud_builder import PointCloudBuilder
 
@@ -59,3 +60,45 @@ def test_cuda_output_does_not_crash_when_available() -> None:
     assert pc.is_cuda
     assert pc.shape == (builder.config.sampling.num_points, 3)
     assert meta["device"].startswith("cuda")
+
+
+def test_raw_depth_projects_to_color_for_rgb_points(tmp_path) -> None:
+    config_path = tmp_path / "raw_depth_to_color.yaml"
+    config = {
+        "device": "cpu",
+        "camera": {
+            "name": "test",
+            "aligned_depth_to_color": False,
+            "depth_scale": 1.0,
+            "depth_intrinsics": {"width": 2, "height": 2, "fx": 1.0, "fy": 1.0, "cx": 0.0, "cy": 0.0},
+            "color_intrinsics": {"width": 2, "height": 2, "fx": 1.0, "fy": 1.0, "cx": 0.0, "cy": 0.0},
+            "depth_to_color_extrinsics": {
+                "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "translation": [1.0, 0.0, 0.0],
+            },
+        },
+        "pointcloud": {
+            "use_rgb": True,
+            "output_format": "xyzrgb",
+            "rgb_mapping": "project_depth_to_color",
+            "rgb_sampling": "nearest",
+            "xyz_frame": "depth",
+        },
+        "sampling": {"enabled": False, "mode": "voxel_random", "num_points": 4},
+    }
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    builder = PointCloudBuilder.from_yaml(config_path)
+    rgb = torch.tensor(
+        [
+            [[1, 0, 0], [0, 1, 0]],
+            [[0, 0, 1], [1, 1, 1]],
+        ],
+        dtype=torch.uint8,
+    )
+    pc, meta = builder.from_recorded_frame({"depth": torch.ones((2, 2)), "rgb": rgb})
+    assert pc.shape == (4, 6)
+    assert torch.allclose(pc[0, 3:], torch.tensor([0.0, 1.0, 0.0]))
+    assert torch.allclose(pc[1, 3:], torch.zeros(3))
+    assert meta["rgb"]["mapping"] == "project_depth_to_color"
+    assert meta["rgb"]["valid_projection_count"] == 2
+    assert meta["rgb"]["invalid_projection_count"] == 2

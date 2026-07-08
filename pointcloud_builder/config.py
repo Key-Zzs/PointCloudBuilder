@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 import yaml
 
-from pointcloud_builder.camera_model import CameraIntrinsics
+from pointcloud_builder.camera_model import CameraExtrinsics, CameraIntrinsics
 
 SamplingMode = Literal[
     "fps",
@@ -30,6 +30,7 @@ class CameraConfig:
     aligned_depth_to_color: bool
     color_intrinsics: CameraIntrinsics
     depth_intrinsics: CameraIntrinsics
+    depth_to_color_extrinsics: CameraExtrinsics | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,9 @@ class PointCloudConfig:
 
     use_rgb: bool
     output_format: str
+    rgb_mapping: str = "aligned"
+    rgb_sampling: str = "nearest"
+    xyz_frame: str = "depth"
 
 
 @dataclass(frozen=True)
@@ -115,13 +119,34 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
             _require_mapping(camera_raw, "depth_intrinsics"),
             "camera.depth_intrinsics",
         ),
+        depth_to_color_extrinsics=_parse_extrinsics(camera_raw.get("depth_to_color_extrinsics")),
     )
+    default_rgb_mapping = "aligned" if camera.aligned_depth_to_color else "project_depth_to_color"
     pointcloud = PointCloudConfig(
         use_rgb=bool(pointcloud_raw.get("use_rgb", False)),
         output_format=str(pointcloud_raw.get("output_format", "xyz")).lower(),
+        rgb_mapping=str(pointcloud_raw.get("rgb_mapping", default_rgb_mapping)).lower(),
+        rgb_sampling=str(pointcloud_raw.get("rgb_sampling", "nearest")).lower(),
+        xyz_frame=str(pointcloud_raw.get("xyz_frame", "depth")).lower(),
     )
     if pointcloud.output_format not in {"xyz", "xyzrgb"}:
         raise ValueError("pointcloud.output_format must be 'xyz' or 'xyzrgb'")
+    if pointcloud.rgb_mapping not in {"aligned", "project_depth_to_color"}:
+        raise ValueError("pointcloud.rgb_mapping must be 'aligned' or 'project_depth_to_color'")
+    if pointcloud.rgb_sampling != "nearest":
+        raise ValueError("Only pointcloud.rgb_sampling='nearest' is currently supported")
+    if pointcloud.xyz_frame != "depth":
+        raise ValueError("Only pointcloud.xyz_frame='depth' is currently supported")
+    if (
+        pointcloud.use_rgb
+        and pointcloud.output_format == "xyzrgb"
+        and not camera.aligned_depth_to_color
+        and pointcloud.rgb_mapping == "project_depth_to_color"
+        and camera.depth_to_color_extrinsics is None
+    ):
+        raise ValueError(
+            "camera.depth_to_color_extrinsics is required for raw depth RGB mapping"
+        )
     crop = _parse_crop(raw.get("crop"))
     sampling = _parse_sampling(raw.get("sampling"))
     return PointCloudBuilderConfig(
@@ -141,6 +166,43 @@ def _parse_intrinsics(raw: dict[str, Any], name: str) -> CameraIntrinsics:
         fy=float(_require_value(raw, "fy")),
         cx=float(_require_value(raw, "cx")),
         cy=float(_require_value(raw, "cy")),
+    )
+
+
+def _parse_extrinsics(value: Any) -> CameraExtrinsics | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("camera.depth_to_color_extrinsics must be a mapping")
+
+    rotation_value = value.get("rotation_matrix_row_major", value.get("rotation"))
+    if rotation_value is None:
+        raise ValueError("camera.depth_to_color_extrinsics.rotation is required")
+    if isinstance(rotation_value, list | tuple) and len(rotation_value) == 9:
+        rotation_rows = [
+            rotation_value[0:3],
+            rotation_value[3:6],
+            rotation_value[6:9],
+        ]
+    else:
+        rotation_rows = rotation_value
+    if not isinstance(rotation_rows, list | tuple) or len(rotation_rows) != 3:
+        raise ValueError("camera.depth_to_color_extrinsics.rotation must be 3x3 or flat length 9")
+    rotation = []
+    for row in rotation_rows:
+        if not isinstance(row, list | tuple) or len(row) != 3:
+            raise ValueError("camera.depth_to_color_extrinsics.rotation rows must have length 3")
+        rotation.append(tuple(float(x) for x in row))
+
+    translation_value = value.get("translation", value.get("translation_m"))
+    if translation_value is None:
+        raise ValueError("camera.depth_to_color_extrinsics.translation is required")
+    if not isinstance(translation_value, list | tuple) or len(translation_value) != 3:
+        raise ValueError("camera.depth_to_color_extrinsics.translation must have length 3")
+    translation = tuple(float(x) for x in translation_value)
+    return CameraExtrinsics(
+        rotation=(rotation[0], rotation[1], rotation[2]),  # type: ignore[arg-type]
+        translation=translation,  # type: ignore[arg-type]
     )
 
 

@@ -4,6 +4,7 @@
 .agents/
 .vscode/
 .idea/
+.github/
 
 # Python bytecode and caches
 __pycache__/

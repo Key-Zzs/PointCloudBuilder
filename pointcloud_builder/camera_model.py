@@ -23,6 +23,14 @@ class CameraIntrinsics:
 
 
 @dataclass(frozen=True)
+class CameraExtrinsics:
+    """Rigid transform from one camera stream frame to another."""
+
+    rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    translation: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class CameraModel:
     """Camera model containing depth and color stream intrinsics."""
 
@@ -31,6 +39,7 @@ class CameraModel:
     aligned_depth_to_color: bool
     color_intrinsics: CameraIntrinsics
     depth_intrinsics: CameraIntrinsics
+    depth_to_color_extrinsics: CameraExtrinsics | None = None
 
     @classmethod
     def from_config(cls, config: Any) -> "CameraModel":
@@ -42,6 +51,7 @@ class CameraModel:
             aligned_depth_to_color=config.aligned_depth_to_color,
             color_intrinsics=config.color_intrinsics,
             depth_intrinsics=config.depth_intrinsics,
+            depth_to_color_extrinsics=config.depth_to_color_extrinsics,
         )
 
     @property
