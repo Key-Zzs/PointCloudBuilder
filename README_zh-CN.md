@@ -139,14 +139,14 @@ sidecar 数据形态一致。
 环境里运行，例如 Flexiv 工作站上的 `dual_arm_teleop` 环境：
 
 ```bash
-cd /home/deepcybo/workspace/3D-Diffusion-Policy/PointCloudBuilder
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python -m pip install -e ".[viz]"
+cd PointCloudBuilder
+conda run -n dual_arm_teleop python -m pip install -e ".[viz]"
 ```
 
 先做相机检测：
 
 ```bash
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python \
+conda run -n dual_arm_teleop python \
   tools/camera/detect_realsense.py
 ```
 
@@ -154,7 +154,7 @@ cd /home/deepcybo/workspace/3D-Diffusion-Policy/PointCloudBuilder
 RGB-D：
 
 ```bash
-/home/deepcybo/miniconda3/envs/dual_arm_teleop/bin/python \
+conda run -n dual_arm_teleop python \
   tools/camera/capture_d435i_aligned_rgbd.py \
   --serial 344522070241 \
   --width 424 \
