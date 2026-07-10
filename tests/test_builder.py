@@ -49,6 +49,22 @@ def test_recorded_and_live_outputs_have_same_shape() -> None:
     assert recorded_meta["num_sampled_points"] == live_meta["num_sampled_points"]
 
 
+def test_live_with_stages_reuses_sampled_output() -> None:
+    builder = PointCloudBuilder.from_yaml("configs/example_head_depth_raw.yaml")
+    frame = {
+        "depth": torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32),
+    }
+
+    live, meta, stages = builder.from_live_frame_with_stages(frame)
+
+    assert stages["sampled"] is live
+    assert set(stages) == {"raw", "cropped", "sampled"}
+    assert stages["raw"].shape[0] == meta["num_raw_points"]
+    assert stages["cropped"].shape[0] == meta["num_cropped_points"]
+    assert stages["sampled"].shape[0] == meta["num_sampled_points"]
+    assert meta["mode"] == "live"
+
+
 def test_cuda_output_does_not_crash_when_available() -> None:
     if not torch.cuda.is_available():
         return

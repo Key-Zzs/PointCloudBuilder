@@ -49,6 +49,14 @@ class PointCloudBuilder:
         pc, meta, _ = self._build_from_frame(frame, mode="live")
         return pc, meta
 
+    def from_live_frame_with_stages(
+        self,
+        frame: RGBDFrame | dict[str, Any],
+    ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
+        """Build one live frame and expose the same-pass intermediate tensors."""
+
+        return self._build_from_frame(frame, mode="live")
+
     def build_stages(self, frame: RGBDFrame | dict[str, Any]) -> tuple[dict[str, Tensor], Meta]:
         """Return raw, cropped, and sampled stage tensors for offline inspection."""
 
