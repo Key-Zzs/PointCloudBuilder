@@ -63,3 +63,18 @@ configs/captures/**/*.jpeg
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# FFS reproduction artifacts and local TensorRT build products
+ffs_reproduction/artifacts/*
+!ffs_reproduction/artifacts/.gitkeep
+ffs_reproduction/build/*
+ffs_reproduction/outputs/*
+ffs_reproduction/tensorrt_sdk/
+*.engine
+*.plan
+*.onnx
+*.pth
+*.so
+*.dll
+*.dylib
+*.trt

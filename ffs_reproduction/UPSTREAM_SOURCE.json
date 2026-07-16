@@ -1,0 +1,27 @@
+{
+  "project": "Fast-FoundationStereo",
+  "commit": "a290ba04c1b3ad1ec41a33974a157b2917b624d4",
+  "license_file": {
+    "source": "LICENSE.txt",
+    "copied_to": "ffs_reproduction/LICENSE.txt",
+    "sha256": "045b564ebafefaa863beec07c5acdcfa8d99cefbbd060c22865bc4613318ddd6",
+    "use_limitation": "non-commercial research only"
+  },
+  "copied_files": [
+    {"source": "Utils.py", "copied_to": "vendor/Utils.py", "sha256": "c721680c6092943cb12e7735d934b967f26477dcf346e73e777e3d0c8b8ab6ae"},
+    {"source": "core/__init__.py", "copied_to": "vendor/core/__init__.py", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"source": "core/distill_block.py", "copied_to": "vendor/core/distill_block.py", "sha256": "a43ae688f82b631455fdca217a8da0dc8ef17ca9de339252a73529cbde2fccb5"},
+    {"source": "core/extractor.py", "copied_to": "vendor/core/extractor.py", "sha256": "36616e7bf82e967d46ba7c0acfc5489f571dbbc908fb78a5a32ada22bc78971d"},
+    {"source": "core/foundation_stereo.py", "copied_to": "vendor/core/foundation_stereo.py", "sha256": "babfa6ef419ff0406c92227325902d7172bb6cdcccc66f265cfb53e53618f4e4"},
+    {"source": "core/geometry.py", "copied_to": "vendor/core/geometry.py", "sha256": "78a8f57ac3bcd43c1664e1f7e08526fe18e6d0fb36318ad8d856f3fe3a256b62"},
+    {"source": "core/submodule.py", "copied_to": "vendor/core/submodule.py", "sha256": "b871dd3d13d6c634633bdd84352a751f88b04138b57db879b7f9a6450501b7bf"},
+    {"source": "core/update.py", "copied_to": "vendor/core/update.py", "sha256": "d68f2e81fe8b842f64850b6e47dc560f05a2ef286aa91171d2898ebc9478b107"},
+    {"source": "core/utils/__init__.py", "copied_to": "vendor/core/utils/__init__.py", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"source": "core/utils/frame_utils.py", "copied_to": "vendor/core/utils/frame_utils.py", "sha256": "479ff37bb28310b9344f31afb37125784ef987cdf99b2a8aaebbc50c846eb97d"},
+    {"source": "core/utils/utils.py", "copied_to": "vendor/core/utils/utils.py", "sha256": "c06de2df763370280470cec2f634ac4c29ed683367c327b459c40033661d50db"},
+    {"source": "cpp/include/ffs_gwc_plugin.hpp", "copied_to": "cpp/include/ffs_gwc_plugin.hpp", "sha256": "a65835c2bb8e4ea86c3bbd686bb5e73af2e1a9ba3fd5dacc6f886f104967fc90"},
+    {"source": "cpp/src/gwc_volume_plugin.cpp", "copied_to": "cpp/src/gwc_volume_plugin.cpp", "sha256": "041155969493e27b3a98483c6e2f4372508300a2b76f6a507c25dcbb40306e77"},
+    {"source": "cpp/src/depth_kernels.cu", "copied_to": "cpp/src/depth_kernels.cu", "sha256": "a993481554db04362b1ed3dfafabf188b8e44bf45d330b5dce936b83f0436f09"}
+  ],
+  "runtime_rule": "The copied vendor tree is the only FFS runtime source; execution does not import an external checkout."
+}

@@ -1,0 +1,7 @@
+# Version-controlled acceptance thresholds for comparisons against PyTorch.
+valid_overlap_ratio_min: 0.95
+disparity_mae_max_px: 1.0
+disparity_p95_max_px: 3.0
+depth_mae_max_m: 0.03
+depth_relative_error_max: 0.10
+finite_positive_ratio_min: 0.95

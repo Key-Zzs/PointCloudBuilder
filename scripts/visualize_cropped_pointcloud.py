@@ -4,35 +4,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any
-
-import numpy as np
-
 from pointcloud_builder import PointCloudBuilder
+from pointcloud_builder.frame_io import load_frame
 from pointcloud_builder.visualization import save_ascii_ply, show_open3d
-
-
-def load_frame(path: str | Path) -> dict[str, Any]:
-    """Load depth and optional RGB arrays from an NPZ or NPY file."""
-
-    input_path = Path(path)
-    if input_path.suffix == ".npz":
-        data = np.load(input_path)
-        frame: dict[str, Any] = {"depth": data["depth"]}
-        if "rgb" in data:
-            frame["rgb"] = data["rgb"]
-        elif "color" in data:
-            frame["rgb"] = data["color"]
-        return frame
-    if input_path.suffix == ".npy":
-        data = np.load(input_path, allow_pickle=True)
-        if data.shape == () and isinstance(data.item(), dict):
-            raw = data.item()
-            if "color" in raw and "rgb" not in raw:
-                raw["rgb"] = raw["color"]
-            return raw
-        return {"depth": data}
-    raise ValueError(f"Unsupported input file extension: {input_path.suffix}")
 
 
 def main() -> int:

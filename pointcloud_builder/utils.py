@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import torch
 
-from pointcloud_builder.types import RGBDFrame, Tensor
+from pointcloud_builder.types import RGBDFrame, StereoIRFrame, Tensor
 
 
 def resolve_device(device: str | torch.device | None = "auto") -> torch.device:
@@ -26,22 +27,25 @@ def as_tensor(data: Any, device: torch.device, dtype: torch.dtype) -> Tensor:
     return torch.as_tensor(data, dtype=dtype, device=device)
 
 
-def get_frame_value(frame: RGBDFrame | dict[str, Any], key: str) -> Any:
+def get_frame_value(frame: RGBDFrame | StereoIRFrame | dict[str, Any], key: str) -> Any:
     """Extract a frame field from a dataclass or mapping."""
 
-    if isinstance(frame, RGBDFrame):
+    if isinstance(frame, Mapping):
+        if key in frame:
+            return frame[key]
+        raise KeyError(f"Frame is missing required field: {key}")
+    try:
         return getattr(frame, key)
-    if key in frame:
-        return frame[key]
-    raise KeyError(f"Frame is missing required field: {key}")
+    except AttributeError as exc:
+        raise KeyError(f"Frame is missing required field: {key}") from exc
 
 
-def get_optional_frame_value(frame: RGBDFrame | dict[str, Any], key: str) -> Any | None:
+def get_optional_frame_value(frame: RGBDFrame | StereoIRFrame | dict[str, Any], key: str) -> Any | None:
     """Extract an optional frame field from a dataclass or mapping."""
 
-    if isinstance(frame, RGBDFrame):
-        return getattr(frame, key, None)
-    return frame.get(key)
+    if isinstance(frame, Mapping):
+        return frame.get(key)
+    return getattr(frame, key, None)
 
 
 def normalize_color(color: Tensor) -> Tensor:

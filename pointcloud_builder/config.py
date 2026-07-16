@@ -19,6 +19,13 @@ SamplingMode = Literal[
     "voxel_fps",
 ]
 PadMode = Literal["repeat", "zero"]
+DepthSourceMode = Literal["frame", "ffs_stereo"]
+FFSBackendName = Literal[
+    "pytorch",
+    "tensorrt_single",
+    "tensorrt_two_stage",
+    "tensorrt_plugin",
+]
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,51 @@ class SamplingConfig:
 
 
 @dataclass(frozen=True)
+class FFSConfig:
+    """Configuration shared by the four optional FFS backends."""
+
+    backend: FFSBackendName
+    left_key: str = "left_ir"
+    right_key: str = "right_ir"
+    checkpoint_path: str | None = None
+    model_config_path: str | None = None
+    engine_path: str | None = None
+    feature_engine_path: str | None = None
+    post_engine_path: str | None = None
+    plugin_library_path: str | None = None
+    manifest_path: str | None = None
+    calibration_path: str | None = None
+    calibration_camera: str = "head"
+    width: int = 640
+    height: int = 480
+    max_disp: int = 416
+    valid_iters: int = 8
+    precision: str = "fp16"
+    cv_group: int = 8
+    builder_optimization_level: int = 3
+    workspace_gib: float = 8.0
+    config_path: str | None = None
+    artifact_id: str | None = None
+    baseline_m: float = 0.0
+    rectification_mode: str = "auto"
+    remove_invisible: bool = True
+    min_disparity_px: float = 0.001
+    min_depth_m: float = 0.0
+    max_depth_m: float | None = None
+    right_intrinsics: CameraIntrinsics | None = None
+    left_distortion: tuple[float, ...] = ()
+    right_distortion: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class DepthSourceConfig:
+    """Select the original frame depth or the shared FFS stereo resolver."""
+
+    mode: DepthSourceMode = "frame"
+    ffs: FFSConfig | None = None
+
+
+@dataclass(frozen=True)
 class PointCloudBuilderConfig:
     """Top-level runtime configuration."""
 
@@ -88,17 +140,47 @@ class PointCloudBuilderConfig:
     sampling: SamplingConfig = field(
         default_factory=lambda: SamplingConfig(mode="voxel_random", num_points=1024)
     )
+    depth_source: DepthSourceConfig = field(default_factory=DepthSourceConfig)
 
 
 def load_config(path: str | Path) -> PointCloudBuilderConfig:
     """Load a builder configuration from YAML."""
 
-    config_path = Path(path)
+    config_path = Path(path).expanduser().resolve()
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     if not isinstance(raw, dict):
         raise ValueError(f"Config must be a YAML mapping: {config_path}")
+    _resolve_relative_ffs_paths(raw, config_path.parent)
     return parse_config(raw)
+
+
+def _resolve_relative_ffs_paths(raw: dict[str, Any], config_dir: Path) -> None:
+    """Resolve optional FFS assets relative to the YAML that declares them."""
+
+    depth_source = raw.get("depth_source")
+    if not isinstance(depth_source, dict):
+        return
+    ffs = depth_source.get("ffs")
+    if not isinstance(ffs, dict):
+        return
+    for key in (
+        "checkpoint_path",
+        "model_config_path",
+        "engine_path",
+        "feature_engine_path",
+        "post_engine_path",
+        "plugin_library_path",
+        "manifest_path",
+        "config_path",
+        "calibration_path",
+    ):
+        value = ffs.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            ffs[key] = str((config_dir / candidate).resolve())
 
 
 def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
@@ -121,6 +203,9 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         ),
         depth_to_color_extrinsics=_parse_extrinsics(camera_raw.get("depth_to_color_extrinsics")),
     )
+    depth_source = _parse_depth_source(raw.get("depth_source"))
+    if depth_source.mode == "ffs_stereo" and camera.aligned_depth_to_color:
+        raise ValueError("depth_source.mode=ffs_stereo requires camera.aligned_depth_to_color=false")
     default_rgb_mapping = "aligned" if camera.aligned_depth_to_color else "project_depth_to_color"
     pointcloud = PointCloudConfig(
         use_rgb=bool(pointcloud_raw.get("use_rgb", False)),
@@ -143,6 +228,7 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         and not camera.aligned_depth_to_color
         and pointcloud.rgb_mapping == "project_depth_to_color"
         and camera.depth_to_color_extrinsics is None
+        and depth_source.mode == "frame"
     ):
         raise ValueError(
             "camera.depth_to_color_extrinsics is required for raw depth RGB mapping"
@@ -155,7 +241,111 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         device=str(raw.get("device", "auto")),
         crop=crop,
         sampling=sampling,
+        depth_source=depth_source,
     )
+
+
+def _parse_depth_source(value: Any) -> DepthSourceConfig:
+    """Parse the optional depth source without importing any FFS dependency."""
+
+    if value is None:
+        return DepthSourceConfig()
+    if not isinstance(value, dict):
+        raise ValueError("depth_source must be a mapping")
+    mode = str(value.get("mode", "frame")).lower()
+    if mode == "frame":
+        return DepthSourceConfig(mode="frame")
+    if mode != "ffs_stereo":
+        raise ValueError("depth_source.mode must be 'frame' or 'ffs_stereo'")
+    ffs_raw = value.get("ffs")
+    if not isinstance(ffs_raw, dict):
+        raise ValueError("depth_source.ffs is required for mode=ffs_stereo")
+    backend = str(ffs_raw.get("backend", "")).lower()
+    valid_backends = {"pytorch", "tensorrt_single", "tensorrt_two_stage", "tensorrt_plugin"}
+    if backend not in valid_backends:
+        raise ValueError(f"depth_source.ffs.backend must be one of {sorted(valid_backends)}")
+    width = int(ffs_raw.get("width", 640))
+    height = int(ffs_raw.get("height", 480))
+    if (height, width) != (480, 640):
+        raise ValueError(
+            "Current FFS mode is fixed to input height=480,width=640; "
+            f"got height={height}, width={width}"
+        )
+    max_disp = int(ffs_raw.get("max_disp", 416))
+    valid_iters = int(ffs_raw.get("valid_iters", 8))
+    if max_disp <= 0 or max_disp % 4 != 0:
+        raise ValueError("depth_source.ffs.max_disp must be positive and divisible by 4")
+    if valid_iters <= 0:
+        raise ValueError("depth_source.ffs.valid_iters must be positive")
+    precision = str(ffs_raw.get("precision", "fp16")).lower()
+    if precision not in {"fp16", "fp32"}:
+        raise ValueError("depth_source.ffs.precision must be fp16 or fp32")
+    builder_optimization_level = int(ffs_raw.get("builder_optimization_level", 3))
+    if not 0 <= builder_optimization_level <= 5:
+        raise ValueError("depth_source.ffs.builder_optimization_level must be between 0 and 5")
+    workspace_gib = float(ffs_raw.get("workspace_gib", 8.0))
+    if workspace_gib <= 0.0:
+        raise ValueError("depth_source.ffs.workspace_gib must be positive")
+    rectification_mode = str(ffs_raw.get("rectification_mode", "auto")).lower()
+    if rectification_mode not in {"auto", "require_rectified", "opencv"}:
+        raise ValueError("depth_source.ffs.rectification_mode must be auto, require_rectified, or opencv")
+    max_depth = ffs_raw.get("max_depth_m")
+    max_depth_m = float(max_depth) if max_depth is not None else None
+    right_intrinsics_raw = ffs_raw.get("right_intrinsics")
+    right_intrinsics = (
+        _parse_intrinsics(_require_mapping(right_intrinsics_raw, "depth_source.ffs.right_intrinsics"), "depth_source.ffs.right_intrinsics")
+        if right_intrinsics_raw is not None
+        else None
+    )
+    ffs = FFSConfig(
+        backend=backend,  # type: ignore[arg-type]
+        left_key=str(ffs_raw.get("left_key", "left_ir")),
+        right_key=str(ffs_raw.get("right_key", "right_ir")),
+        checkpoint_path=_optional_string(ffs_raw.get("checkpoint_path")),
+        model_config_path=_optional_string(ffs_raw.get("model_config_path")),
+        engine_path=_optional_string(ffs_raw.get("engine_path")),
+        feature_engine_path=_optional_string(ffs_raw.get("feature_engine_path")),
+        post_engine_path=_optional_string(ffs_raw.get("post_engine_path")),
+        plugin_library_path=_optional_string(ffs_raw.get("plugin_library_path")),
+        manifest_path=_optional_string(ffs_raw.get("manifest_path")),
+        calibration_path=_optional_string(ffs_raw.get("calibration_path")),
+        calibration_camera=str(ffs_raw.get("calibration_camera", "head")),
+        width=width,
+        height=height,
+        max_disp=max_disp,
+        valid_iters=valid_iters,
+        precision=precision,
+        cv_group=int(ffs_raw.get("cv_group", 8)),
+        builder_optimization_level=builder_optimization_level,
+        workspace_gib=workspace_gib,
+        config_path=_optional_string(ffs_raw.get("config_path")),
+        artifact_id=_optional_string(ffs_raw.get("artifact_id")),
+        baseline_m=float(ffs_raw.get("baseline_m", 0.0)),
+        rectification_mode=rectification_mode,
+        remove_invisible=bool(ffs_raw.get("remove_invisible", True)),
+        min_disparity_px=float(ffs_raw.get("min_disparity_px", 0.001)),
+        min_depth_m=float(ffs_raw.get("min_depth_m", 0.0)),
+        max_depth_m=max_depth_m,
+        right_intrinsics=right_intrinsics,
+        left_distortion=tuple(float(x) for x in ffs_raw.get("left_distortion", ())),
+        right_distortion=tuple(float(x) for x in ffs_raw.get("right_distortion", ())),
+    )
+    if ffs.min_disparity_px <= 0.0:
+        raise ValueError("depth_source.ffs.min_disparity_px must be positive")
+    if ffs.cv_group <= 0:
+        raise ValueError("depth_source.ffs.cv_group must be positive")
+    if ffs.min_depth_m < 0.0:
+        raise ValueError("depth_source.ffs.min_depth_m must be non-negative")
+    if ffs.max_depth_m is not None and ffs.max_depth_m <= 0.0:
+        raise ValueError("depth_source.ffs.max_depth_m must be positive")
+    return DepthSourceConfig(mode="ffs_stereo", ffs=ffs)
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _parse_intrinsics(raw: dict[str, Any], name: str) -> CameraIntrinsics:

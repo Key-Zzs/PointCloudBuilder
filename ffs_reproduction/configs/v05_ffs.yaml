@@ -1,0 +1,70 @@
+device: cuda
+
+camera:
+  name: head
+  depth_scale: 0.001
+  aligned_depth_to_color: false
+  color_intrinsics:
+    width: 640
+    height: 480
+    fx: 606.177490234375
+    fy: 606.6356201171875
+    cx: 320.8212585449219
+    cy: 256.06561279296875
+  depth_intrinsics:
+    width: 640
+    height: 480
+    fx: 392.5011901855469
+    fy: 392.5011901855469
+    cx: 316.7951354980469
+    cy: 235.7994384765625
+  depth_to_color_extrinsics:
+    rotation_matrix_row_major:
+      - [0.9998224377632141, -0.018843574449419975, 0.0002598218561615795]
+      - [0.018843060359358788, 0.9998207092285156, 0.0018564234487712383]
+      - [-0.00029475693008862436, -0.0018511980306357145, 0.9999982714653015]
+    translation_m: [0.015109467320144176, -0.00043273851042613387, 0.0002704341313801706]
+
+pointcloud:
+  use_rgb: false
+  output_format: xyz
+  rgb_mapping: project_depth_to_color
+
+crop:
+  enabled: false
+  x: [-inf, inf]
+  y: [-inf, inf]
+  z: [0.0, inf]
+
+sampling:
+  enabled: true
+  mode: voxel_random
+  num_points: 1024
+  voxel_size: 0.005
+  seed: 42
+  deterministic: true
+  pad_mode: repeat
+
+depth_source:
+  mode: ffs_stereo
+  ffs:
+    backend: pytorch
+    artifact_id: fp16_o3
+    left_key: left_ir
+    right_key: right_ir
+    checkpoint_path: ../artifacts/model_best_bp2_serialize.pth
+    model_config_path: ../artifacts/cfg.yaml
+    calibration_path: null
+    calibration_camera: head
+    width: 640
+    height: 480
+    max_disp: 192
+    valid_iters: 8
+    precision: fp16
+    builder_optimization_level: 3
+    workspace_gib: 8.0
+    baseline_m: 0.05006292834877968
+    rectification_mode: auto
+    remove_invisible: true
+    min_disparity_px: 0.001
+    min_depth_m: 0.0
