@@ -18,8 +18,7 @@ The realtime builder path does not import Open3D, matplotlib, or GUI code. Visua
 ## Installation
 
 ```bash
-python -m pip install -e .
-python -m pip install pytest
+python -m pip install -e ".[dev]"
 ```
 
 Optional offline visualization dependency:

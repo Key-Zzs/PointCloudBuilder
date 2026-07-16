@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pyarrow.parquet as pq
 import torch
 import yaml
 
@@ -19,7 +18,6 @@ OUTER_REPO_ROOT = REPO_ROOT.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 sys.path.insert(0, str(OUTER_REPO_ROOT / "tools"))
 
-import lerobot_rgbd_source  # noqa: E402
 from pointcloud_builder import PointCloudBuilder  # noqa: E402
 from pointcloud_builder.config import parse_config  # noqa: E402
 from pointcloud_builder.ffs.calibration import load_realsense_calibration  # noqa: E402
@@ -200,6 +198,16 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--no-show", action="store_true")
     args = parser.parse_args()
+    import pyarrow.parquet as pq
+
+    try:
+        import lerobot_rgbd_source
+    except ImportError as exc:
+        raise RuntimeError(
+            "run_v05_ffs_frame.py requires tools/lerobot_rgbd_source.py "
+            "from the parent 3D-Diffusion-Policy checkout"
+        ) from exc
+
     root = args.dataset_root.expanduser().resolve()
     info = json.loads((root / "meta/info.json").read_text(encoding="utf-8"))
     data_paths = sorted((root / "data").glob("chunk-*/file-*.parquet"))
