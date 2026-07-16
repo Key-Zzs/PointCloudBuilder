@@ -274,181 +274,45 @@ python scripts/benchmark_full_pipeline.py --config configs/example_train_voxel_r
 
 ## Fast-FoundationStereo 深度源
 
-`depth_source.mode` 默认为 `frame`，因此旧 RGB-D YAML 和原有 builder 公共
-接口保持不变。只有在输入原始 480x640 IR1/IR2 时才设置为 `ffs_stereo`。
-FFS 层提供四个显式后端：
+FFS 是可选能力。默认 `depth_source.mode=frame`，原生 RGB-D 路径和 Builder
+公共 API 不变。`mode=ffs_stereo` 接收已矫正的 `480x640` IR1/IR2，生成米制
+深度后继续复用同一套反投影、crop 和 sampling 实现。
 
-| backend | 路径 | 输入归一化 |
-| --- | --- | --- |
-| `pytorch` | 复制到本仓库的 PyTorch 参考模型 | 模型内部 ImageNet |
-| `tensorrt_single` | 单个普通 ONNX/TRT engine | builder 外部执行 ImageNet |
-| `tensorrt_two_stage` | TRT feature + Triton GWC + TRT post | 模型内部 ImageNet |
-| `tensorrt_plugin` | 包含 `FFSGWCVolume` CUDA plugin 的 TRT 路径 | 模型内部 ImageNet |
+可选路线包括 `pytorch`、`tensorrt_single`、`tensorrt_two_stage` 和
+`tensorrt_plugin`，不存在静默后端或精度 fallback。复制的 FFS 代码继续受
+NVIDIA 非商业研究许可约束。
 
-四个后端之间没有静默 fallback。checkpoint、engine、plugin、manifest、输入
-形状、I/O 名称、精度或 artifact hash 缺失/不匹配时会在构造阶段直接失败。
-估计器输出全分辨率 disparity、米制 depth、valid mask、标定/模型 provenance
-和 timing；随后复用原有 deprojection、RGB 映射、crop 和固定点数 sampling
-流程。FFS 点云使用 IR1 内参；只有显式请求 RGB 投影时才使用 IR1-to-color
-外参。
-
-TensorRT 的精度是 artifact 的显式属性，同时记录
-`builder_optimization_level: 0..5` 和 `workspace_gib`。FP16 构建失败时会保存
-完整 traceback，绝不会静默改标为 FP32；只有明确启动独立诊断构建时，才使用
-例如 `fp32_o0` 的不同 artifact id。运行时会校验 Engine/config 的 shape、
-max_disp、valid_iters、归一化、精度、资源参数和 hash；配置缺失或候选有歧义会
-直接失败。
-
-`ffs_reproduction/` 保存固定 commit 的 FFS `core/` 复制品，并在
-`UPSTREAM_SOURCE.json` 中记录文件 hash。复制的文件继续受完整
-`ffs_reproduction/LICENSE.txt` 中的 NVIDIA license 约束，仅限非商业研究使用，
-不能重新标成 PointCloudBuilder 的 Apache 代码。
-
-### FFS 环境和 artifact
-
-所有 FFS 构建/运行都使用指定的 `dp3` Python：
+已验证的可选环境是现有 `dp3`：Python 3.10、PyTorch 2.11/CUDA 13、
+TensorRT 10.16.1.11：
 
 ```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python -m pip install -e .
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python -m pip install \
-  timm==1.0.28 onnx==1.18.0 onnxscript==0.5.6
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python -m pip install \
-  --extra-index-url https://pypi.nvidia.com/ --no-deps \
-  tensorrt_cu13_bindings==10.16.1.11 tensorrt_cu13_libs==10.16.1.11
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python -m pip install \
-  --extra-index-url https://pypi.nvidia.com/ --no-deps \
-  tensorrt-cu13==10.16.1.11
+cd ~/workspace/3D-Diffusion-Policy/PointCloudBuilder
+export PY=~/miniconda3/envs/dp3/bin/python
+
+PYTHONNOUSERSITE=1 "$PY" -m pip install -e '.[dev,viz]'
+PYTHONNOUSERSITE=1 "$PY" -m pip install \
+  timm==1.0.28 onnx==1.18.0 onnxscript==0.5.6 \
+  imageio opencv-python-headless pyarrow av
 ```
 
-准备 checkpoint/config、固定形状 ONNX 和 manifest：
+checkpoint、ONNX、Engine、plugin 动态库和构建输出均不会进入 Git。官方
+checkpoint 可以重新下载；ONNX、manifest、Engine 和 plugin 可以在 dp3 中
+重新生成。TensorRT Engine 必须在目标 TensorRT/GPU 组合上重新构建。
+
+恢复 checkpoint 后，PyTorch smoke 不需要 TensorRT 构建：
 
 ```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/prepare_ffs_artifacts.py --skip-tensorrt
-```
-
-默认直接读取仓库内
-`ffs_reproduction/artifacts/model_best_bp2_serialize.pth` 和 `cfg.yaml`，不访问
-Fast-FoundationStereo checkout。`--source-root` 只用于向空 artifact 目录进行一次性
-可信资产导入。
-artifact 和 build 目录按要求不会进入 Git；迁移到全新 clone 时，必须另行保留或
-恢复 checkpoint、ONNX/Engine、plugin 动态库和 manifest。
-
-已有的 ONNX/engine/manifest 派生产物不会被静默覆盖；只有明确重建时才使用
-`--force`。
-
-TensorRT C++ headers 准备好后，显式为 RTX 5080 的 SM120 构建 CUDA plugin：
-
-```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/build_ffs_plugin.py --tensorrt-root ffs_reproduction/tensorrt_sdk
-```
-
-随后使用 TensorRT Python API 构建四个部署所需 engine；脚本不会调用
-`trtexec`：
-
-```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/prepare_ffs_artifacts.py
-```
-
-ONNX exporter 明确固定为 PyTorch legacy exporter：`opset_version=17`、静态
-`480x640` shape，并显式传入 `dynamo=False`。普通 single 导出后会执行
-`onnx.checker.check_model`、I/O 契约检查，并由目标 TensorRT Python parser
-解析后才接受 Engine。将来若重新尝试 Dynamo，必须先完成同一套 ONNX/TRT/parity
-全回归，不能直接删除这个固定项。
-
-默认变体为 `fp16_o3`。如果 FP16 在目标 dp3/TRT 版本失败，显式生成独立的
-FP32/o0 诊断产物，不覆盖 FP16：
-
-```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/prepare_ffs_artifacts.py --precision fp32 \
-  --builder-optimization-level 0 --artifact-suffix fp32_o0 --force
-```
-
-### FFS YAML 契约
-
-```yaml
-device: cuda
-camera:
-  name: head
-  aligned_depth_to_color: false
-  color_intrinsics: {width: 640, height: 480, fx: 606.17749, fy: 606.63562, cx: 320.82126, cy: 256.06561}
-  depth_intrinsics: {width: 640, height: 480, fx: 392.50119, fy: 392.50119, cx: 316.79514, cy: 235.79944}
-pointcloud: {use_rgb: false, output_format: xyz}
-depth_source:
-  mode: ffs_stereo
-  ffs:
-    backend: pytorch
-    checkpoint_path: ffs_reproduction/artifacts/model_best_bp2_serialize.pth
-    model_config_path: ffs_reproduction/artifacts/cfg.yaml
-    calibration_path: ~/.cache/huggingface/lerobot/<dataset>/meta/realsense_calibration.json
-    calibration_camera: head
-    width: 640
-    height: 480
-    max_disp: 192
-    valid_iters: 8
-    precision: fp16
-    builder_optimization_level: 3
-    workspace_gib: 8.0
-    artifact_id: fp16_o3
-```
-
-运行 frame 必须提供原始 0..255 的 `left_ir` 和 `right_ir`，形状为
-`480x640`（也可为相同范围的灰度 tensor）。当前标定 gate 只接受 v05 的
-identity/no-op rectified 契约：两路 IR 内参相同、畸变为零、旋转为 identity、
-`IR1 -> IR2 = (-baseline, 0, 0)`。非 identity 标定会直接拒绝，不会在线隐式
-执行 rectification。原生 depth 只用于诊断 parity，不会作为 FFS builder 输入。
-
-在线调用仍然使用原有 builder API：
-
-```python
-from pointcloud_builder import PointCloudBuilder, StereoIRFrame
-
-builder = PointCloudBuilder.from_yaml("ffs_reproduction/configs/v05_ffs.yaml")
-frame = StereoIRFrame(left_ir=left_ir, right_ir=right_ir, timestamp=timestamp)
-point_cloud, metadata = builder.from_live_frame(frame)
-```
-
-### v05 单帧、可视化、parity 和 benchmark
-
-v05 helper 通过已有的父仓库 reader 读取权威 raw RGB-D sidecar；不会修改父仓库：
-
-```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/run_v05_ffs_frame.py \
+PYTHONNOUSERSITE=1 "$PY" scripts/run_v05_ffs_frame.py \
   --dataset-root ~/.cache/huggingface/lerobot/flexiv_dual_arm_3d/pick_place_20260713_v05 \
   --camera head --global-frame-index 0 --backend pytorch \
   --builder-config ffs_reproduction/configs/v05_ffs.yaml \
-  --output-dir ffs_reproduction/outputs/v05 --no-show
+  --artifact-id fp16_o3 --precision fp16 \
+  --builder-optimization-level 3 --workspace-gib 8 \
+  --output-dir ffs_reproduction/outputs/v05_verify --no-show
 ```
 
-`visualize_ffs_stereo_pipeline.py` 会输出 IR PNG、disparity/depth 的 PNG 和
-`npy`，以及 invalid disparity、remove-invisible、z-range 的 mask、
-raw/cropped/sampled PLY、metadata、timing 和 `stage_counts.json`。离线点云
-检查固定为 `denoise_cloud=false`、`zfar=100` 且不执行 zfar 过滤；报告会分别
-列出 FFS invalid disparity、`remove_invisible`、z-range、Builder crop 和
-sampling 前后点数。
-`compare_ffs_backends.py` 以 PyTorch 为参考做 parity，
-`benchmark_ffs_backends.py` 执行要求的 warmup 20 / runs 100 CUDA benchmark：
+权重下载、全新 clone 恢复、全部 TensorRT 构建、四路线 smoke/parity，以及同时
+显示 raw/cropped/sampled 的三个 Open3D 窗口命令，统一放在以下专门文档：
 
-```bash
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/compare_ffs_backends.py \
-  --dataset-root ~/.cache/huggingface/lerobot/flexiv_dual_arm_3d/pick_place_20260713_v05 \
-  --camera head --global-frame-index 0 \
-  --builder-config ffs_reproduction/configs/v05_ffs.yaml \
-  --artifact-id fp16_o3 \
-  --output ffs_reproduction/outputs/v05/parity_all.json
-
-PYTHONNOUSERSITE=1 ~/miniconda3/envs/dp3/bin/python \
-  scripts/benchmark_ffs_backends.py \
-  --config ffs_reproduction/configs/v05_ffs.yaml \
-  --input ~/data/stereo_frame.npz \
-  --output ffs_reproduction/outputs/v05/benchmark.json
-```
-
-`pytest -q` 覆盖 CPU/fake backend 契约测试；TensorRT engine、GPU smoke、parity
-和 benchmark 需要对应部署 artifact 就绪后再执行。构建产物和运行输出均被
-`.gitignore` 忽略。
+- [中文 FFS 复现、构建与可视化指南](ffs_reproduction/README_zh-CN.md)
+- [English FFS reproduction and deployment guide](ffs_reproduction/README.md)

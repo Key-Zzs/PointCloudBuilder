@@ -64,3 +64,15 @@ def test_legacy_visualizer_no_show_does_not_require_gui(tmp_path) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_triplet_viewer_help_does_not_import_gui() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/view_pointcloud_triplet.py", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "raw.ply" in result.stdout
+    assert "cropped.ply" in result.stdout
+    assert "sampled.ply" in result.stdout
