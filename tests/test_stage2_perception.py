@@ -116,6 +116,16 @@ def test_mask_lifting_modes_record_variable_instances_and_information_gap() -> N
     assert sparse.instances[1].source_dense_point_count == 1
     assert dense.instances[0].sampled_points.shape == (8, 3)
     assert dense.instances[0].sampled_unique_point_count == 4
+    assert dense.instances[0].source_stage_point_count == 4
+    assert dense.instances[0].object_selected_count == 4
+    assert dense.instances[0].object_selected_ratio == pytest.approx(1.0)
+    assert dense.instances[0].padded_count == 4
+    # Mode2 counts the policy-view sample *before* mask selection and makes
+    # repeat padding explicit instead of masquerading it as object support.
+    assert sparse.instances[0].source_stage_point_count == 1
+    assert sparse.instances[0].object_selected_count == 1
+    assert sparse.instances[0].object_selected_ratio == pytest.approx(1.0)
+    assert sparse.instances[0].padded_count == 7
 
 
 def test_missing_or_multiple_expected_instances_are_never_silently_selected() -> None:

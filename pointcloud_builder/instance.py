@@ -27,6 +27,13 @@ class InstanceCloud:
     source_dense_point_count: int
     sampled_unique_point_count: int
     selection_mask: Tensor
+    # These diagnostics deliberately describe the pre-padding evidence.  A
+    # fixed-size sampled cloud alone cannot distinguish a 256-point
+    # observation from six source points repeated to 256 rows.
+    source_stage_point_count: int
+    object_selected_count: int
+    object_selected_ratio: float
+    padded_count: int
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,18 @@ def _cleanup(points: Tensor, plane: SupportPlane | None) -> Tensor:
     return clean
 
 
+def _sampling_diagnostics(sampled: Tensor, sampling_meta: object) -> tuple[int, int]:
+    """Return (unique, padded) counts without inferring support from padding."""
+
+    unique = int(torch.unique(sampled[:, :3], dim=0).shape[0]) if len(sampled) else 0
+    candidate_count = int(getattr(sampling_meta, "get", lambda _key, default=0: default)("candidate_count", 0))
+    # ``candidate_count`` is after an optional voxel reduction, which is the
+    # actual set consumed by the sampler.  It is therefore the only count from
+    # which repeat/zero padding can be stated exactly.
+    padded = max(0, int(len(sampled)) - min(int(len(sampled)), candidate_count))
+    return unique, padded
+
+
 def build_instance_dense(
     *,
     raw_dense_points: Tensor,
@@ -76,8 +95,10 @@ def build_instance_dense(
         binary = torch.from_numpy(np.asarray(item.binary_mask, dtype=bool)).to(raw_dense_points.device)
         visible, selected = lift_binary_mask(raw_dense_points, projection, binary)
         clean = _cleanup(visible, support_plane)
-        sampled, _ = sample_point_cloud(clean, sampling_config)  # type: ignore[arg-type]
-        unique = int(torch.unique(sampled[:, :3], dim=0).shape[0]) if len(sampled) else 0
+        sampled, sampling_meta = sample_point_cloud(clean, sampling_config)  # type: ignore[arg-type]
+        unique, padded = _sampling_diagnostics(sampled, sampling_meta)
+        selected_count = int(len(visible))
+        source_count = int(len(raw_dense_points))
         instances.append(InstanceCloud(
             mask=item,
             points_before_cleanup=visible,
@@ -86,6 +107,10 @@ def build_instance_dense(
             source_dense_point_count=int(len(clean)),
             sampled_unique_point_count=unique,
             selection_mask=selected,
+            source_stage_point_count=source_count,
+            object_selected_count=selected_count,
+            object_selected_ratio=float(selected_count / source_count) if source_count else 0.0,
+            padded_count=padded,
         ))
     return InstanceFrameResult("instance_dense", tuple(instances), violations)
 
@@ -105,15 +130,21 @@ def build_instance_sparse(
     for item in selected_masks:
         binary = torch.from_numpy(np.asarray(item.binary_mask, dtype=bool)).to(workspace_sampled_points.device)
         selected_points, selected = lift_binary_mask(workspace_sampled_points, projection, binary)
-        sampled, _ = sample_point_cloud(selected_points, sampling_config)  # type: ignore[arg-type]
-        unique = int(torch.unique(sampled[:, :3], dim=0).shape[0]) if len(sampled) else 0
+        sampled, sampling_meta = sample_point_cloud(selected_points, sampling_config)  # type: ignore[arg-type]
+        unique, padded = _sampling_diagnostics(sampled, sampling_meta)
+        selected_count = int(len(selected_points))
+        source_count = int(len(workspace_sampled_points))
         instances.append(InstanceCloud(
             mask=item,
             points_before_cleanup=selected_points,
             clean_visible_points=selected_points,
             sampled_points=sampled,
-            source_dense_point_count=int(len(selected_points)),
+            source_dense_point_count=selected_count,
             sampled_unique_point_count=unique,
             selection_mask=selected,
+            source_stage_point_count=source_count,
+            object_selected_count=selected_count,
+            object_selected_ratio=float(selected_count / source_count) if source_count else 0.0,
+            padded_count=padded,
         ))
     return InstanceFrameResult("instance_sparse", tuple(instances), violations)
