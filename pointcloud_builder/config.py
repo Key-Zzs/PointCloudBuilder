@@ -9,6 +9,7 @@ from typing import Any, Literal
 import yaml
 
 from pointcloud_builder.camera_model import CameraExtrinsics, CameraIntrinsics
+from pointcloud_builder.projection import ColorViewVisibilityFilter
 
 SamplingMode = Literal[
     "fps",
@@ -209,6 +210,7 @@ class PointCloudBuilderConfig:
     support_plane: SupportPlaneConfig = field(default_factory=SupportPlaneConfig)
     segmentation: SegmentationConfig = field(default_factory=SegmentationConfig)
     instance_sampling: InstanceSamplingConfig = field(default_factory=InstanceSamplingConfig)
+    visibility_filter: ColorViewVisibilityFilter = field(default_factory=ColorViewVisibilityFilter)
 
 
 def load_config(path: str | Path) -> PointCloudBuilderConfig:
@@ -307,6 +309,7 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
     support_plane = _parse_support_plane(raw.get("support_plane"))
     segmentation = _parse_segmentation(raw.get("segmentation"))
     instance_sampling = _parse_instance_sampling(raw.get("instance_sampling"))
+    visibility_filter = _parse_visibility_filter(raw.get("visibility_filter"))
     if pipeline.profile == "legacy" and support_plane.enabled:
         raise ValueError("support_plane.enabled requires a non-legacy pipeline.profile")
     if pipeline.profile == "table_filtered" and not support_plane.enabled:
@@ -322,6 +325,7 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         support_plane=support_plane,
         segmentation=segmentation,
         instance_sampling=instance_sampling,
+        visibility_filter=visibility_filter,
     )
 
 
@@ -589,6 +593,22 @@ def _parse_instance_sampling(value: Any) -> InstanceSamplingConfig:
         voxel_size=sampling.voxel_size,
         seed=sampling.seed,
         deterministic=sampling.deterministic,
+    )
+
+
+def _parse_visibility_filter(value: Any) -> ColorViewVisibilityFilter:
+    """Parse the Stage-2-only RGB-view visibility contract."""
+
+    if value is None:
+        return ColorViewVisibilityFilter()
+    if isinstance(value, bool):
+        return ColorViewVisibilityFilter(enabled=value)
+    if not isinstance(value, dict):
+        raise ValueError("visibility_filter must be a boolean or mapping when provided")
+    epsilon_value = value.get("epsilon_z", value.get("epsilon_z_m", 0.005))
+    return ColorViewVisibilityFilter(
+        enabled=bool(value.get("enabled", True)),
+        epsilon_z=float(epsilon_value),
     )
 
 

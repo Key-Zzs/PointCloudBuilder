@@ -74,6 +74,13 @@ instance_sampling:
   deterministic: true
   pad_mode: repeat
 
+# Applied only while lifting SAM masks into instance geometry.  This is a
+# color-camera-view z-buffer tolerance in metres; legacy point-cloud output is
+# unchanged.
+visibility_filter:
+  enabled: true
+  epsilon_z: 0.005
+
 depth_source:
   mode: ffs_stereo
   ffs:

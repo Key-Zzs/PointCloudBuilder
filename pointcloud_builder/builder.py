@@ -222,6 +222,7 @@ class PointCloudBuilder:
             sampling_config=self.config.instance_sampling.as_sampling_config(),
             support_plane=self._required_support_plane(),
             expected_instances=expected_instances,
+            visibility_filter=self.config.visibility_filter,
         ), meta
 
     def build_instance_sparse(
@@ -241,6 +242,7 @@ class PointCloudBuilder:
             masks=masks,
             sampling_config=self.config.instance_sampling.as_sampling_config(),
             expected_instances=expected_instances,
+            visibility_filter=self.config.visibility_filter,
         ), meta
 
     def _required_support_plane(self) -> SupportPlane | None:

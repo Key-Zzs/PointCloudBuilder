@@ -9,7 +9,7 @@ from typing import Iterable
 import numpy as np
 import torch
 
-from pointcloud_builder.projection import ProjectionMap, lift_binary_mask
+from pointcloud_builder.projection import ColorViewVisibilityFilter, ProjectionMap, lift_binary_mask
 from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.segmentation.types import InstanceMask
 from pointcloud_builder.support_plane import SupportPlane, filter_support_plane
@@ -27,6 +27,9 @@ class InstanceCloud:
     source_dense_point_count: int
     sampled_unique_point_count: int
     selection_mask: Tensor
+    visibility_mask: Tensor
+    projected_candidate_count: int
+    visibility_rejected_count: int
     # These diagnostics deliberately describe the pre-padding evidence.  A
     # fixed-size sampled cloud alone cannot distinguish a 256-point
     # observation from six source points repeated to 256 rows.
@@ -86,14 +89,21 @@ def build_instance_dense(
     sampling_config: object,
     support_plane: SupportPlane | None,
     expected_instances: dict[str, int] | None = None,
+    visibility_filter: ColorViewVisibilityFilter = ColorViewVisibilityFilter(),
 ) -> InstanceFrameResult:
     """Lift masks from raw dense metric geometry, then clean and sample."""
 
     selected_masks, violations = _validated_masks(masks, expected_instances)
+    visibility = visibility_filter.visible_mask(projection)
     instances: list[InstanceCloud] = []
     for item in selected_masks:
         binary = torch.from_numpy(np.asarray(item.binary_mask, dtype=bool)).to(raw_dense_points.device)
-        visible, selected = lift_binary_mask(raw_dense_points, projection, binary)
+        visible, selected = lift_binary_mask(
+            raw_dense_points,
+            projection,
+            binary,
+            visibility_filter=visibility_filter,
+        )
         clean = _cleanup(visible, support_plane)
         sampled, sampling_meta = sample_point_cloud(clean, sampling_config)  # type: ignore[arg-type]
         unique, padded = _sampling_diagnostics(sampled, sampling_meta)
@@ -107,6 +117,9 @@ def build_instance_dense(
             source_dense_point_count=int(len(clean)),
             sampled_unique_point_count=unique,
             selection_mask=selected,
+            visibility_mask=visibility,
+            projected_candidate_count=int(projection.valid.sum().item()),
+            visibility_rejected_count=int((projection.valid & ~visibility).sum().item()),
             source_stage_point_count=source_count,
             object_selected_count=selected_count,
             object_selected_ratio=float(selected_count / source_count) if source_count else 0.0,
@@ -122,14 +135,21 @@ def build_instance_sparse(
     masks: Iterable[InstanceMask],
     sampling_config: object,
     expected_instances: dict[str, int] | None = None,
+    visibility_filter: ColorViewVisibilityFilter = ColorViewVisibilityFilter(),
 ) -> InstanceFrameResult:
     """Select SAM-covered points only after ordinary workspace sampling."""
 
     selected_masks, violations = _validated_masks(masks, expected_instances)
+    visibility = visibility_filter.visible_mask(projection)
     instances: list[InstanceCloud] = []
     for item in selected_masks:
         binary = torch.from_numpy(np.asarray(item.binary_mask, dtype=bool)).to(workspace_sampled_points.device)
-        selected_points, selected = lift_binary_mask(workspace_sampled_points, projection, binary)
+        selected_points, selected = lift_binary_mask(
+            workspace_sampled_points,
+            projection,
+            binary,
+            visibility_filter=visibility_filter,
+        )
         sampled, sampling_meta = sample_point_cloud(selected_points, sampling_config)  # type: ignore[arg-type]
         unique, padded = _sampling_diagnostics(sampled, sampling_meta)
         selected_count = int(len(selected_points))
@@ -142,6 +162,9 @@ def build_instance_sparse(
             source_dense_point_count=selected_count,
             sampled_unique_point_count=unique,
             selection_mask=selected,
+            visibility_mask=visibility,
+            projected_candidate_count=int(projection.valid.sum().item()),
+            visibility_rejected_count=int((projection.valid & ~visibility).sum().item()),
             source_stage_point_count=source_count,
             object_selected_count=selected_count,
             object_selected_ratio=float(selected_count / source_count) if source_count else 0.0,
