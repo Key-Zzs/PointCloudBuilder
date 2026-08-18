@@ -12,7 +12,11 @@ from pointcloud_builder.camera_model import CameraModel
 from pointcloud_builder.config import PointCloudBuilderConfig, load_config
 from pointcloud_builder.crop import crop_point_cloud
 from pointcloud_builder.deprojection import deproject_depth
+from pointcloud_builder.instance import InstanceFrameResult, build_instance_dense, build_instance_sparse
+from pointcloud_builder.projection import ProjectionMap, project_points_to_color_image
 from pointcloud_builder.sampling import sample_point_cloud
+from pointcloud_builder.segmentation.types import InstanceMask
+from pointcloud_builder.support_plane import SupportPlane, filter_support_plane, load_support_plane
 from pointcloud_builder.ffs.types import ResolvedDepth
 from pointcloud_builder.types import Meta, RGBDFrame, StereoIRFrame, Tensor
 from pointcloud_builder.utils import (
@@ -78,6 +82,11 @@ class PointCloudBuilder:
         self.device = resolve_device(config.device)
         self.camera = CameraModel.from_config(config.camera)
         self.depth_estimator = depth_estimator
+        self._support_plane: SupportPlane | None = None
+        if config.support_plane.enabled and config.support_plane.cache_path:
+            self._support_plane = load_support_plane(config.support_plane.cache_path)
+        if config.support_plane.enabled and config.support_plane.model_source == "precomputed" and self._support_plane is None:
+            raise ValueError("support_plane.model_source='precomputed' requires a readable cache_path")
         if config.depth_source.mode == "ffs_stereo":
             if config.depth_source.ffs is None:
                 raise ValueError("depth_source.ffs is required for mode=ffs_stereo")
@@ -146,6 +155,79 @@ class PointCloudBuilder:
             **stages,
         }, meta
 
+    @property
+    def support_plane(self) -> SupportPlane | None:
+        """Episode plane currently cached by the caller; never auto-refit per frame."""
+
+        return self._support_plane
+
+    def set_support_plane(self, plane: SupportPlane) -> None:
+        """Install a precomputed/episode-consensus plane for subsequent frames."""
+
+        self._support_plane = plane
+
+    def project_points_to_color_image(self, points: Tensor, *, source_frame: str = "depth") -> ProjectionMap:
+        """Expose 3D-to-RGB correspondence even for XYZ-only output profiles."""
+
+        extrinsics = None if self.camera.aligned_depth_to_color else self.camera.depth_to_color_extrinsics
+        if not self.camera.aligned_depth_to_color and extrinsics is None:
+            raise ValueError("camera.depth_to_color_extrinsics is required for raw-depth RGB projection")
+        return project_points_to_color_image(
+            points,
+            extrinsics=extrinsics,
+            intrinsics=self.camera.color_intrinsics,
+            source_frame=source_frame,
+        )
+
+    def build_instance_dense(
+        self,
+        frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+        masks: list[InstanceMask],
+        *,
+        expected_instances: dict[str, int] | None = None,
+    ) -> tuple[InstanceFrameResult, Meta]:
+        """Stage-2 primary: raw dense points -> RGB masks -> visible instances."""
+
+        stages, meta = self.build_perception_stages(frame)
+        raw = stages["raw"]
+        return build_instance_dense(
+            raw_dense_points=raw,
+            projection=self.project_points_to_color_image(raw, source_frame="raw_dense"),
+            masks=masks,
+            sampling_config=self.config.instance_sampling.as_sampling_config(),
+            support_plane=self._required_support_plane(),
+            expected_instances=expected_instances,
+        ), meta
+
+    def build_instance_sparse(
+        self,
+        frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+        masks: list[InstanceMask],
+        *,
+        expected_instances: dict[str, int] | None = None,
+    ) -> tuple[InstanceFrameResult, Meta]:
+        """Diagnostic mode: workspace sampling occurs before mask selection."""
+
+        stages, meta = self.build_perception_stages(frame)
+        sampled = stages["sampled"]
+        return build_instance_sparse(
+            workspace_sampled_points=sampled,
+            projection=self.project_points_to_color_image(sampled, source_frame="workspace_sampled"),
+            masks=masks,
+            sampling_config=self.config.instance_sampling.as_sampling_config(),
+            expected_instances=expected_instances,
+        ), meta
+
+    def _required_support_plane(self) -> SupportPlane | None:
+        if not self.config.support_plane.enabled:
+            return None
+        if self._support_plane is None:
+            raise RuntimeError(
+                "support-plane filtering is enabled but no episode/precomputed model is installed; "
+                "estimate it outside the frame loop and call set_support_plane()"
+            )
+        return self._support_plane
+
     def _build_from_frame(
         self,
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
@@ -176,11 +258,21 @@ class PointCloudBuilder:
         cropped_point_cloud, _ = crop_point_cloud(raw_point_cloud, self.config.crop)
         if stage_timer is not None:
             stage_timer.mark("crop")
-        sampled_point_cloud, sampling_meta = sample_point_cloud(cropped_point_cloud, self.config.sampling)
+        support_filtered_point_cloud = cropped_point_cloud
+        support_keep_mask: Tensor | None = None
+        if self.config.support_plane.enabled:
+            support_filtered_point_cloud, support_keep_mask = filter_support_plane(
+                cropped_point_cloud,
+                self._required_support_plane(),
+                distance_threshold_m=self.config.support_plane.distance_threshold_m,
+            )
+        sampled_point_cloud, sampling_meta = sample_point_cloud(support_filtered_point_cloud, self.config.sampling)
         if stage_timer is not None:
             stage_timer.mark("sampling")
         stage_timing = stage_timer.finish() if stage_timer is not None else None
-        output_stage = "sampled" if self.config.sampling.enabled else ("cropped" if self.config.crop.enabled else "raw")
+        output_stage = "sampled" if self.config.sampling.enabled else (
+            "support_filtered" if self.config.support_plane.enabled else ("cropped" if self.config.crop.enabled else "raw")
+        )
         meta: Meta = {
             "stage": output_stage,
             "mode": mode,
@@ -223,11 +315,29 @@ class PointCloudBuilder:
             meta["ffs"].setdefault("timing_ms", {}).update(
                 stage_timing or {}
             )
-        return sampled_point_cloud, meta, {
+        if self.config.support_plane.enabled:
+            plane = self._required_support_plane()
+            meta["support_plane"] = {
+                "enabled": True,
+                "model_source": self.config.support_plane.model_source,
+                "normal": list(plane.normal),
+                "offset": plane.offset,
+                "distance_threshold_m": self.config.support_plane.distance_threshold_m,
+                "source_frame_indices": list(plane.source_frame_indices),
+                "input_count": int(cropped_point_cloud.shape[0]),
+                "remaining_count": int(support_filtered_point_cloud.shape[0]),
+                "removed_count": int((~support_keep_mask).sum().item()) if support_keep_mask is not None else 0,
+            }
+        stages = {
             "raw": raw_point_cloud,
             "cropped": cropped_point_cloud,
             "sampled": sampled_point_cloud,
         }
+        # Preserve the legacy build_stages key set exactly unless the new
+        # support-plane feature was explicitly enabled in the YAML.
+        if self.config.support_plane.enabled:
+            stages["support_filtered"] = support_filtered_point_cloud
+        return sampled_point_cloud, meta, stages
 
     def _rgb_for_raw_points(
         self,
@@ -280,28 +390,18 @@ class PointCloudBuilder:
     ) -> tuple[Tensor, Meta]:
         if extrinsics is None:
             raise ValueError("camera.depth_to_color_extrinsics is required for RGB mapping")
-        rotation = torch.tensor(extrinsics.rotation, dtype=points_depth.dtype, device=points_depth.device)
-        translation = torch.tensor(extrinsics.translation, dtype=points_depth.dtype, device=points_depth.device)
-        points_color = points_depth @ rotation.T + translation
-        z = points_color[:, 2]
-        finite_depth = torch.isfinite(points_color).all(dim=-1) & (z > 0.0)
-
-        intrinsics = self.camera.color_intrinsics
-        u = points_color[:, 0] * intrinsics.fx / z + intrinsics.cx
-        v = points_color[:, 1] * intrinsics.fy / z + intrinsics.cy
-        u_nearest = torch.round(u).to(dtype=torch.long)
-        v_nearest = torch.round(v).to(dtype=torch.long)
-        in_bounds = (
-            finite_depth
-            & (u_nearest >= 0)
-            & (u_nearest < intrinsics.width)
-            & (v_nearest >= 0)
-            & (v_nearest < intrinsics.height)
+        projection = project_points_to_color_image(
+            points_depth,
+            extrinsics=extrinsics,
+            intrinsics=self.camera.color_intrinsics,
+            source_frame="depth",
         )
+        in_bounds = projection.valid
+        uv = projection.uv
 
         colors = torch.zeros((points_depth.shape[0], 3), dtype=rgb.dtype, device=rgb.device)
         if bool(in_bounds.any()):
-            colors[in_bounds] = rgb[v_nearest[in_bounds], u_nearest[in_bounds], :3]
+            colors[in_bounds] = rgb[uv[in_bounds, 1], uv[in_bounds, 0], :3]
         return colors, {
             "enabled": True,
             "mapping": "project_depth_to_color",

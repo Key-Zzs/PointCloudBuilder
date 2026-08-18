@@ -20,6 +20,8 @@ SamplingMode = Literal[
 ]
 PadMode = Literal["repeat", "zero"]
 DepthSourceMode = Literal["frame", "ffs_stereo"]
+PipelineProfile = Literal["legacy", "table_filtered", "instance_dense", "instance_sparse"]
+SupportPlaneModelSource = Literal["precomputed", "estimate_once", "estimate_episode"]
 FFSBackendName = Literal[
     "pytorch",
     "tensorrt_single",
@@ -74,6 +76,55 @@ class SamplingConfig:
     seed: int | None = None
     deterministic: bool = False
     pad_mode: PadMode = "repeat"
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """High-level profile selector.
+
+    The profile is intentionally only a convenience label.  The orthogonal
+    crop, support-plane, segmentation, and sampling settings remain the
+    authoritative configuration so deployments do not need numeric modes.
+    """
+
+    profile: PipelineProfile = "legacy"
+
+
+@dataclass(frozen=True)
+class SupportPlaneConfig:
+    """Optional support-plane removal independent from XYZ workspace crop."""
+
+    enabled: bool = False
+    model_source: SupportPlaneModelSource = "estimate_episode"
+    distance_threshold_m: float = 0.005
+    cache_path: str | None = None
+    ransac_threshold_m: float = 0.008
+    ransac_iterations: int = 256
+    representative_frames: int = 9
+
+
+@dataclass(frozen=True)
+class InstanceSamplingConfig:
+    """Per-instance fixed-size output configuration for Stage 2 modes."""
+
+    enabled: bool = True
+    num_points: int = 256
+    mode: SamplingMode = "voxel_fps"
+    pad_mode: PadMode = "repeat"
+    voxel_size: float = 0.005
+    seed: int | None = 20260818
+    deterministic: bool = True
+
+    def as_sampling_config(self) -> SamplingConfig:
+        return SamplingConfig(
+            mode=self.mode,
+            num_points=self.num_points,
+            enabled=self.enabled,
+            voxel_size=self.voxel_size,
+            seed=self.seed,
+            deterministic=self.deterministic,
+            pad_mode=self.pad_mode,
+        )
 
 
 @dataclass(frozen=True)
@@ -141,6 +192,9 @@ class PointCloudBuilderConfig:
         default_factory=lambda: SamplingConfig(mode="voxel_random", num_points=1024)
     )
     depth_source: DepthSourceConfig = field(default_factory=DepthSourceConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    support_plane: SupportPlaneConfig = field(default_factory=SupportPlaneConfig)
+    instance_sampling: InstanceSamplingConfig = field(default_factory=InstanceSamplingConfig)
 
 
 def load_config(path: str | Path) -> PointCloudBuilderConfig:
@@ -235,6 +289,13 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         )
     crop = _parse_crop(raw.get("crop"))
     sampling = _parse_sampling(raw.get("sampling"))
+    pipeline = _parse_pipeline(raw.get("pipeline"))
+    support_plane = _parse_support_plane(raw.get("support_plane"))
+    instance_sampling = _parse_instance_sampling(raw.get("instance_sampling"))
+    if pipeline.profile == "legacy" and support_plane.enabled:
+        raise ValueError("support_plane.enabled requires a non-legacy pipeline.profile")
+    if pipeline.profile == "table_filtered" and not support_plane.enabled:
+        raise ValueError("pipeline.profile='table_filtered' requires support_plane.enabled=true")
     return PointCloudBuilderConfig(
         camera=camera,
         pointcloud=pointcloud,
@@ -242,6 +303,9 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         crop=crop,
         sampling=sampling,
         depth_source=depth_source,
+        pipeline=pipeline,
+        support_plane=support_plane,
+        instance_sampling=instance_sampling,
     )
 
 
@@ -443,6 +507,62 @@ def _parse_sampling(value: Any) -> SamplingConfig:
     if sampling.voxel_size <= 0.0:
         raise ValueError("sampling.voxel_size must be positive")
     return sampling
+
+
+def _parse_pipeline(value: Any) -> PipelineConfig:
+    if value is None:
+        return PipelineConfig()
+    if not isinstance(value, dict):
+        raise ValueError("pipeline must be a mapping when provided")
+    profile = str(value.get("profile", "legacy")).lower()
+    valid = {"legacy", "table_filtered", "instance_dense", "instance_sparse"}
+    if profile not in valid:
+        raise ValueError(f"pipeline.profile must be one of {sorted(valid)}")
+    return PipelineConfig(profile=profile)  # type: ignore[arg-type]
+
+
+def _parse_support_plane(value: Any) -> SupportPlaneConfig:
+    if value is None:
+        return SupportPlaneConfig()
+    if not isinstance(value, dict):
+        raise ValueError("support_plane must be a mapping when provided")
+    source = str(value.get("model_source", "estimate_episode")).lower()
+    valid = {"precomputed", "estimate_once", "estimate_episode"}
+    if source not in valid:
+        raise ValueError(f"support_plane.model_source must be one of {sorted(valid)}")
+    config = SupportPlaneConfig(
+        enabled=bool(value.get("enabled", False)),
+        model_source=source,  # type: ignore[arg-type]
+        distance_threshold_m=float(value.get("distance_threshold_m", 0.005)),
+        cache_path=_optional_string(value.get("cache_path")),
+        ransac_threshold_m=float(value.get("ransac_threshold_m", 0.008)),
+        ransac_iterations=int(value.get("ransac_iterations", 256)),
+        representative_frames=int(value.get("representative_frames", 9)),
+    )
+    if config.distance_threshold_m <= 0.0:
+        raise ValueError("support_plane.distance_threshold_m must be positive")
+    if config.ransac_threshold_m <= 0.0:
+        raise ValueError("support_plane.ransac_threshold_m must be positive")
+    if config.ransac_iterations <= 0 or config.representative_frames <= 0:
+        raise ValueError("support_plane iteration and representative-frame counts must be positive")
+    return config
+
+
+def _parse_instance_sampling(value: Any) -> InstanceSamplingConfig:
+    if value is None:
+        return InstanceSamplingConfig()
+    if not isinstance(value, dict):
+        raise ValueError("instance_sampling must be a mapping when provided")
+    sampling = _parse_sampling(value)
+    return InstanceSamplingConfig(
+        enabled=sampling.enabled,
+        num_points=sampling.num_points,
+        mode=sampling.mode,
+        pad_mode=sampling.pad_mode,
+        voxel_size=sampling.voxel_size,
+        seed=sampling.seed,
+        deterministic=sampling.deterministic,
+    )
 
 
 def _require_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

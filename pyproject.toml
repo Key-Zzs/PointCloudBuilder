@@ -30,6 +30,9 @@ dev = [
 viz = [
   "open3d>=0.18",
 ]
+stage2 = [
+  "zarr>=2.16,<3",
+]
 
 [tool.setuptools.packages.find]
 include = ["pointcloud_builder*"]

@@ -7,9 +7,12 @@ from pointcloud_builder.config import (
     CropConfig,
     DepthSourceConfig,
     FFSConfig,
+    InstanceSamplingConfig,
+    PipelineConfig,
     PointCloudConfig,
     PointCloudBuilderConfig,
     SamplingConfig,
+    SupportPlaneConfig,
     load_config,
 )
 from pointcloud_builder.types import Meta, RGBDFrame, StereoIRFrame
@@ -21,12 +24,15 @@ __all__ = [
     "CropConfig",
     "DepthSourceConfig",
     "FFSConfig",
+    "InstanceSamplingConfig",
     "Meta",
     "PointCloudBuilder",
+    "PipelineConfig",
     "PointCloudConfig",
     "PointCloudBuilderConfig",
     "RGBDFrame",
     "StereoIRFrame",
     "SamplingConfig",
+    "SupportPlaneConfig",
     "load_config",
 ]
