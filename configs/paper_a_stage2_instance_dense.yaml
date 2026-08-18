@@ -5,6 +5,11 @@ device: cuda
 pipeline:
   profile: instance_dense
 
+# Optional PCB execution boundary.  Paper A always materializes SAM output in
+# an isolated-environment sidecar; this does not import SAM in dp3/PCB.
+segmentation:
+  execution: sidecar
+
 camera:
   name: head
   depth_scale: 1.0

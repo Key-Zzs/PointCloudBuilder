@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -100,7 +101,13 @@ def _records_from_outputs(
     masks = _as_numpy(outputs.get("out_binary_masks", []))
     records: list[InstanceMask] = []
     for index, object_id in enumerate(ids.tolist()):
-        mask = np.asarray(masks[index] > 0.5, dtype=bool)
+        # The official video API may emit one mask per object as either HxW
+        # or 1xHxW.  Normalize only that documented singleton channel; any
+        # other layout is rejected rather than accidentally flattened.
+        raw_mask = _as_numpy(masks[index])
+        if raw_mask.ndim == 3 and raw_mask.shape[0] == 1:
+            raw_mask = raw_mask[0]
+        mask = np.asarray(raw_mask > 0.5, dtype=bool)
         if mask.shape != shape:
             raise ValueError(f"SAM3 mask shape {mask.shape} does not match source RGB shape {shape}")
         records.append(InstanceMask(
@@ -177,6 +184,7 @@ def _code_commit() -> str:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     from PIL import Image
     from sam3.model_builder import build_sam3_multiplex_video_predictor
+    import torch
 
     dataset_root = Path(args.lerobot_path).expanduser().resolve()
     output_root = Path(args.output).expanduser().resolve()
@@ -208,6 +216,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if manifest.get("provenance") != provenance.__dict__:
             raise ValueError("cannot reuse SAM sidecars: source/prompt/checkpoint/code provenance differs")
     predictor = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint))
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
     frame_iterator = _iter_rgb_frames(_video_paths(dataset_root))
     start = 0
     for episode, end_value in enumerate(ends.tolist()):
@@ -226,6 +237,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 next(frame_iterator)
             start = end
             continue
+        episode_start_time = time.perf_counter()
+        concept_timings: dict[str, dict[str, float | int]] = {}
         with tempfile.TemporaryDirectory(prefix=f"sam3_ep{episode:03d}_", dir=output_root) as temporary:
             frame_dir = Path(temporary)
             image_shape: tuple[int, int] | None = None
@@ -244,14 +257,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 expected_frame_indices=range(start, end),
             ) as writer:
                 for prompt in prompts.prompts:
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    concept_start_time = time.perf_counter()
+                    record_count = 0
                     for record in _run_concept_video(
                         predictor=predictor, frame_dir=frame_dir, global_start=start, episode_index=episode,
                         concept_id=prompt.concept_id, text=prompt.value, shape=image_shape,
                     ):
                         writer.add(record)
+                        record_count += 1
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    concept_seconds = time.perf_counter() - concept_start_time
+                    concept_timings[prompt.concept_id] = {
+                        "record_count": record_count,
+                        "wall_seconds": concept_seconds,
+                        "ms_per_source_frame": concept_seconds * 1000.0 / max(1, end - start),
+                    }
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary_target.replace(target)
-        manifest["episodes"][str(episode)] = {"path": str(target), "start": start, "end": end}
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            allocated_mib = float(torch.cuda.memory_allocated() / 1024**2)
+            peak_mib = float(torch.cuda.max_memory_allocated() / 1024**2)
+        else:
+            allocated_mib, peak_mib = 0.0, 0.0
+        episode_wall_seconds = time.perf_counter() - episode_start_time
+        manifest["episodes"][str(episode)] = {
+            "path": str(target), "start": start, "end": end,
+            "performance": {
+                "episode_wall_seconds": episode_wall_seconds,
+                "episode_ms_per_source_frame": episode_wall_seconds * 1000.0 / max(1, end - start),
+                "cuda_memory_allocated_mib": allocated_mib,
+                "cuda_peak_memory_allocated_mib": peak_mib,
+                "per_concept": concept_timings,
+            },
+        }
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         start = end
     if start != int(ends[-1]):

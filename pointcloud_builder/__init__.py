@@ -12,6 +12,7 @@ from pointcloud_builder.config import (
     PointCloudConfig,
     PointCloudBuilderConfig,
     SamplingConfig,
+    SegmentationConfig,
     SupportPlaneConfig,
     load_config,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "RGBDFrame",
     "StereoIRFrame",
     "SamplingConfig",
+    "SegmentationConfig",
     "SupportPlaneConfig",
     "load_config",
 ]

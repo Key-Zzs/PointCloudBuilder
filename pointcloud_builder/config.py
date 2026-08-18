@@ -22,6 +22,7 @@ PadMode = Literal["repeat", "zero"]
 DepthSourceMode = Literal["frame", "ffs_stereo"]
 PipelineProfile = Literal["legacy", "table_filtered", "instance_dense", "instance_sparse"]
 SupportPlaneModelSource = Literal["precomputed", "estimate_once", "estimate_episode"]
+SegmentationExecution = Literal["sidecar", "in_process"]
 FFSBackendName = Literal[
     "pytorch",
     "tensorrt_single",
@@ -101,6 +102,18 @@ class SupportPlaneConfig:
     ransac_threshold_m: float = 0.008
     ransac_iterations: int = 256
     representative_frames: int = 9
+
+
+@dataclass(frozen=True)
+class SegmentationConfig:
+    """Execution boundary for optional Stage-2 segmentation backends.
+
+    ``sidecar`` is the Paper-A default and keeps SAM in its dedicated
+    environment. ``in_process`` is a generic opt-in integration point only;
+    parsing this value never imports SAM or adds it as a PCB dependency.
+    """
+
+    execution: SegmentationExecution = "sidecar"
 
 
 @dataclass(frozen=True)
@@ -194,6 +207,7 @@ class PointCloudBuilderConfig:
     depth_source: DepthSourceConfig = field(default_factory=DepthSourceConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     support_plane: SupportPlaneConfig = field(default_factory=SupportPlaneConfig)
+    segmentation: SegmentationConfig = field(default_factory=SegmentationConfig)
     instance_sampling: InstanceSamplingConfig = field(default_factory=InstanceSamplingConfig)
 
 
@@ -291,6 +305,7 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
     sampling = _parse_sampling(raw.get("sampling"))
     pipeline = _parse_pipeline(raw.get("pipeline"))
     support_plane = _parse_support_plane(raw.get("support_plane"))
+    segmentation = _parse_segmentation(raw.get("segmentation"))
     instance_sampling = _parse_instance_sampling(raw.get("instance_sampling"))
     if pipeline.profile == "legacy" and support_plane.enabled:
         raise ValueError("support_plane.enabled requires a non-legacy pipeline.profile")
@@ -305,6 +320,7 @@ def parse_config(raw: dict[str, Any]) -> PointCloudBuilderConfig:
         depth_source=depth_source,
         pipeline=pipeline,
         support_plane=support_plane,
+        segmentation=segmentation,
         instance_sampling=instance_sampling,
     )
 
@@ -546,6 +562,17 @@ def _parse_support_plane(value: Any) -> SupportPlaneConfig:
     if config.ransac_iterations <= 0 or config.representative_frames <= 0:
         raise ValueError("support_plane iteration and representative-frame counts must be positive")
     return config
+
+
+def _parse_segmentation(value: Any) -> SegmentationConfig:
+    if value is None:
+        return SegmentationConfig()
+    if not isinstance(value, dict):
+        raise ValueError("segmentation must be a mapping when provided")
+    execution = str(value.get("execution", "sidecar")).lower()
+    if execution not in {"sidecar", "in_process"}:
+        raise ValueError("segmentation.execution must be 'sidecar' or 'in_process'")
+    return SegmentationConfig(execution=execution)  # type: ignore[arg-type]
 
 
 def _parse_instance_sampling(value: Any) -> InstanceSamplingConfig:

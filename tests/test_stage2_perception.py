@@ -179,3 +179,15 @@ def test_builder_requires_episode_plane_and_leaves_legacy_metadata_untouched() -
     _, stage2_meta = stage2.from_recorded_frame(_frame())
     assert "support_plane" not in legacy_meta
     assert stage2_meta["support_plane"]["enabled"] is True
+
+
+def test_segmentation_execution_is_optional_and_explicitly_typed() -> None:
+    sidecar = parse_config(_raw_config())
+    assert sidecar.segmentation.execution == "sidecar"
+    in_process_raw = _raw_config()
+    in_process_raw["segmentation"] = {"execution": "in_process"}
+    assert parse_config(in_process_raw).segmentation.execution == "in_process"
+    invalid_raw = _raw_config()
+    invalid_raw["segmentation"] = {"execution": "subprocess"}
+    with pytest.raises(ValueError, match="segmentation.execution"):
+        parse_config(invalid_raw)
