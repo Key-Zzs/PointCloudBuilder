@@ -261,6 +261,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     projection=dense_builder.project_points_to_color_image(dense_stages["raw"], source_frame="raw_dense"),
                     masks=masks[index], sampling_config=dense_builder.config.instance_sampling.as_sampling_config(),
                     support_plane=dense_builder.support_plane, expected_instances=expected,
+                    visibility_filter=dense_builder.config.visibility_filter,
                 )
                 timings["instance_dense_total_ms"].append((time.perf_counter() - dense_start) * 1000.0)
                 sparse_start = time.perf_counter()
@@ -269,6 +270,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     workspace_sampled_points=sparse_stages["sampled"],
                     projection=sparse_builder.project_points_to_color_image(sparse_stages["sampled"], source_frame="workspace_sampled"),
                     masks=masks[index], sampling_config=sparse_builder.config.instance_sampling.as_sampling_config(), expected_instances=expected,
+                    visibility_filter=sparse_builder.config.visibility_filter,
                 )
                 timings["instance_sparse_total_ms"].append((time.perf_counter() - sparse_start) * 1000.0)
         report["profiles"]["instance_dense"] = {"status": "PASS", "total": _summary(timings["instance_dense_total_ms"])}
