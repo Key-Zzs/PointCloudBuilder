@@ -185,6 +185,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not checkpoint.is_file():
         raise FileNotFoundError(f"SAM3.1 checkpoint unavailable: {checkpoint}")
     ends = _episode_ends(dataset_root)
+    requested = set(range(len(ends))) if args.episodes is None else set(args.episodes)
+    if not requested:
+        raise ValueError("--episodes must name at least one episode when provided")
+    if any(episode < 0 or episode >= len(ends) for episode in requested):
+        raise ValueError(f"requested SAM3 episode is outside source range 0..{len(ends) - 1}")
     provenance = SegmentationProvenance(
         execution="sidecar",
         code_commit=_code_commit(),
@@ -207,6 +212,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     start = 0
     for episode, end_value in enumerate(ends.tolist()):
         end = int(end_value)
+        if episode not in requested:
+            # Keep the one-pass video decoder aligned with global source frame
+            # indices while deliberately avoiding inference for non-pilot data.
+            for _ in range(end - start):
+                next(frame_iterator)
+            start = end
+            continue
         episode_name = f"episode_{episode:03d}.zarr"
         target = output_root / "episodes" / episode_name
         if target.exists() and str(episode) in manifest.get("episodes", {}):
@@ -244,7 +256,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         start = end
     if start != int(ends[-1]):
         raise RuntimeError("source video did not supply every indexed frame")
-    return {"output": str(output_root), "episodes": len(ends), "provenance": provenance.__dict__}
+    return {"output": str(output_root), "episodes": sorted(requested), "provenance": provenance.__dict__}
 
 
 def main() -> int:
@@ -254,6 +266,7 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--checkpoint-path", required=True)
     parser.add_argument("--checkpoint-id", default="facebook/sam3.1:sam3.1_multiplex.pt")
+    parser.add_argument("--episodes", nargs="+", type=int, help="Only infer these whole episodes (pilot gate)")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2))

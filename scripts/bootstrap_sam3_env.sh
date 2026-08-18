@@ -18,8 +18,12 @@ if ! "$conda_bin" env list | awk '{print $1}' | grep -Fxq "$env_name"; then
 fi
 
 "$conda_bin" run -n "$env_name" python -m pip install --upgrade pip
+# SAM 3.1 currently imports ``pkg_resources`` at runtime.  setuptools 81+
+# removed that compatibility module, so retain the last compatible setuptools
+# line in this isolated environment only; dp3 is never touched.
+"$conda_bin" run -n "$env_name" python -m pip install "setuptools<81"
 "$conda_bin" run -n "$env_name" python -m pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-"$conda_bin" run -n "$env_name" python -m pip install av pillow zarr==2.18.7 numcodecs==0.15.1 huggingface_hub
+"$conda_bin" run -n "$env_name" python -m pip install "numpy>=1.26,<2" av pillow zarr==2.18.7 numcodecs==0.15.1 huggingface_hub einops pycocotools hydra-core psutil "opencv-python-headless==4.10.0.84"
 
 mkdir -p "$(dirname "$source_root")"
 if [[ -d "$source_root/.git" ]]; then
