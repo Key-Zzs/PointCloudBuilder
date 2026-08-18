@@ -199,6 +199,22 @@ class PointCloudBuilder:
 
         self._support_plane = plane
 
+    def configure_ffs_exact_cache(
+        self,
+        *,
+        source_dataset_hash: str,
+        frame_join_hash: str,
+        cache_root: str | None = None,
+    ) -> None:
+        """Bind FFS cache reuse to the already-audited immutable source."""
+
+        if self.depth_estimator is not None and hasattr(self.depth_estimator, "configure_exact_cache"):
+            self.depth_estimator.configure_exact_cache(
+                source_dataset_hash=source_dataset_hash,
+                frame_join_hash=frame_join_hash,
+                cache_root=cache_root,
+            )
+
     def project_points_to_color_image(self, points: Tensor, *, source_frame: str = "depth") -> ProjectionMap:
         """Expose 3D-to-RGB correspondence even for XYZ-only output profiles."""
 

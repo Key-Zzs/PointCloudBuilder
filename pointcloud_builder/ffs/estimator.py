@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 from typing import Any
 
 import torch
@@ -11,7 +13,9 @@ from pointcloud_builder.ffs.calibration import calibration_from_builder_config
 from pointcloud_builder.ffs.factory import create_backend
 from pointcloud_builder.ffs.geometry import disparity_to_depth
 from pointcloud_builder.ffs.preprocessing import normalize_disparity_output, prepare_ir_batch
-from pointcloud_builder.ffs.types import FFSDepthResult, FFSDisparityBackend, frame_field
+from pointcloud_builder.ffs.types import FFSDepthResult, FFSDisparityBackend, frame_field, optional_frame_field
+from pointcloud_builder.ffs.exact_cache import ExactDisparityCache
+from pointcloud_builder.ffs.manifest import sha256_file
 
 
 class FFSStereoDepthEstimator:
@@ -31,6 +35,7 @@ class FFSStereoDepthEstimator:
         self.device = device
         self.calibration = calibration_from_builder_config(camera_config, config)
         self.backend = backend or create_backend(config, device=device)
+        self._exact_cache: ExactDisparityCache | None = None
         if self.calibration.left_intrinsics.height != int(config.height) or self.calibration.left_intrinsics.width != int(config.width):
             raise ValueError(
                 "FFS calibration shape does not match the fixed model shape: "
@@ -39,38 +44,19 @@ class FFSStereoDepthEstimator:
             )
 
     def infer(self, frame: Any) -> FFSDepthResult:
-        left = prepare_ir_batch(
-            frame_field(frame, self.config.left_key),
-            name=self.config.left_key,
-            height=int(self.config.height),
-            width=int(self.config.width),
-            device=self.device,
+        frame_index = optional_frame_field(frame, "global_frame_index")
+        disparity = (
+            self._exact_cache.load(int(frame_index), device=self.device)
+            if self._exact_cache is not None and frame_index is not None
+            else None
         )
-        right = prepare_ir_batch(
-            frame_field(frame, self.config.right_key),
-            name=self.config.right_key,
-            height=int(self.config.height),
-            width=int(self.config.width),
-            device=self.device,
-        )
-        inference_start = time.perf_counter()
-        if self.device.type == "cuda":
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-            start_event.record()
-            disparity = self.backend.infer_disparity(left, right)
-            end_event.record()
-            end_event.synchronize()
-            inference_ms = float(start_event.elapsed_time(end_event))
+        cache_hit = disparity is not None
+        if disparity is None:
+            disparity, inference_ms = self._infer_normalized_disparity(frame)
+            if self._exact_cache is not None and frame_index is not None:
+                self._exact_cache.store(int(frame_index), disparity)
         else:
-            disparity = self.backend.infer_disparity(left, right)
-            inference_ms = (time.perf_counter() - inference_start) * 1000.0
-        disparity = normalize_disparity_output(
-            disparity,
-            height=int(self.config.height),
-            width=int(self.config.width),
-            device=self.device,
-        )
+            inference_ms = 0.0
         conversion_start = time.perf_counter()
         depth_m, valid_mask, counts = disparity_to_depth(
             disparity,
@@ -115,6 +101,7 @@ class FFSStereoDepthEstimator:
                 "disparity_to_depth": conversion_ms,
                 **{key: value for key, value in backend_timing.items() if key != "inference_ms"},
             },
+            "exact_cache": {"enabled": False, "hit": False} if self._exact_cache is None else {**self._exact_cache.metadata(), "hit": cache_hit},
             "device": str(self.device),
         }
         return FFSDepthResult(
@@ -124,6 +111,74 @@ class FFSStereoDepthEstimator:
             intrinsics=self.calibration.left_intrinsics,
             depth_to_color_extrinsics=self.calibration.left_to_color,
             metadata=metadata,
+        )
+
+    def _infer_normalized_disparity(self, frame: Any) -> tuple[torch.Tensor, float]:
+        left = prepare_ir_batch(
+            frame_field(frame, self.config.left_key),
+            name=self.config.left_key,
+            height=int(self.config.height),
+            width=int(self.config.width),
+            device=self.device,
+        )
+        right = prepare_ir_batch(
+            frame_field(frame, self.config.right_key),
+            name=self.config.right_key,
+            height=int(self.config.height),
+            width=int(self.config.width),
+            device=self.device,
+        )
+        inference_start = time.perf_counter()
+        if self.device.type == "cuda":
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            disparity = self.backend.infer_disparity(left, right)
+            end_event.record()
+            end_event.synchronize()
+            inference_ms = float(start_event.elapsed_time(end_event))
+        else:
+            disparity = self.backend.infer_disparity(left, right)
+            inference_ms = (time.perf_counter() - inference_start) * 1000.0
+        disparity = normalize_disparity_output(
+            disparity,
+            height=int(self.config.height),
+            width=int(self.config.width),
+            device=self.device,
+        )
+        return disparity, inference_ms
+
+    def configure_exact_cache(
+        self,
+        *,
+        source_dataset_hash: str,
+        frame_join_hash: str,
+        cache_root: str | None = None,
+    ) -> None:
+        """Bind lossless cache reuse to the source and runtime provenance."""
+
+        root = cache_root or getattr(self.config, "exact_cache_root", None)
+        if not root:
+            self._exact_cache = None
+            return
+        config_value = {
+            key: getattr(self.config, key)
+            for key in vars(self.config)
+            if key != "exact_cache_root"
+        }
+        config_hash = hashlib.sha256(json.dumps(config_value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+        backend = dict(self.backend.provenance)
+        manifest = backend.get("manifest", {})
+        self._exact_cache = ExactDisparityCache(
+            root,
+            provenance={
+                "source_dataset_hash": source_dataset_hash,
+                "frame_join_hash": frame_join_hash,
+                "ffs_engine_sha": backend.get("engine_sha256", backend.get("feature_engine_sha256")),
+                "plugin_sha": backend.get("plugin_library_sha256", manifest.get("plugin_library_sha256") if isinstance(manifest, dict) else None),
+                "calibration_hash": sha256_file(self.config.calibration_path) if self.config.calibration_path else None,
+                "ffs_config_hash": config_hash,
+            },
         )
 
 

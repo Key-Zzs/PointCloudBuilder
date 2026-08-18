@@ -94,6 +94,7 @@ depth_source:
     config_path: /home/deepcybo/workspace/3D-Diffusion-Policy/PointCloudBuilder/ffs_reproduction/artifacts/tensorrt_plugin_fp16_o3.yaml
     calibration_path: /home/deepcybo/.cache/huggingface/lerobot/flexiv_dual_arm_3d/pick_place_20260717_v01/meta/realsense_calibration.json
     calibration_camera: head
+    exact_cache_root: /home/deepcybo/.cache/paper_a_teb/stage2/pick_place_20260717_v01/ffs_exact_cache
     width: 640
     height: 480
     max_disp: 192

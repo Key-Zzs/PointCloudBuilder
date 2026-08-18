@@ -176,6 +176,7 @@ class FFSConfig:
     right_intrinsics: CameraIntrinsics | None = None
     left_distortion: tuple[float, ...] = ()
     right_distortion: tuple[float, ...] = ()
+    exact_cache_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,7 @@ def _resolve_relative_ffs_paths(raw: dict[str, Any], config_dir: Path) -> None:
         "manifest_path",
         "config_path",
         "calibration_path",
+        "exact_cache_root",
     ):
         value = ffs.get(key)
         if not isinstance(value, str) or not value:
@@ -413,6 +415,7 @@ def _parse_depth_source(value: Any) -> DepthSourceConfig:
         right_intrinsics=right_intrinsics,
         left_distortion=tuple(float(x) for x in ffs_raw.get("left_distortion", ())),
         right_distortion=tuple(float(x) for x in ffs_raw.get("right_distortion", ())),
+        exact_cache_root=_optional_string(ffs_raw.get("exact_cache_root")),
     )
     if ffs.min_disparity_px <= 0.0:
         raise ValueError("depth_source.ffs.min_disparity_px must be positive")

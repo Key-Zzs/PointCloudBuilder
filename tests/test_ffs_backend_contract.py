@@ -128,6 +128,23 @@ def test_grayscale_ir_expands_to_three_channels() -> None:
     assert torch.equal(image[:, 0], image[:, 1]) and torch.equal(image[:, 1], image[:, 2])
 
 
+def test_ffs_exact_cache_root_is_parsed(tmp_path) -> None:
+    from pointcloud_builder.config import parse_config
+
+    value = parse_config({
+        "device": "cpu",
+        "camera": {
+            "name": "head", "depth_scale": 1.0, "aligned_depth_to_color": False,
+            "color_intrinsics": {"width": 640, "height": 480, "fx": 1, "fy": 1, "cx": 0, "cy": 0},
+            "depth_intrinsics": {"width": 640, "height": 480, "fx": 1, "fy": 1, "cx": 0, "cy": 0},
+        },
+        "pointcloud": {"use_rgb": False, "output_format": "xyz"},
+        "depth_source": {"mode": "ffs_stereo", "ffs": {"backend": "pytorch", "exact_cache_root": str(tmp_path / "cache")}},
+    })
+    assert value.depth_source.ffs is not None
+    assert value.depth_source.ffs.exact_cache_root == str(tmp_path / "cache")
+
+
 def test_backend_assets_fail_fast_without_fallback() -> None:
     base = {
         "height": 480,
