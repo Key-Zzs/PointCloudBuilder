@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from tools.stage2.export_sam3_masks import _install_init_state_compatibility, _records_from_outputs
+from tools.stage2.export_sam3_masks import (
+    _install_init_state_compatibility,
+    _records_from_outputs,
+    _resolve_attention_backend,
+)
 
 
 def test_sam3_singleton_mask_channel_is_normalized_without_flattening() -> None:
@@ -54,3 +58,8 @@ def test_sam3_optional_false_init_state_argument_is_only_filtered_when_unsupport
         assert "cannot be adapted safely" in str(exc)
     else:
         raise AssertionError("CPU offload must never be silently dropped")
+
+
+def test_sam3_fa3_acceleration_is_selected_only_when_its_runtime_module_exists() -> None:
+    assert _resolve_attention_backend(module_available=lambda _: None) == (False, "PYTORCH_ATTENTION_NO_FA3")
+    assert _resolve_attention_backend(module_available=lambda _: object()) == (True, "FLASH_ATTENTION_3")

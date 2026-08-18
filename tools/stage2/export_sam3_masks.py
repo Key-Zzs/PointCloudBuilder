@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import inspect
 import json
 import os
@@ -19,6 +20,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Iterator
 
 import numpy as np
@@ -215,6 +217,17 @@ def _install_init_state_compatibility(predictor: Any) -> str:
     return "FILTER_OPTIONAL_OFFLOAD_STATE_TO_CPU_FALSE"
 
 
+def _resolve_attention_backend(
+    *,
+    module_available: Callable[[str], object | None] = importlib.util.find_spec,
+) -> tuple[bool, str]:
+    """Select the official optional FA3 acceleration only when it is installed."""
+
+    if module_available("flash_attn_interface") is not None:
+        return True, "FLASH_ATTENTION_3"
+    return False, "PYTORCH_ATTENTION_NO_FA3"
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     from PIL import Image
     from sam3.model_builder import build_sam3_multiplex_video_predictor
@@ -244,12 +257,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise FileExistsError(f"output already exists; use --resume only for matching provenance: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
     manifest_path = output_root / "manifest.json"
-    predictor = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint))
+    use_fa3, attention_backend = _resolve_attention_backend()
+    predictor = build_sam3_multiplex_video_predictor(
+        checkpoint_path=str(checkpoint),
+        use_fa3=use_fa3,
+    )
     api_compatibility = _install_init_state_compatibility(predictor)
     manifest = {
         "schema_version": "paper_a_sam3_episode_sidecars_v1",
         "provenance": provenance.__dict__,
         "sam3_api_compatibility": api_compatibility,
+        "sam3_attention_backend": attention_backend,
         "episodes": {},
     }
     if args.resume and manifest_path.exists():
@@ -258,6 +276,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("cannot reuse SAM sidecars: source/prompt/checkpoint/code provenance differs")
         if manifest.get("sam3_api_compatibility") != api_compatibility:
             raise ValueError("cannot reuse SAM sidecars: SAM3 API compatibility mode differs")
+        if manifest.get("sam3_attention_backend") != attention_backend:
+            raise ValueError("cannot reuse SAM sidecars: SAM3 attention backend differs")
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
