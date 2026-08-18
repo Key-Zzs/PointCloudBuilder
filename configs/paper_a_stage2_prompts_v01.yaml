@@ -1,0 +1,9 @@
+concepts:
+  - concept_id: blue_ring
+    text: "blue ring"
+    expected_instances: 1
+    prompt_type: text
+  - concept_id: yellow_peg
+    text: "yellow peg"
+    expected_instances: 1
+    prompt_type: text
