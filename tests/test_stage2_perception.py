@@ -169,6 +169,8 @@ def test_builder_requires_episode_plane_and_leaves_legacy_metadata_untouched() -
     legacy = PointCloudBuilder(parse_config(_raw_config()))
     _, legacy_meta = legacy.from_recorded_frame(_frame())
     stage2 = PointCloudBuilder(parse_config(_raw_config(support=True)))
+    with pytest.raises(ValueError, match="requires depth_source.mode=ffs_stereo"):
+        stage2.build_unfiltered_perception_stages(_frame())
     with pytest.raises(RuntimeError, match="no episode/precomputed model"):
         stage2.from_recorded_frame(_frame())
     points, _ = legacy.build_stages(_frame())

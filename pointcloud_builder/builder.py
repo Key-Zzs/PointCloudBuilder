@@ -155,6 +155,31 @@ class PointCloudBuilder:
             **stages,
         }, meta
 
+    def build_unfiltered_perception_stages(
+        self,
+        frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+    ) -> tuple[dict[str, Tensor], Meta]:
+        """Return raw/workspace geometry for one episode-plane estimate.
+
+        This is the sole escape hatch from an enabled support-plane profile and
+        is deliberately explicit: it permits the offline episode estimator to
+        see workspace geometry before a plane exists, but never performs a
+        frame-by-frame plane fit or changes normal inference behavior.
+        """
+
+        resolved = self._resolve_depth(frame)
+        if resolved.disparity_px is None or resolved.valid_mask is None:
+            raise ValueError("build_unfiltered_perception_stages requires depth_source.mode=ffs_stereo")
+        _, meta, stages = self._build_from_frame(frame, mode="stage2_plane_estimation", resolved=resolved, apply_support_plane=False)
+        return {
+            "left_ir": as_tensor(get_frame_value(frame, self.config.depth_source.ffs.left_key), self.device, torch.float32),  # type: ignore[union-attr]
+            "right_ir": as_tensor(get_frame_value(frame, self.config.depth_source.ffs.right_key), self.device, torch.float32),  # type: ignore[union-attr]
+            "disparity": resolved.disparity_px,
+            "depth": resolved.depth,
+            "valid_mask": resolved.valid_mask,
+            **stages,
+        }, meta
+
     @property
     def support_plane(self) -> SupportPlane | None:
         """Episode plane currently cached by the caller; never auto-refit per frame."""
@@ -233,6 +258,7 @@ class PointCloudBuilder:
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
         mode: str,
         resolved: ResolvedDepth | None = None,
+        apply_support_plane: bool = True,
     ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
         resolved = resolved or self._resolve_depth(frame)
         depth = resolved.depth
@@ -260,7 +286,7 @@ class PointCloudBuilder:
             stage_timer.mark("crop")
         support_filtered_point_cloud = cropped_point_cloud
         support_keep_mask: Tensor | None = None
-        if self.config.support_plane.enabled:
+        if self.config.support_plane.enabled and apply_support_plane:
             support_filtered_point_cloud, support_keep_mask = filter_support_plane(
                 cropped_point_cloud,
                 self._required_support_plane(),
@@ -271,7 +297,7 @@ class PointCloudBuilder:
             stage_timer.mark("sampling")
         stage_timing = stage_timer.finish() if stage_timer is not None else None
         output_stage = "sampled" if self.config.sampling.enabled else (
-            "support_filtered" if self.config.support_plane.enabled else ("cropped" if self.config.crop.enabled else "raw")
+            "support_filtered" if self.config.support_plane.enabled and apply_support_plane else ("cropped" if self.config.crop.enabled else "raw")
         )
         meta: Meta = {
             "stage": output_stage,
@@ -315,7 +341,7 @@ class PointCloudBuilder:
             meta["ffs"].setdefault("timing_ms", {}).update(
                 stage_timing or {}
             )
-        if self.config.support_plane.enabled:
+        if self.config.support_plane.enabled and apply_support_plane:
             plane = self._required_support_plane()
             meta["support_plane"] = {
                 "enabled": True,
@@ -335,7 +361,7 @@ class PointCloudBuilder:
         }
         # Preserve the legacy build_stages key set exactly unless the new
         # support-plane feature was explicitly enabled in the YAML.
-        if self.config.support_plane.enabled:
+        if self.config.support_plane.enabled and apply_support_plane:
             stages["support_filtered"] = support_filtered_point_cloud
         return sampled_point_cloud, meta, stages
 
