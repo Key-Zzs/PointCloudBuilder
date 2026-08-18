@@ -18,6 +18,7 @@ import tempfile
 import time
 from collections import defaultdict
 from dataclasses import replace
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,8 +31,6 @@ for candidate in (PCB_ROOT, OUTER_ROOT / "tools"):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
-import export_lerobot_to_dp3_zarr as exporter  # noqa: E402
-import lerobot_rgbd_source as rgbd_source  # noqa: E402
 from pointcloud_builder import PointCloudBuilder  # noqa: E402
 from pointcloud_builder.config import PipelineConfig, SupportPlaneConfig  # noqa: E402
 from pointcloud_builder.instance import build_instance_dense, build_instance_sparse  # noqa: E402
@@ -82,7 +81,25 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         raise
 
 
-def _frame_from_source(source_frame: Any) -> dict[str, Any]:
+def _load_dp3_source_tools() -> tuple[Any, Any]:
+    """Load outer-repository source readers only when the benchmark is run."""
+
+    try:
+        exporter = import_module("export_lerobot_to_dp3_zarr")
+        rgbd_source = import_module("lerobot_rgbd_source")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"export_lerobot_to_dp3_zarr", "lerobot_rgbd_source"}:
+            raise
+        raise RuntimeError(
+            "Stage-2 dataset benchmarking requires the 3D-Diffusion-Policy "
+            "source-reader tools. Run this command from the nested "
+            "PointCloudBuilder checkout or add the outer tools directory to "
+            "PYTHONPATH."
+        ) from exc
+    return exporter, rgbd_source
+
+
+def _frame_from_source(source_frame: Any, *, exporter: Any, rgbd_source: Any) -> dict[str, Any]:
     return exporter._builder_frame_from_source_frame(  # type: ignore[attr-defined]
         source_frame,
         camera="head",
@@ -153,6 +170,7 @@ def _timing(meta: dict[str, Any]) -> float:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    exporter, rgbd_source = _load_dp3_source_tools()
     source_root = Path(args.lerobot_path).resolve()
     builder_path = Path(args.builder_config).resolve()
     info = exporter._read_json(source_root / "meta" / "info.json")  # type: ignore[attr-defined]
@@ -171,7 +189,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     all_indices = {frame for values in selected_by_episode.values() for frame in values}
     columns = ["episode_index", "frame_index", "global_frame_index", rgbd_source.CAMERA_SPECS["head"]["timestamp_column"], rgbd_source.CAMERA_SPECS["head"]["reused_column"]]
     frames = {
-        index: _frame_from_source(source.read_frame_at(data_paths, camera="head", row_index=index, columns=columns, include_ir=True))
+        index: _frame_from_source(
+            source.read_frame_at(data_paths, camera="head", row_index=index, columns=columns, include_ir=True),
+            exporter=exporter,
+            rgbd_source=rgbd_source,
+        )
         for index in sorted(all_indices)
     }
     base = PointCloudBuilder.from_yaml(builder_path)
