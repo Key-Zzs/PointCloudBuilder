@@ -100,6 +100,10 @@ def test_ffs_depth_uses_scale_one_and_reuses_builder_stages() -> None:
     perception, _ = builder.build_perception_stages(frame)
     assert set(perception) == {"left_ir", "right_ir", "disparity", "depth", "valid_mask", "raw", "cropped", "sampled"}
     assert fake.calls == 3
+    primary_only, primary_meta = builder.build_perception_stages(frame, include_sampled=False)
+    assert set(primary_only) == {"left_ir", "right_ir", "disparity", "depth", "valid_mask", "raw", "cropped"}
+    assert primary_meta["sampling_executed"] is False
+    assert torch.equal(primary_only["raw"], perception["raw"])
 
 
 def test_frame_mode_missing_depth_keeps_clear_error() -> None:

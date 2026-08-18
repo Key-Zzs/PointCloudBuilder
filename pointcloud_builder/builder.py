@@ -134,6 +134,8 @@ class PointCloudBuilder:
     def build_perception_stages(
         self,
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+        *,
+        include_sampled: bool = True,
     ) -> tuple[dict[str, Tensor], Meta]:
         """Return FFS perception tensors plus the unchanged builder stages.
 
@@ -145,8 +147,13 @@ class PointCloudBuilder:
         resolved = self._resolve_depth(frame)
         if resolved.disparity_px is None or resolved.valid_mask is None:
             raise ValueError("build_perception_stages requires depth_source.mode=ffs_stereo")
-        _, meta, stages = self._build_from_frame(frame, mode="staged", resolved=resolved)
-        return {
+        _, meta, stages = self._build_from_frame(
+            frame,
+            mode="staged",
+            resolved=resolved,
+            include_sampling=include_sampled,
+        )
+        perception = {
             "left_ir": as_tensor(get_frame_value(frame, self.config.depth_source.ffs.left_key), self.device, torch.float32),  # type: ignore[union-attr]
             "right_ir": as_tensor(get_frame_value(frame, self.config.depth_source.ffs.right_key), self.device, torch.float32),  # type: ignore[union-attr]
             "disparity": resolved.disparity_px,
@@ -154,6 +161,7 @@ class PointCloudBuilder:
             "valid_mask": resolved.valid_mask,
             **stages,
         }, meta
+        return perception
 
     def build_unfiltered_perception_stages(
         self,
@@ -261,6 +269,7 @@ class PointCloudBuilder:
         mode: str,
         resolved: ResolvedDepth | None = None,
         apply_support_plane: bool = True,
+        include_sampling: bool = True,
     ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
         resolved = resolved or self._resolve_depth(frame)
         depth = resolved.depth
@@ -294,11 +303,17 @@ class PointCloudBuilder:
                 self._required_support_plane(),
                 distance_threshold_m=self.config.support_plane.distance_threshold_m,
             )
-        sampled_point_cloud, sampling_meta = sample_point_cloud(support_filtered_point_cloud, self.config.sampling)
+        if include_sampling:
+            sampled_point_cloud, sampling_meta = sample_point_cloud(support_filtered_point_cloud, self.config.sampling)
+        else:
+            # Mode1 consumes raw dense geometry. Avoid constructing the
+            # policy-view global sample unless optional Mode2 requested it.
+            sampled_point_cloud = support_filtered_point_cloud
+            sampling_meta = {"input_empty": int(support_filtered_point_cloud.shape[0]) == 0, "padded": False}
         if stage_timer is not None:
             stage_timer.mark("sampling")
         stage_timing = stage_timer.finish() if stage_timer is not None else None
-        output_stage = "sampled" if self.config.sampling.enabled else (
+        output_stage = "sampled" if include_sampling and self.config.sampling.enabled else (
             "support_filtered" if self.config.support_plane.enabled and apply_support_plane else ("cropped" if self.config.crop.enabled else "raw")
         )
         meta: Meta = {
@@ -318,6 +333,7 @@ class PointCloudBuilder:
             },
             "crop_empty": self.config.crop.enabled and int(cropped_point_cloud.shape[0]) == 0,
             "sampling_enabled": self.config.sampling.enabled,
+            "sampling_executed": include_sampling,
             "sampling_mode": self.config.sampling.mode,
             "target_num_points": self.config.sampling.num_points,
             "input_empty": bool(sampling_meta["input_empty"]),
@@ -359,8 +375,9 @@ class PointCloudBuilder:
         stages = {
             "raw": raw_point_cloud,
             "cropped": cropped_point_cloud,
-            "sampled": sampled_point_cloud,
         }
+        if include_sampling:
+            stages["sampled"] = sampled_point_cloud
         # Preserve the legacy build_stages key set exactly unless the new
         # support-plane feature was explicitly enabled in the YAML.
         if self.config.support_plane.enabled and apply_support_plane:
