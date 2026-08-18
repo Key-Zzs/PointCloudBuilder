@@ -150,8 +150,13 @@ def _run_concept_video(
     concept_id: str,
     text: str,
     shape: tuple[int, int],
+    offload_video_to_cpu: bool,
 ) -> Iterator[InstanceMask]:
-    response = predictor.handle_request({"type": "start_session", "resource_path": str(frame_dir)})
+    response = predictor.handle_request({
+        "type": "start_session",
+        "resource_path": str(frame_dir),
+        "offload_video_to_cpu": offload_video_to_cpu,
+    })
     session_id = response["session_id"]
     try:
         initial = predictor.handle_request({"type": "add_prompt", "session_id": session_id, "frame_index": 0, "text": text})
@@ -228,6 +233,39 @@ def _resolve_attention_backend(
     return False, "PYTORCH_ATTENTION_NO_FA3"
 
 
+def _configure_memory_profile(
+    predictor: Any,
+    *,
+    grounding_batch_size: int,
+    offload_video_to_cpu: bool,
+) -> dict[str, int | bool]:
+    """Apply documented multiplex batching controls before the first session."""
+
+    if grounding_batch_size <= 0:
+        raise ValueError("grounding_batch_size must be positive")
+    model = predictor.model
+    for name in ("batched_grounding_batch_size", "postprocess_batch_size"):
+        if not hasattr(model, name):
+            raise RuntimeError(f"official SAM3.1 multiplex model lacks required memory control: {name}")
+        setattr(model, name, grounding_batch_size)
+    return {
+        "grounding_batch_size": grounding_batch_size,
+        "postprocess_batch_size": grounding_batch_size,
+        "offload_video_to_cpu": offload_video_to_cpu,
+    }
+
+
+def _remove_stale_incomplete_episode_outputs(episode_root: Path) -> list[str]:
+    """Remove only abandoned temporary artifacts produced by this exporter."""
+
+    removed: list[str] = []
+    for temporary in sorted(episode_root.glob(".episode_*.zarr.incomplete-*")):
+        if temporary.is_dir():
+            shutil.rmtree(temporary)
+            removed.append(temporary.name)
+    return removed
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     from PIL import Image
     from sam3.model_builder import build_sam3_multiplex_video_predictor
@@ -256,6 +294,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if output_root.exists() and not args.resume:
         raise FileExistsError(f"output already exists; use --resume only for matching provenance: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
+    stale_incomplete = _remove_stale_incomplete_episode_outputs(output_root / "episodes") if args.resume else []
     manifest_path = output_root / "manifest.json"
     use_fa3, attention_backend = _resolve_attention_backend()
     predictor = build_sam3_multiplex_video_predictor(
@@ -263,11 +302,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         use_fa3=use_fa3,
     )
     api_compatibility = _install_init_state_compatibility(predictor)
+    memory_profile = _configure_memory_profile(
+        predictor,
+        grounding_batch_size=args.grounding_batch_size,
+        offload_video_to_cpu=args.offload_video_to_cpu,
+    )
     manifest = {
         "schema_version": "paper_a_sam3_episode_sidecars_v1",
         "provenance": provenance.__dict__,
         "sam3_api_compatibility": api_compatibility,
         "sam3_attention_backend": attention_backend,
+        "sam3_memory_profile": memory_profile,
+        "discarded_incomplete_episode_outputs": stale_incomplete,
         "episodes": {},
     }
     if args.resume and manifest_path.exists():
@@ -278,6 +324,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("cannot reuse SAM sidecars: SAM3 API compatibility mode differs")
         if manifest.get("sam3_attention_backend") != attention_backend:
             raise ValueError("cannot reuse SAM sidecars: SAM3 attention backend differs")
+        if manifest.get("sam3_memory_profile") != memory_profile:
+            raise ValueError("cannot reuse SAM sidecars: SAM3 memory profile differs")
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
@@ -326,6 +374,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     for record in _run_concept_video(
                         predictor=predictor, frame_dir=frame_dir, global_start=start, episode_index=episode,
                         concept_id=prompt.concept_id, text=prompt.value, shape=image_shape,
+                        offload_video_to_cpu=args.offload_video_to_cpu,
                     ):
                         writer.add(record)
                         record_count += 1
@@ -360,7 +409,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         start = end
     if start != int(ends[-1]):
         raise RuntimeError("source video did not supply every indexed frame")
-    return {"output": str(output_root), "episodes": sorted(requested), "provenance": provenance.__dict__}
+    return {
+        "output": str(output_root),
+        "episodes": sorted(requested),
+        "provenance": provenance.__dict__,
+        "sam3_attention_backend": attention_backend,
+        "sam3_memory_profile": memory_profile,
+    }
 
 
 def main() -> int:
@@ -372,6 +427,8 @@ def main() -> int:
     parser.add_argument("--checkpoint-id", default="facebook/sam3.1:sam3.1_multiplex.pt")
     parser.add_argument("--episodes", nargs="+", type=int, help="Only infer these whole episodes (pilot gate)")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--grounding-batch-size", type=int, default=1)
+    parser.add_argument("--offload-video-to-cpu", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2))
     return 0

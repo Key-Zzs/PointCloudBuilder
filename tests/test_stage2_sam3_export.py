@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from tools.stage2.export_sam3_masks import (
+    _configure_memory_profile,
     _install_init_state_compatibility,
     _records_from_outputs,
+    _remove_stale_incomplete_episode_outputs,
     _resolve_attention_backend,
 )
 
@@ -63,3 +66,36 @@ def test_sam3_optional_false_init_state_argument_is_only_filtered_when_unsupport
 def test_sam3_fa3_acceleration_is_selected_only_when_its_runtime_module_exists() -> None:
     assert _resolve_attention_backend(module_available=lambda _: None) == (False, "PYTORCH_ATTENTION_NO_FA3")
     assert _resolve_attention_backend(module_available=lambda _: object()) == (True, "FLASH_ATTENTION_3")
+
+
+def test_sam3_memory_profile_limits_batching_and_removes_only_stale_temp_outputs(tmp_path) -> None:
+    class Model:
+        batched_grounding_batch_size = 16
+        postprocess_batch_size = 16
+
+    class Predictor:
+        model = Model()
+
+    predictor = Predictor()
+    assert _configure_memory_profile(
+        predictor,
+        grounding_batch_size=1,
+        offload_video_to_cpu=True,
+    ) == {
+        "grounding_batch_size": 1,
+        "postprocess_batch_size": 1,
+        "offload_video_to_cpu": True,
+    }
+    assert predictor.model.batched_grounding_batch_size == 1
+    assert predictor.model.postprocess_batch_size == 1
+    with pytest.raises(ValueError, match="positive"):
+        _configure_memory_profile(predictor, grounding_batch_size=0, offload_video_to_cpu=True)
+    episode_root = tmp_path / "episodes"
+    temporary = episode_root / ".episode_000.zarr.incomplete-123"
+    temporary.mkdir(parents=True)
+    (temporary / "partial").write_text("derived", encoding="utf-8")
+    published = episode_root / "episode_000.zarr"
+    published.mkdir()
+    assert _remove_stale_incomplete_episode_outputs(episode_root) == [temporary.name]
+    assert not temporary.exists()
+    assert published.exists()
