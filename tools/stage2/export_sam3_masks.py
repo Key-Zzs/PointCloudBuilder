@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -181,6 +182,39 @@ def _code_commit() -> str:
         raise RuntimeError("SAM3 must be installed from an official Git checkout so its code commit is recorded") from exc
 
 
+def _install_init_state_compatibility(predictor: Any) -> str:
+    """Adapt only the known SAM3.1 optional-false init-state API mismatch.
+
+    Current upstream multiplex predictors can route offload_state_to_cpu=False
+    through Sam3BasePredictor even when the concrete multiplex model does not
+    expose that optional argument. Filtering that false default preserves the
+    model's native behaviour; requesting CPU state offload remains an explicit
+    error rather than a silent semantic change.
+    """
+
+    model = predictor.model
+    original = model.init_state
+    parameters = inspect.signature(original).parameters
+    accepts_kwargs = any(item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters.values())
+    if "offload_state_to_cpu" in parameters or accepts_kwargs:
+        return "NATIVE"
+
+    def compatible_init_state(**kwargs: Any) -> Any:
+        unsupported = {name: value for name, value in kwargs.items() if name not in parameters}
+        if unsupported != {"offload_state_to_cpu": False}:
+            raise RuntimeError(
+                "SAM3.1 predictor/model init_state API mismatch cannot be adapted safely; "
+                f"unsupported arguments={sorted(unsupported)!r}"
+            )
+        kwargs.pop("offload_state_to_cpu")
+        return original(**kwargs)
+
+    # This touches only the constructed predictor, not the pinned official
+    # checkout. The selected mode is persisted in sidecar metadata.
+    object.__setattr__(model, "init_state", compatible_init_state)
+    return "FILTER_OPTIONAL_OFFLOAD_STATE_TO_CPU_FALSE"
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     from PIL import Image
     from sam3.model_builder import build_sam3_multiplex_video_predictor
@@ -210,12 +244,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise FileExistsError(f"output already exists; use --resume only for matching provenance: {output_root}")
     output_root.mkdir(parents=True, exist_ok=True)
     manifest_path = output_root / "manifest.json"
-    manifest = {"schema_version": "paper_a_sam3_episode_sidecars_v1", "provenance": provenance.__dict__, "episodes": {}}
+    predictor = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint))
+    api_compatibility = _install_init_state_compatibility(predictor)
+    manifest = {
+        "schema_version": "paper_a_sam3_episode_sidecars_v1",
+        "provenance": provenance.__dict__,
+        "sam3_api_compatibility": api_compatibility,
+        "episodes": {},
+    }
     if args.resume and manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("provenance") != provenance.__dict__:
             raise ValueError("cannot reuse SAM sidecars: source/prompt/checkpoint/code provenance differs")
-    predictor = build_sam3_multiplex_video_predictor(checkpoint_path=str(checkpoint))
+        if manifest.get("sam3_api_compatibility") != api_compatibility:
+            raise ValueError("cannot reuse SAM sidecars: SAM3 API compatibility mode differs")
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
