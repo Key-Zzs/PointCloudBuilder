@@ -259,7 +259,7 @@ The `.npz` contains `rgb`, `depth`, timestamps, depth scale, and camera intrinsi
 ## Tests
 
 ```bash
-pip install -e .
+pip install -e ".[dev,stage2]"
 pytest -q
 ```
 
