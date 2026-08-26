@@ -12,6 +12,9 @@ from pointcloud_builder.integrations.camera_rig.calibration_adapter import (
 )
 from pointcloud_builder.integrations.camera_rig.dependencies import CameraRigDependencyError
 from pointcloud_builder.integrations.camera_rig.frame_adapter import CameraRigFrameAdapter
+from pointcloud_builder.integrations.camera_rig.ffs_calibration_adapter import (
+    calibration_from_camera_bundle as ffs_calibration_from_camera_bundle,
+)
 from pointcloud_builder.integrations.camera_rig.transform_resolver import (
     TransformResolutionError,
     resolve_transform,
@@ -33,6 +36,7 @@ __all__ = [
     "camera_intrinsics_to_pcb",
     "create_ffs_builder",
     "create_native_builder",
+    "ffs_calibration_from_camera_bundle",
     "resolve_bundle_transform",
     "resolve_transform",
     "rigid_transform_to_frame_explicit",

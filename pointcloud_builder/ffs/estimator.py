@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from pointcloud_builder.ffs.calibration import calibration_from_builder_config
+from pointcloud_builder.ffs.calibration import FFSCalibration, calibration_from_builder_config
 from pointcloud_builder.ffs.factory import create_backend
 from pointcloud_builder.ffs.geometry import disparity_to_depth
 from pointcloud_builder.ffs.preprocessing import normalize_disparity_output, prepare_ir_batch
@@ -24,12 +24,13 @@ class FFSStereoDepthEstimator:
         *,
         device: torch.device,
         backend: FFSDisparityBackend | None = None,
+        calibration: FFSCalibration | None = None,
     ) -> None:
         if (int(config.height), int(config.width)) != (480, 640):
             raise ValueError("Current FFS estimator accepts only height=480,width=640")
         self.config = config
         self.device = device
-        self.calibration = calibration_from_builder_config(camera_config, config)
+        self.calibration = calibration or calibration_from_builder_config(camera_config, config)
         self.backend = backend or create_backend(config, device=device)
         if self.calibration.left_intrinsics.height != int(config.height) or self.calibration.left_intrinsics.width != int(config.width):
             raise ValueError(

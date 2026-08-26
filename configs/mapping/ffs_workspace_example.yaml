@@ -1,0 +1,39 @@
+device: cuda
+
+camera:
+  name: REPLACE_WITH_CAMERA_NAME
+  depth_scale: 1.0
+  aligned_depth_to_color: false
+  color_intrinsics: {width: 640, height: 480, fx: 1.0, fy: 1.0, cx: 0.0, cy: 0.0}
+  depth_intrinsics: {width: 640, height: 480, fx: 1.0, fy: 1.0, cx: 0.0, cy: 0.0}
+
+pointcloud:
+  use_rgb: false
+  output_format: xyz
+
+crop:
+  enabled: false
+
+sampling:
+  enabled: true
+  mode: voxel_random
+  num_points: 1024
+
+depth_source:
+  mode: ffs_stereo
+  ffs:
+    backend: tensorrt_plugin
+    engine_path: relative/path/to/engine
+    plugin_library_path: relative/path/to/plugin
+    manifest_path: relative/path/to/manifest
+    config_path: relative/path/to/backend-config
+    artifact_id: REPLACE_WITH_ARTIFACT_ID
+    left_key: left_ir
+    right_key: right_ir
+    width: 640
+    height: 480
+    max_disp: 192
+    valid_iters: 8
+    precision: fp16
+    baseline_m: 1.0
+    rectification_mode: require_rectified
