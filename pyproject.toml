@@ -30,6 +30,9 @@ dev = [
 viz = [
   "open3d>=0.18",
 ]
+rerun = [
+  "rerun-sdk==0.36.3",
+]
 
 [tool.setuptools.packages.find]
 include = ["pointcloud_builder*"]

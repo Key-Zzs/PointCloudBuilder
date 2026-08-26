@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
+import resource
 import statistics
 import time
 from typing import Any
@@ -35,9 +37,20 @@ def main() -> None:
     parser.add_argument("--matched-sets", type=int, default=300)
     parser.add_argument("--output", required=True)
     parser.add_argument("--report", required=True)
+    parser.add_argument("--viewer", choices=("none", "rerun"), default="none")
+    parser.add_argument("--rerun-connect")
+    parser.add_argument("--rerun-spawn", action="store_true")
+    parser.add_argument("--rerun-record")
+    parser.add_argument("--viewer-point-budget", type=int, default=30_000)
     args = parser.parse_args()
     if args.matched_sets <= 0:
         raise ValueError("--matched-sets must be positive")
+    if args.viewer_point_budget <= 0:
+        raise ValueError("--viewer-point-budget must be positive")
+    if args.viewer == "none" and any(
+        (args.rerun_connect, args.rerun_spawn, args.rerun_record)
+    ):
+        raise ValueError("Rerun output flags require --viewer rerun")
     config = load_rig_config(args.rig_config)
     if not config.fusion.enabled or config.fusion.voxel_size_m != 0.005:
         raise ValueError("formal fusion requires enabled 5 mm voxel fusion")
@@ -47,12 +60,44 @@ def main() -> None:
         raise ValueError("formal fusion requires maximum_skew_ms=33.4")
     mapping = yaml.safe_load(Path(args.mapping_config).read_text(encoding="utf-8"))
     board = _plane(mapping["expected_plane"], config.output_frame)
-    output = Path(args.output)
-    report_path = Path(args.report)
+    output = _private_output(args.output)
+    report_path = _private_output(args.report)
+    rerun_record = (
+        str(_private_output(args.rerun_record)) if args.rerun_record else None
+    )
+    if output.exists() or report_path.exists():
+        raise FileExistsError("real fusion output/report must not already exist")
+    if rerun_record is not None and Path(rerun_record).exists():
+        raise FileExistsError("Rerun recording must not already exist")
     output.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     pipeline = build_live_rig(config, device="cuda")
+    viewer = None
+    viewer_error: str | None = None
+    viewer_overheads_ms: list[float] = []
+    viewer_telemetry: dict[str, Any] | None = None
+    if args.viewer == "rerun":
+        from pointcloud_builder.visualization.rerun import (
+            RerunOutputConfig,
+            RerunViewerProcess,
+        )
+
+        implicit_spawn = not any(
+            (args.rerun_spawn, args.rerun_connect, rerun_record)
+        )
+        try:
+            viewer = RerunViewerProcess(
+                RerunOutputConfig(
+                    spawn=bool(args.rerun_spawn or implicit_spawn),
+                    connect_url=args.rerun_connect,
+                    record_path=rerun_record,
+                )
+            )
+            viewer.start()
+        except Exception as error:
+            viewer_error = f"{type(error).__name__}: {str(error)[:500]}"
+            viewer = None
     board_records: dict[str, list[dict[str, Any]]] = {}
     stage_records: dict[str, list[dict[str, Any]]] = {}
     latencies: list[float] = []
@@ -81,8 +126,48 @@ def main() -> None:
                 stage_records.setdefault(name, []).append(dict(item))
             if index in evidence_indices:
                 retained[index] = result
+            if viewer is not None:
+                viewer_started = time.perf_counter()
+                try:
+                    from pointcloud_builder.visualization.rerun.conversion import (
+                        packet_from_rig_result,
+                    )
+
+                    elapsed_s = max(time.perf_counter() - started, 1e-9)
+                    packet = packet_from_rig_result(
+                        result,
+                        pipeline.processor.runtimes,
+                        point_budget=args.viewer_point_budget,
+                        metrics={
+                            "skew_ms": float(result.frame_match.maximum_skew_ms),
+                            "capture_fps": (index + 1) / elapsed_s,
+                            "match_fps": (index + 1) / elapsed_s,
+                            "processing_fps": 1000.0 / max(built.processing_ms, 1e-9),
+                            "input_points": float(result.concatenated.points.shape[0]),
+                            "fused_voxels": float(result.fused.points.shape[0]),
+                            "memory": _process_peak_rss_mb(),
+                            "map_update_ms": 0.0,
+                        },
+                    )
+                    if not viewer.submit(packet):
+                        status = viewer.telemetry()
+                        raise RuntimeError(
+                            status.child_error or "Rerun viewer process is not running"
+                        )
+                except Exception as error:
+                    viewer_error = f"{type(error).__name__}: {str(error)[:500]}"
+                    viewer_telemetry = vars(viewer.close(timeout_s=5.0))
+                    viewer = None
+                finally:
+                    viewer_overheads_ms.append(
+                        (time.perf_counter() - viewer_started) * 1000.0
+                    )
     finally:
-        pipeline.acquisition.stop()
+        try:
+            pipeline.acquisition.stop()
+        finally:
+            if viewer is not None:
+                viewer_telemetry = vars(viewer.close())
     duration_s = time.perf_counter() - started
     if set(retained) != set(evidence_indices):
         raise RuntimeError("formal fusion did not retain all evidence snapshots")
@@ -109,7 +194,8 @@ def main() -> None:
                 float(item["valid_depth_ratio"]) for item in records
             ),
             "valid_disparity_ratio_p50": statistics.median(
-                float(item["valid_disparity_ratio"]) for item in records
+                float(item["valid_disparity_ratio"])
+                for item in records
                 if item["valid_disparity_ratio"] is not None
             ),
         }
@@ -135,10 +221,7 @@ def main() -> None:
         and selected.processing_metadata["global_sampling_input_stage"] == "fused"
     )
     matcher_passed = bool(
-        max(
-            float(item["p95"] or 0.0)
-            for item in matcher["absolute_skew_ms"].values()
-        )
+        max(float(item["p95"] or 0.0) for item in matcher["absolute_skew_ms"].values())
         <= 33.4
         and matcher["maximum_absolute_skew_ms"] <= 66.8
         and matcher["frame_reuse_violations"] == 0
@@ -146,9 +229,15 @@ def main() -> None:
     throughput_fps = args.matched_sets / duration_s
     gates = {
         "matcher_integrity": matcher_passed,
-        "per_camera_board": all(item["gates"]["per_camera_board"] for item in snapshots),
-        "fused_board_shift": all(item["gates"]["fused_board_shift"] for item in snapshots),
-        "cross_camera_overlap": all(item["gates"]["cross_camera_overlap"] for item in snapshots),
+        "per_camera_board": all(
+            item["gates"]["per_camera_board"] for item in snapshots
+        ),
+        "fused_board_shift": all(
+            item["gates"]["fused_board_shift"] for item in snapshots
+        ),
+        "cross_camera_overlap": all(
+            item["gates"]["cross_camera_overlap"] for item in snapshots
+        ),
         "cube_evidence_snapshots": all(item["gates"]["cube"] for item in snapshots),
         "cube_same_physical_candidate": all(
             item["gates"]["cube_same_physical_candidate"] for item in snapshots
@@ -159,8 +248,12 @@ def main() -> None:
         "cube_fused_degradation": all(
             item["gates"]["cube_fused_degradation"] for item in snapshots
         ),
-        "fusion_contribution": all(item["gates"]["fusion_contribution"] for item in snapshots),
-        "fusion_thickness": all(item["gates"]["fusion_thickness"] for item in snapshots),
+        "fusion_contribution": all(
+            item["gates"]["fusion_contribution"] for item in snapshots
+        ),
+        "fusion_thickness": all(
+            item["gates"]["fusion_thickness"] for item in snapshots
+        ),
         "global_sampling": selected.sampled.points.shape[0] == 4096,
         "no_per_camera_early_sampling": no_early_sampling,
         "processing_order": processing_order_passed,
@@ -172,7 +265,9 @@ def main() -> None:
     _save_evidence(selected, cubes["fused"], board, output)
     repeatability_projection = {
         "cube_dimensions_m": [
-            statistics.median(item["cube"]["fused"]["dimensions_m"][axis] for item in snapshots)
+            statistics.median(
+                item["cube"]["fused"]["dimensions_m"][axis] for item in snapshots
+            )
             for axis in range(3)
         ],
         "board_median_abs_z_m": board_summary["fused"]["median_abs_z_m"],
@@ -185,15 +280,22 @@ def main() -> None:
         "schema_version": "pointcloud-builder.real-multicamera-fusion.v1",
         "snapshot_only": True,
         "persistent_mapping": False,
+        "rig_config_sha256": _sha256_file(args.rig_config),
         "matched_sets": args.matched_sets,
         "duration_s": duration_s,
         "throughput_fps": throughput_fps,
         "latency_ms": _summary(latencies),
         "performance_diagnostics": {
             "throughput_target_15hz_met": throughput_fps >= 15.0,
-            "end_to_end_p95_66_8ms_met": float(np.quantile(latencies, 0.95))
-            <= 66.8,
+            "end_to_end_p95_66_8ms_met": float(np.quantile(latencies, 0.95)) <= 66.8,
         },
+        "visualization": _viewer_report(
+            requested=args.viewer == "rerun",
+            recording_enabled=rerun_record is not None,
+            overheads_ms=viewer_overheads_ms,
+            telemetry=viewer_telemetry,
+            error=viewer_error,
+        ),
         "acquisition": acquisition,
         "stage_summary": stage_summary,
         "board_summary": board_summary,
@@ -212,7 +314,9 @@ def main() -> None:
         "gates": gates,
         "passed": all(gates.values()),
     }
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(
         json.dumps(
             {
@@ -261,8 +365,7 @@ def _snapshot_metrics(result: Any, board: ExpectedPlaneRegion) -> dict[str, Any]
         name: {
             "xy_m": float(
                 np.linalg.norm(
-                    np.asarray(cubes[name]["center_workspace_m"][:2])
-                    - fused_center[:2]
+                    np.asarray(cubes[name]["center_workspace_m"][:2]) - fused_center[:2]
                 )
             ),
             "z_m": abs(float(cubes[name]["center_workspace_m"][2]) - fused_center[2]),
@@ -287,8 +390,7 @@ def _snapshot_metrics(result: Any, board: ExpectedPlaneRegion) -> dict[str, Any]
         cubes["camera_b"]["mean_absolute_dimension_error_m"],
     )
     cube_degradation = bool(
-        cubes["fused"]["mean_absolute_dimension_error_m"]
-        <= best_single_error + 0.005
+        cubes["fused"]["mean_absolute_dimension_error_m"] <= best_single_error + 0.005
     )
     contribution = contribution_metrics(result.fusion_provenance)
     geometry = fusion_geometry_metrics(
@@ -329,8 +431,12 @@ def _board_summary(records: list[dict[str, Any]]) -> dict[str, float | int]:
     return {
         "frame_count": len(records),
         "minimum_point_count": min(int(item["point_count"]) for item in records),
-        "median_abs_z_m": statistics.median(float(item["median_abs_z_m"]) for item in records),
-        "p95_abs_z_m": float(np.quantile([item["p95_abs_z_m"] for item in records], 0.95)),
+        "median_abs_z_m": statistics.median(
+            float(item["median_abs_z_m"]) for item in records
+        ),
+        "p95_abs_z_m": float(
+            np.quantile([item["p95_abs_z_m"] for item in records], 0.95)
+        ),
         "rmse_m": statistics.median(float(item["rmse_m"]) for item in records),
         "maximum_normal_angle_deg": max(
             float(item["normal_angle_to_expected_deg"]) for item in records
@@ -338,7 +444,9 @@ def _board_summary(records: list[dict[str, Any]]) -> dict[str, float | int]:
         "surface_thickness_m": statistics.median(
             float(item["surface_thickness_m"]) for item in records
         ),
-        "outlier_ratio": statistics.median(float(item["outlier_ratio"]) for item in records),
+        "outlier_ratio": statistics.median(
+            float(item["outlier_ratio"]) for item in records
+        ),
     }
 
 
@@ -352,19 +460,73 @@ def _summary(values: list[float]) -> dict[str, float]:
     }
 
 
-def _save_evidence(result: Any, cube: dict[str, Any], board: ExpectedPlaneRegion, output: Path) -> None:
-    clouds = {item.camera_name: item.cloud.points.detach().cpu() for item in result.per_camera_workspace}
+def _process_peak_rss_mb() -> float:
+    # Linux reports ru_maxrss in KiB. This deployment target is Linux and the
+    # value is telemetry only; it never carries process arguments or paths.
+    return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def _viewer_report(
+    *,
+    requested: bool,
+    recording_enabled: bool,
+    overheads_ms: list[float],
+    telemetry: dict[str, Any] | None,
+    error: str | None,
+) -> dict[str, Any]:
+    overhead = _summary(overheads_ms) if overheads_ms else None
+    performance_passed = overhead is None or overhead["p95"] <= 2.0
+    return {
+        "requested": requested,
+        "recording_enabled": recording_enabled,
+        "producer_overhead_ms": overhead,
+        "producer_overhead_p95_le_2ms": performance_passed,
+        "telemetry": telemetry,
+        "error": error,
+        "passed": bool(
+            not requested
+            or (error is None and telemetry is not None and performance_passed)
+        ),
+        "mapping_pass_is_independent": True,
+    }
+
+
+def _save_evidence(
+    result: Any, cube: dict[str, Any], board: ExpectedPlaneRegion, output: Path
+) -> None:
+    clouds = {
+        item.camera_name: item.cloud.points.detach().cpu()
+        for item in result.per_camera_workspace
+    }
     save_ascii_ply(clouds["camera_a"], output / "camera_a_workspace.ply")
     save_ascii_ply(clouds["camera_b"], output / "camera_b_workspace.ply")
     colored = torch.cat(
         (
-            torch.cat((clouds["camera_a"][:, :3], torch.tensor((1.0, 0.0, 0.0)).repeat(clouds["camera_a"].shape[0], 1)), dim=1),
-            torch.cat((clouds["camera_b"][:, :3], torch.tensor((0.0, 0.0, 1.0)).repeat(clouds["camera_b"].shape[0], 1)), dim=1),
+            torch.cat(
+                (
+                    clouds["camera_a"][:, :3],
+                    torch.tensor((1.0, 0.0, 0.0)).repeat(
+                        clouds["camera_a"].shape[0], 1
+                    ),
+                ),
+                dim=1,
+            ),
+            torch.cat(
+                (
+                    clouds["camera_b"][:, :3],
+                    torch.tensor((0.0, 0.0, 1.0)).repeat(
+                        clouds["camera_b"].shape[0], 1
+                    ),
+                ),
+                dim=1,
+            ),
         )
     )
     save_ascii_ply(colored, output / "two_camera_colored_concatenation.ply")
     save_ascii_ply(result.fused.points.detach().cpu(), output / "fused_workspace.ply")
-    save_ascii_ply(result.sampled.points.detach().cpu(), output / "globally_sampled.ply")
+    save_ascii_ply(
+        result.sampled.points.detach().cpu(), output / "globally_sampled.ply"
+    )
     _render_single(
         clouds["camera_a"], cube, output / "camera_a_only_views.png", "camera_a"
     )
@@ -372,13 +534,24 @@ def _save_evidence(result: Any, cube: dict[str, Any], board: ExpectedPlaneRegion
         clouds["camera_b"], cube, output / "camera_b_only_views.png", "camera_b"
     )
     _render_views(clouds, cube, output / "camera_colored_views.png")
-    _render_single(result.fused.points.detach().cpu(), cube, output / "fused_views.png", "fused")
-    _render_single(result.sampled.points.detach().cpu(), cube, output / "sampled_views.png", "global sampled")
-    _render_board_residual(result.fused.points.detach().cpu(), board, output / "board_residual_heatmap.png")
+    _render_single(
+        result.fused.points.detach().cpu(), cube, output / "fused_views.png", "fused"
+    )
+    _render_single(
+        result.sampled.points.detach().cpu(),
+        cube,
+        output / "sampled_views.png",
+        "global sampled",
+    )
+    _render_board_residual(
+        result.fused.points.detach().cpu(), board, output / "board_residual_heatmap.png"
+    )
     _render_cross_distance(clouds, board, output / "cross_camera_distance_heatmap.png")
 
 
-def _render_views(clouds: dict[str, torch.Tensor], cube: dict[str, Any], path: Path) -> None:
+def _render_views(
+    clouds: dict[str, torch.Tensor], cube: dict[str, Any], path: Path
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -391,7 +564,15 @@ def _render_views(clouds: dict[str, torch.Tensor], cube: dict[str, Any], path: P
         for name, color in (("camera_a", "red"), ("camera_b", "blue")):
             points = clouds[name][:, :3].numpy()
             points = points[:: max(1, points.shape[0] // 9000)]
-            axis.scatter(points[:, 0], points[:, 1], points[:, 2], s=0.25, alpha=0.3, c=color, label=name)
+            axis.scatter(
+                points[:, 0],
+                points[:, 1],
+                points[:, 2],
+                s=0.25,
+                alpha=0.3,
+                c=color,
+                label=name,
+            )
         _draw_cube_box(axis, cube)
         axis.view_init(elev=elev, azim=azim)
         axis.set_title(title)
@@ -401,7 +582,9 @@ def _render_views(clouds: dict[str, torch.Tensor], cube: dict[str, Any], path: P
     plt.close(figure)
 
 
-def _render_single(points: torch.Tensor, cube: dict[str, Any], path: Path, label: str) -> None:
+def _render_single(
+    points: torch.Tensor, cube: dict[str, Any], path: Path, label: str
+) -> None:
     _render_views({"camera_a": points, "camera_b": points[:0]}, cube, path)
 
 
@@ -409,9 +592,7 @@ def _draw_cube_box(axis: Any, cube: dict[str, Any]) -> None:
     center = np.asarray(cube["center_workspace_m"], dtype=np.float64)
     dims = np.asarray(cube["dimensions_m"], dtype=np.float64)
     yaw = np.deg2rad(float(cube["yaw_deg"]))
-    rotation = np.array(
-        ((np.cos(yaw), -np.sin(yaw)), (np.sin(yaw), np.cos(yaw)))
-    )
+    rotation = np.array(((np.cos(yaw), -np.sin(yaw)), (np.sin(yaw), np.cos(yaw))))
     corners = []
     for u in (-dims[0] / 2.0, dims[0] / 2.0):
         for v in (-dims[1] / 2.0, dims[1] / 2.0):
@@ -432,7 +613,9 @@ def _draw_cube_box(axis: Any, cube: dict[str, Any]) -> None:
                 )
 
 
-def _render_board_residual(points: torch.Tensor, board: ExpectedPlaneRegion, path: Path) -> None:
+def _render_board_residual(
+    points: torch.Tensor, board: ExpectedPlaneRegion, path: Path
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -440,13 +623,24 @@ def _render_board_residual(points: torch.Tensor, board: ExpectedPlaneRegion, pat
 
     xyz = points[:, :3].numpy()
     mask = (
-        (xyz[:, 0] >= board.x[0]) & (xyz[:, 0] <= board.x[1])
-        & (xyz[:, 1] >= board.y[0]) & (xyz[:, 1] <= board.y[1])
-        & (xyz[:, 2] >= board.z_search_range_m[0]) & (xyz[:, 2] <= board.z_search_range_m[1])
+        (xyz[:, 0] >= board.x[0])
+        & (xyz[:, 0] <= board.x[1])
+        & (xyz[:, 1] >= board.y[0])
+        & (xyz[:, 1] <= board.y[1])
+        & (xyz[:, 2] >= board.z_search_range_m[0])
+        & (xyz[:, 2] <= board.z_search_range_m[1])
     )
     xyz = xyz[mask]
     figure, axis = plt.subplots(figsize=(8, 6), dpi=140)
-    image = axis.scatter(xyz[:, 0], xyz[:, 1], c=np.abs(xyz[:, 2]), s=1.0, cmap="magma", vmin=0.0, vmax=0.04)
+    image = axis.scatter(
+        xyz[:, 0],
+        xyz[:, 1],
+        c=np.abs(xyz[:, 2]),
+        s=1.0,
+        cmap="magma",
+        vmin=0.0,
+        vmax=0.04,
+    )
     figure.colorbar(image, ax=axis, label="|z| residual (m)")
     axis.set(xlabel="workspace x (m)", ylabel="workspace y (m)", title="board residual")
     axis.set_aspect("equal")
@@ -455,7 +649,9 @@ def _render_board_residual(points: torch.Tensor, board: ExpectedPlaneRegion, pat
     plt.close(figure)
 
 
-def _render_cross_distance(clouds: dict[str, torch.Tensor], board: ExpectedPlaneRegion, path: Path) -> None:
+def _render_cross_distance(
+    clouds: dict[str, torch.Tensor], board: ExpectedPlaneRegion, path: Path
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -463,6 +659,7 @@ def _render_cross_distance(clouds: dict[str, torch.Tensor], board: ExpectedPlane
 
     a = voxel_centroids(clouds["camera_a"][:, :3], voxel_size_m=0.005)
     b = voxel_centroids(clouds["camera_b"][:, :3], voxel_size_m=0.005)
+
     def roi(value: torch.Tensor) -> torch.Tensor:
         return value[
             (value[:, 0] >= board.x[0])
@@ -472,13 +669,25 @@ def _render_cross_distance(clouds: dict[str, torch.Tensor], board: ExpectedPlane
             & (value[:, 2] >= -0.05)
             & (value[:, 2] <= 0.12)
         ]
+
     a, b = roi(a), roi(b)
-    distances = torch.cat([torch.cdist(a[start:start + 2048], b).min(dim=1).values for start in range(0, a.shape[0], 2048)]).numpy()
+    distances = torch.cat(
+        [
+            torch.cdist(a[start : start + 2048], b).min(dim=1).values
+            for start in range(0, a.shape[0], 2048)
+        ]
+    ).numpy()
     xyz = a.numpy()
     figure, axis = plt.subplots(figsize=(8, 6), dpi=140)
-    image = axis.scatter(xyz[:, 0], xyz[:, 1], c=distances, s=3.0, cmap="viridis", vmin=0.0, vmax=0.03)
+    image = axis.scatter(
+        xyz[:, 0], xyz[:, 1], c=distances, s=3.0, cmap="viridis", vmin=0.0, vmax=0.03
+    )
     figure.colorbar(image, ax=axis, label="A to B NN distance (m)")
-    axis.set(xlabel="workspace x (m)", ylabel="workspace y (m)", title="cross-camera distance")
+    axis.set(
+        xlabel="workspace x (m)",
+        ylabel="workspace y (m)",
+        title="cross-camera distance",
+    )
     axis.set_aspect("equal")
     figure.tight_layout()
     figure.savefig(path)
@@ -493,6 +702,21 @@ def _plane(raw: dict[str, Any], frame: str) -> ExpectedPlaneRegion:
         expected_z_m=float(raw.get("expected_z_m", 0.0)),
         z_search_range_m=tuple(float(value) for value in raw["z_search_range_m"]),
     )
+
+
+def _private_output(value: str) -> Path:
+    output = Path(value).resolve()
+    if not output.is_relative_to((Path.cwd() / ".local").resolve()):
+        raise ValueError("real fusion outputs must be written under .local/")
+    return output
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

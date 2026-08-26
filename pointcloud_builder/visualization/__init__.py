@@ -1,9 +1,4 @@
-"""Offline visualization helpers.
-
-This module is intentionally separate from the real-time builder path. Open3D is
-imported lazily inside functions so deployment code can use PointCloudBuilder
-without visualization dependencies.
-"""
+"""Offline visualization helpers with optional backends loaded lazily."""
 
 from __future__ import annotations
 
@@ -38,18 +33,20 @@ def save_ascii_ply(point_cloud: Tensor, path: str | Path) -> None:
         "property float z",
     ]
     if has_rgb:
-        header.extend(["property uchar red", "property uchar green", "property uchar blue"])
+        header.extend(
+            ["property uchar red", "property uchar green", "property uchar blue"]
+        )
     header.append("end_header")
-    with output_path.open("w", encoding="utf-8") as f:
-        f.write("\n".join(header))
-        f.write("\n")
+    with output_path.open("w", encoding="utf-8") as stream:
+        stream.write("\n".join(header))
+        stream.write("\n")
         for row in pc:
             xyz = row[:3].tolist()
             if has_rgb:
                 rgb = torch.clamp(row[3:6] * 255.0, 0.0, 255.0).to(torch.uint8).tolist()
-                f.write(f"{xyz[0]} {xyz[1]} {xyz[2]} {rgb[0]} {rgb[1]} {rgb[2]}\n")
+                stream.write(f"{xyz[0]} {xyz[1]} {xyz[2]} {rgb[0]} {rgb[1]} {rgb[2]}\n")
             else:
-                f.write(f"{xyz[0]} {xyz[1]} {xyz[2]}\n")
+                stream.write(f"{xyz[0]} {xyz[1]} {xyz[2]}\n")
 
 
 def show_open3d(point_cloud: Tensor) -> None:
@@ -70,7 +67,15 @@ def summarize_point_cloud(point_cloud: Tensor) -> dict[str, Any]:
 
     pc = detach_to_cpu(point_cloud)
     return {
-        "shape": tuple(int(v) for v in pc.shape),
+        "shape": tuple(int(value) for value in pc.shape),
         "min_xyz": pc[:, :3].amin(dim=0).tolist() if pc.numel() else [0.0, 0.0, 0.0],
         "max_xyz": pc[:, :3].amax(dim=0).tolist() if pc.numel() else [0.0, 0.0, 0.0],
     }
+
+
+__all__ = [
+    "detach_to_cpu",
+    "save_ascii_ply",
+    "show_open3d",
+    "summarize_point_cloud",
+]

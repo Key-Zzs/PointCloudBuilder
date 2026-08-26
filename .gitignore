@@ -78,3 +78,4 @@ ffs_reproduction/tensorrt_sdk/
 *.dll
 *.dylib
 *.trt
+*.rrd
