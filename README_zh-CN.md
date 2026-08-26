@@ -1,22 +1,22 @@
 # PointCloudBuilder
 
-PointCloudBuilder 是一个面向机器人学习流程的 RGB-D 转相机坐标系点云模块。训练数据转换和实时部署必须共用同一个 `PointCloudBuilder` 实现和同一套 YAML schema。
-
-当前实现的是第三阶段：raw RGB-D 反投影 + workspace crop + 固定点数采样；同时提供离线工具，用于从本机
-D435i 采集一帧 aligned RGB-D、可视化生成的点云，并 benchmark 反投影、裁剪
-和采样等基础模块。
+PointCloudBuilder 是面向机器人学习部署的 RGB-D 几何流水线。它支持单相机点云构建、
+CameraRig 固定相机集成、native depth 与 FFS stereo、真实固定多相机并发采集、host-time
+匹配、workspace 变换、确定性的 current-snapshot fusion、独立 Rerun 可视化，以及可选的
+persistent TSDF mapping。实时策略输入与可视化、地图维护保持解耦。
 
 ## CameraRig、workspace 与 rig fusion
 
-仓库以 `third_party/CameraRig` 固定 CameraRig `v1.0.0`。CameraRig 负责单相机
+仓库在 `third_party/CameraRig` 固定已复核的 `develop` 部署就绪提交。CameraRig 负责单相机
 frame、calibration 与 fixed-mount bundle；PointCloudBuilder 只消费稳定的
 `camera_rig.api`，并负责 workspace 变换、版本化多相机列表、host timestamp
 匹配、当前 snapshot 的确定性 voxel fusion，以及 fusion 后唯一一次全局采样。
 
 Native depth XYZ 的源坐标系是 depth optical frame；FFS XYZ 的源坐标系是
 left-IR optical frame。rig pipeline 暴露每相机 camera/workspace、concatenated、
-workspace-cropped、fused 与 sampled 阶段及独立 provenance sidecar。M6 不维护
-persistent map、TSDF、voxel history 或跨时间累计。详见
+workspace-cropped、fused 与 sampled 阶段及独立 provenance sidecar。面向策略的
+current-snapshot 路径不跨时间累计；独立的可选 Open3D 进程从同一次推理得到的逐相机
+depth ray 维护 persistent map，绝不把 4096 点策略输入反推成 TSDF。详见
 `docs/camera-rig-integration.md`、`docs/offline-rig-orchestration.md` 与
 `docs/workspace-fusion.md`。
 
@@ -55,6 +55,116 @@ conda run -n pointcloud-builder python -m pip install -e ".[dev]"
 ```bash
 conda run -n pointcloud-builder python -m pip install -e ".[viz]"
 ```
+
+Python 3.10 上已验证并固定的独立 Rerun 与 TSDF 可选依赖：
+
+```bash
+python -m pip install -e ".[rerun]"  # rerun-sdk==0.36.3
+python -m pip install -e ".[tsdf]"   # open3d==0.19.0
+```
+
+## 部署就绪的多相机映射
+
+安装前初始化已复核的 CameraRig pin：
+
+```bash
+git submodule update --init --recursive
+python -m pip install -e third_party/CameraRig
+```
+
+运行 YAML、provision bundle 和报告必须保持私有。双机运行前，先检查 USB 链路/stream
+profile，执行不求外参的 target preflight，再让每台固定相机使用同一个 resolved target
+完成 provision 并分别验证：
+
+```bash
+camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
+  --target .local/target/target_spec.json --frames 60 \
+  --policy pose_validated --report .local/reports/camera_a_preflight.json \
+  --overlays .local/overlays/camera_a
+camera-rig provision fixed ...
+camera-rig provision validate ...
+```
+
+对 camera B 重复 preflight/provision，然后先运行有界并发采集和 host-time matching，
+再启用 fusion：
+
+```bash
+python tools/mapping/run_live_rig.py \
+  --rig-config .local/configs/live_rig.yaml \
+  --mapping-config .local/configs/mapping.yaml \
+  --frames 1000 --reopen-frames 60 \
+  --output .local/evidence/live_rig \
+  --report .local/reports/live_rig.json
+```
+
+运行时严格保留两条不同输出路径：
+
+```text
+matched cameras -> 逐相机点云 -> snapshot voxel fusion -> 全局采样
+matched cameras -> 逐相机 depth + K + T_workspace_from_camera -> 异步 TSDF map
+```
+
+第一条是低延迟策略/动态观测；第二条是静态 workspace 历史。生产默认组合为冻结的
+TSDF 加当前 fused cloud。`guarded_continuous` 必须显式启用，并在新表面达到配置的
+连续固定帧数前屏蔽瞬时像素。
+
+不重复执行 FFS 推理，直接记录 native 或 FFS depth，再离线重建：
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/rig_depth
+
+python tools/mapping/build_tsdf_offline.py \
+  --recording .local/recordings/rig_depth \
+  --config configs/mapping/tsdf_example.yaml \
+  --output .local/maps/static_tsdf
+```
+
+在现有 snapshot 验收命令上启用独立 Rerun：
+
+```bash
+python tools/mapping/run_live_rig_fusion.py \
+  --rig-config .local/configs/live_rig.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml \
+  --matched-sets 300 --output .local/evidence/fusion \
+  --report .local/reports/fusion.json \
+  --viewer rerun --rerun-spawn \
+  --rerun-record .local/rerun/fusion.rrd \
+  --viewer-point-budget 30000
+```
+
+持续映射使用 `tools/mapping/run_live_tsdf_mapping.py`。Rerun 与 TSDF 分别运行在
+spawn 子进程，IPC queue 大小为 1 或 2 并采用 latest-only；消费者落后时丢可视化/
+地图更新包，不积压、不阻塞 snapshot 主路径。所有真实配置、采集、depth recording、
+map、截图、报告和 `.rrd` 必须留在已忽略的 `.local/`；禁止提交真实 SN、外参、图像、
+深度、地图或 RRD。
+
+live map 发布还必须通过 `--snapshot-baseline-report` 提供相同 rig、相同帧数且已经
+PASS 的 snapshot-only 报告。CLI 会比较 processed FPS 与端到端 p95；FPS 下降超过
+10% 或 p95 增加超过 5 ms 时拒绝发布，并记录 mapper 提交接受/拒绝数、队列与 RSS。
+发布还要求至少 32 个子进程 RSS 样本；去掉前 20% warmup 后，首尾四分位中位数增长
+不得超过 256 MiB，拟合增长斜率不得超过每 100 帧 5 MiB。
+
+变换统一表示 `T_target_from_source` 并作用于列向量。PCB 保存
+`T_workspace_from_camera`；Open3D 接收 synthetic parity 已验证的逆矩阵
+`T_camera_from_workspace`。Native TSDF 输入为原始 `uint16` 加设备 scale；FFS 输入为
+rectified metric float depth，无效像素严格为 0，scale 为 1。
+
+详细文档：
+
+- [架构](docs/architecture.md)
+- [标定部署](docs/deployment-calibration.md)
+- [Rerun 可视化](docs/rerun-visualization.md)
+- [当前 snapshot 与 persistent map](docs/current-snapshot-vs-persistent-map.md)
+- [TSDF 映射](docs/tsdf-mapping.md)
+- [TSDF 动态处理](docs/tsdf-dynamic-handling.md)
+
+已知环境债务：`sapien 2.2.1` 声明依赖 `opencv-python`，而当前环境使用 headless OpenCV。
+这是加入 Rerun/TSDF 前已有的 `pip check` 警告；本目标不升级 Torch、CUDA、TensorRT
+或 OpenCV。
 
 ## 核心接口
 

@@ -1,10 +1,16 @@
 # PointCloudBuilder
 
-PointCloudBuilder is a plug-and-play real-time RGB-D point cloud construction module for robot learning pipelines. It uses PyTorch CUDA tensors to deproject RGB-D frames into camera-frame point clouds from YAML-configured camera intrinsics, optionally produces RGB point clouds when aligned_depth_to_color is enabled, applies YAML-configured workspace cropping, and outputs fixed-size point clouds using FPS, stride, random, voxel, voxel_random, or voxel_fps sampling. Offline visualization and benchmark tools are provided for raw, cropped, and sampled point clouds, while realtime control remains decoupled from visualization.
+PointCloudBuilder is a deployment-oriented RGB-D geometry pipeline for robot learning.
+It supports single-camera point-cloud construction, CameraRig fixed-camera integration,
+native depth and FFS stereo, real concurrent fixed multi-camera capture, host-time frame
+matching, workspace transforms, deterministic current-snapshot fusion, independent
+Rerun visualization, and optional persistent TSDF mapping. Realtime policy input stays
+decoupled from visualization and map maintenance.
 
 ## CameraRig, workspace, and rig fusion
 
-CameraRig is pinned at `v1.0.0` under `third_party/CameraRig` and owns one camera's
+CameraRig is pinned to the reviewed `develop` deployment-readiness commit under
+`third_party/CameraRig` and owns one camera's
 frame, calibration, and fixed-mount bundle. PointCloudBuilder consumes only the stable
 `camera_rig.api`, defines native depth XYZ in the depth optical frame and FFS XYZ in
 the left-IR optical frame, then owns workspace transformation, the versioned
@@ -13,8 +19,9 @@ one global post-fusion sampling step.
 
 The rig pipeline exposes per-camera camera/workspace clouds, concatenated and cropped
 workspace clouds, fused voxel centroids, the final sampled tensor, and a provenance
-sidecar. It is current-snapshot only: it does not retain a map, TSDF, voxel history, or
-cross-time accumulation. See `docs/camera-rig-integration.md`,
+sidecar. The policy-facing path remains current-snapshot only. A separate optional
+Open3D process consumes same-pass per-camera depth rays to maintain a persistent map;
+the 4096-point policy tensor is never used as TSDF input. See `docs/camera-rig-integration.md`,
 `docs/offline-rig-orchestration.md`, `docs/live-rig-acquisition.md`, and
 `docs/workspace-fusion.md`. Real dual-camera snapshot acceptance is documented in
 `docs/real-multicamera-fusion.md`.
@@ -43,6 +50,119 @@ Optional offline visualization dependency:
 ```bash
 python -m pip install -e ".[viz]"
 ```
+
+Optional independent Rerun and persistent TSDF dependencies are pinned to the
+versions validated on Python 3.10:
+
+```bash
+python -m pip install -e ".[rerun]"  # rerun-sdk==0.36.3
+python -m pip install -e ".[tsdf]"   # open3d==0.19.0
+```
+
+## Deployment-ready multi-camera mapping
+
+Initialize the reviewed CameraRig pin before installation:
+
+```bash
+git submodule update --init --recursive
+python -m pip install -e third_party/CameraRig
+```
+
+Keep runtime YAML, provision bundles, and reports private. Before a dual-camera run,
+inspect USB link/profile state, perform the pose-free target preflight, provision each
+fixed camera against the same resolved target, and validate each provision:
+
+```bash
+camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
+  --target .local/target/target_spec.json --frames 60 \
+  --policy pose_validated --report .local/reports/camera_a_preflight.json \
+  --overlays .local/overlays/camera_a
+camera-rig provision fixed ...
+camera-rig provision validate ...
+```
+
+Repeat the preflight/provision pair for camera B, then run bounded concurrent capture
+and host-time matching before enabling fusion:
+
+```bash
+python tools/mapping/run_live_rig.py \
+  --rig-config .local/configs/live_rig.yaml \
+  --mapping-config .local/configs/mapping.yaml \
+  --frames 1000 --reopen-frames 60 \
+  --output .local/evidence/live_rig \
+  --report .local/reports/live_rig.json
+```
+
+The runtime has two deliberately separate outputs:
+
+```text
+matched cameras -> per-camera cloud -> snapshot voxel fusion -> global sampling
+matched cameras -> per-camera depth + K + T_workspace_from_camera -> async TSDF map
+```
+
+The first path remains the low-latency policy/dynamic observation. The second is
+static workspace history. A frozen TSDF plus the current fused cloud is the default
+production composition; `guarded_continuous` is opt-in and masks transient pixels
+until a fixed surface persists for the configured frame count.
+
+Record native or FFS depth without re-running inference, then reconstruct offline:
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/rig_depth
+
+python tools/mapping/build_tsdf_offline.py \
+  --recording .local/recordings/rig_depth \
+  --config configs/mapping/tsdf_example.yaml \
+  --output .local/maps/static_tsdf
+```
+
+Run the independent Rerun viewer on the existing snapshot acceptance command:
+
+```bash
+python tools/mapping/run_live_rig_fusion.py \
+  --rig-config .local/configs/live_rig.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml \
+  --matched-sets 300 --output .local/evidence/fusion \
+  --report .local/reports/fusion.json \
+  --viewer rerun --rerun-spawn \
+  --rerun-record .local/rerun/fusion.rrd \
+  --viewer-point-budget 30000
+```
+
+For persistent live mapping use `tools/mapping/run_live_tsdf_mapping.py`. Rerun and
+TSDF each run in their own spawned process with a size-1/2 latest-only queue; viewer
+or mapper lag drops packets instead of building backlog. All real configs, captures,
+depth recordings, maps, screenshots, reports, and `.rrd` files belong under ignored
+`.local/`. Never commit serial numbers, real extrinsics, images, depth, maps, or RRDs.
+
+Live map publication additionally requires a passing, same-rig/same-count
+snapshot-only report via `--snapshot-baseline-report`. The CLI compares processed FPS
+and end-to-end p95, blocks publication above 10% FPS loss or 5 ms p95 increase, and
+records accepted/rejected submissions plus mapper queue/RSS telemetry. Publication
+also requires at least 32 child-RSS samples and, after a 20% warmup, no more than
+256 MiB quartile-median growth or 5 MiB per 100 frames fitted growth.
+
+Coordinate transforms always mean `T_target_from_source`, with column vectors. PCB
+stores `T_workspace_from_camera`; Open3D receives its tested inverse
+`T_camera_from_workspace`. Native TSDF uses raw `uint16` plus the device scale; FFS
+uses rectified metric float depth with invalid pixels equal to zero and scale 1.
+
+Deployment and architecture details:
+
+- [Architecture](docs/architecture.md)
+- [Calibration deployment](docs/deployment-calibration.md)
+- [Rerun visualization](docs/rerun-visualization.md)
+- [Snapshot versus persistent map](docs/current-snapshot-vs-persistent-map.md)
+- [TSDF mapping](docs/tsdf-mapping.md)
+- [TSDF dynamic handling](docs/tsdf-dynamic-handling.md)
+
+Known environment debt: `sapien 2.2.1` declares `opencv-python`, while this environment
+uses the headless OpenCV distribution. This pre-existing `pip check` warning is not
+resolved by adding Rerun or TSDF, and no Torch/CUDA/TensorRT/OpenCV upgrade is required.
 
 ## Quick Start
 
