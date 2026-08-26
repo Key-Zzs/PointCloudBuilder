@@ -15,7 +15,8 @@ The rig pipeline exposes per-camera camera/workspace clouds, concatenated and cr
 workspace clouds, fused voxel centroids, the final sampled tensor, and a provenance
 sidecar. It is current-snapshot only: it does not retain a map, TSDF, voxel history, or
 cross-time accumulation. See `docs/camera-rig-integration.md`,
-`docs/offline-rig-orchestration.md`, and `docs/workspace-fusion.md`.
+`docs/offline-rig-orchestration.md`, `docs/live-rig-acquisition.md`, and
+`docs/workspace-fusion.md`.
 
 Training and deployment must share the same PointCloudBuilder.
 

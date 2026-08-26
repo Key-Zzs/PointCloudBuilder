@@ -7,10 +7,10 @@ import argparse
 import json
 from pathlib import Path
 import statistics
+import subprocess
 import time
 from typing import Any
 
-import numpy as np
 import psutil
 import torch
 import yaml
@@ -40,10 +40,16 @@ def main() -> None:
     parser.add_argument("--reopen-frames", type=int, default=60)
     parser.add_argument("--output", required=True)
     parser.add_argument("--report", required=True)
+    parser.add_argument("--memory-sample-every", type=int, default=0)
+    parser.add_argument("--memory-samples")
     args = parser.parse_args()
 
     if args.frames <= 0 or args.reopen_frames < 0:
         raise ValueError("frame counts must be positive (reopen may be zero)")
+    if args.memory_sample_every < 0:
+        raise ValueError("--memory-sample-every must be non-negative")
+    if bool(args.memory_samples) != bool(args.memory_sample_every):
+        raise ValueError("--memory-samples and --memory-sample-every must be used together")
     if args.depth_source == "ffs_stereo" and not args.ffs_config:
         raise ValueError("--ffs-config is required for --depth-source=ffs_stereo")
     output = Path(args.output)
@@ -75,9 +81,12 @@ def main() -> None:
     plane = _plane(mapping["expected_plane"], context.workspace_frame)
 
     process = psutil.Process()
+    memory_samples: list[dict[str, int | None]] = []
     memory_start = process.memory_info().rss
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
+    if args.memory_sample_every:
+        memory_samples.append(_memory_sample(0, process))
     runs = [
         _run_once(
             live,
@@ -89,6 +98,9 @@ def main() -> None:
             required_fresh_streams=("depth",)
             if args.depth_source == "native"
             else ("ir_left", "ir_right"),
+            memory_sample_every=args.memory_sample_every,
+            memory_samples=memory_samples,
+            process=process,
         ),
     ]
     if args.reopen_frames:
@@ -103,6 +115,9 @@ def main() -> None:
                 required_fresh_streams=("depth",)
                 if args.depth_source == "native"
                 else ("ir_left", "ir_right"),
+                memory_sample_every=0,
+                memory_samples=memory_samples,
+                process=process,
             )
         )
     memory_end = process.memory_info().rss
@@ -149,6 +164,11 @@ def main() -> None:
         ),
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.memory_samples:
+        Path(args.memory_samples).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.memory_samples).write_text(
+            json.dumps({"samples": memory_samples}, indent=2) + "\n", encoding="utf-8"
+        )
     print(json.dumps(report, indent=2, sort_keys=True))
     if not report["passed"]:
         raise SystemExit("live single-camera acceptance failed")
@@ -158,9 +178,16 @@ def _hardware_preflight(camera_config: Any, bundle: Any) -> dict[str, Any]:
     import pyrealsense2 as rs
 
     devices = list(rs.context().query_devices())
-    if len(devices) != 1:
-        raise RuntimeError(f"expected exactly one D435i, found {len(devices)}")
-    device = devices[0]
+    matches = [
+        device
+        for device in devices
+        if device.get_info(rs.camera_info.serial_number) == camera_config.camera.serial
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "expected exactly one connected device matching the private camera config"
+        )
+    device = matches[0]
     model = device.get_info(rs.camera_info.name)
     serial = device.get_info(rs.camera_info.serial_number)
     usb = device.get_info(rs.camera_info.usb_type_descriptor)
@@ -174,7 +201,8 @@ def _hardware_preflight(camera_config: Any, bundle: Any) -> dict[str, Any]:
     if not model_match or not identity_match or not usb_ok:
         raise RuntimeError("live hardware model/identity/USB preflight failed")
     return {
-        "device_count": 1,
+        "connected_device_count": len(devices),
+        "matching_device_count": 1,
         "model_match": model_match,
         "identity_match": identity_match,
         "usb_type": usb,
@@ -192,6 +220,9 @@ def _run_once(
     label: str,
     context: Any,
     required_fresh_streams: tuple[str, ...],
+    memory_sample_every: int,
+    memory_samples: list[dict[str, int | None]],
+    process: psutil.Process,
 ) -> dict[str, Any]:
     timings: list[dict[str, float]] = []
     plane_records: list[dict[str, Any]] = []
@@ -227,6 +258,9 @@ def _run_once(
             previous_numbers = {str(key): int(value) for key, value in numbers.items()}
             previous_host_timestamp = host_timestamp
             rss_peak = max(rss_peak, psutil.Process().memory_info().rss)
+            completed = index + 1
+            if memory_sample_every and completed % memory_sample_every == 0:
+                memory_samples.append(_memory_sample(completed, process))
             if index == frames // 2:
                 selected = result.stages
     if selected is None:
@@ -375,6 +409,49 @@ def _plane(value: Any, frame: str) -> ExpectedPlaneRegion:
 
 def _quantile(values: list[float], q: float) -> float:
     return float(torch.quantile(torch.tensor(values, dtype=torch.float64), q).item())
+
+
+def _memory_sample(frame_index: int, process: psutil.Process) -> dict[str, int | None]:
+    status = Path(f"/proc/{process.pid}/status").read_text(encoding="utf-8")
+    vmhwm_kib = 0
+    for line in status.splitlines():
+        if line.startswith("VmHWM:"):
+            vmhwm_kib = int(line.split()[1])
+            break
+    cuda = torch.cuda.is_available()
+    return {
+        "frame_index": frame_index,
+        "rss_bytes": int(process.memory_info().rss),
+        "vmhwm_bytes": vmhwm_kib * 1024,
+        "cuda_allocated_bytes": int(torch.cuda.memory_allocated()) if cuda else 0,
+        "cuda_reserved_bytes": int(torch.cuda.memory_reserved()) if cuda else 0,
+        "cuda_max_allocated_bytes": int(torch.cuda.max_memory_allocated()) if cuda else 0,
+        "cuda_max_reserved_bytes": int(torch.cuda.max_memory_reserved()) if cuda else 0,
+        "gpu_process_memory_bytes": _gpu_process_memory_bytes(process.pid),
+    }
+
+
+def _gpu_process_memory_bytes(pid: int) -> int | None:
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    total_mib = 0
+    for line in completed.stdout.splitlines():
+        fields = [item.strip() for item in line.split(",")]
+        if len(fields) == 2 and fields[0] == str(pid):
+            total_mib += int(fields[1])
+    return total_mib * 1024 * 1024
 
 
 if __name__ == "__main__":

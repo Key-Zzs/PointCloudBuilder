@@ -6,7 +6,7 @@ from camera_rig.api import load_provisioned_camera_bundle
 
 from pointcloud_builder.config import SamplingConfig, load_config
 from pointcloud_builder.integrations.camera_rig import create_ffs_builder, create_native_builder
-from pointcloud_builder.rig.config import RigCameraConfig, RigConfig
+from pointcloud_builder.rig.config import RigConfig
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
 from pointcloud_builder.rig.sources import CameraRigReplaySource
 from pointcloud_builder.workspace import SingleCameraWorkspacePipeline

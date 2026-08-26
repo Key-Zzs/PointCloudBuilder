@@ -11,7 +11,15 @@ from pointcloud_builder.rig.config import (
     parse_rig_config,
 )
 from pointcloud_builder.rig.offline import build_replay_rig
+from pointcloud_builder.rig.live import (
+    LiveRigAcquisition,
+    LiveRigBuild,
+    LiveRigPipeline,
+    LiveRigWorkerFailure,
+    build_live_rig,
+)
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
+from pointcloud_builder.rig.processor import RigFrameProcessor
 from pointcloud_builder.rig.sources import CameraRigReplaySource, SyntheticCameraSource
 from pointcloud_builder.rig.synthetic import SyntheticScene, build_synthetic_rig, create_synthetic_scene
 from pointcloud_builder.rig.types import (
@@ -28,11 +36,16 @@ __all__ = [
     "CameraFrameEnvelope",
     "CameraRigReplaySource",
     "OfflineRigPipeline",
+    "LiveRigAcquisition",
+    "LiveRigBuild",
+    "LiveRigPipeline",
+    "LiveRigWorkerFailure",
     "PerCameraCloud",
     "PerCameraFramedCloud",
     "RigBuildResult",
     "RigCameraConfig",
     "RigCameraRuntime",
+    "RigFrameProcessor",
     "RigConfig",
     "RigDepthConfig",
     "RigFrameSet",
@@ -42,6 +55,7 @@ __all__ = [
     "SyntheticScene",
     "WorkspaceCloud",
     "build_replay_rig",
+    "build_live_rig",
     "build_synthetic_rig",
     "create_synthetic_scene",
     "load_rig_config",

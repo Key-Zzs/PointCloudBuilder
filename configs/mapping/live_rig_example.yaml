@@ -1,0 +1,58 @@
+schema_version: pointcloud-builder.rig.v1
+output_frame: workspace
+
+cameras:
+  - name: camera_a
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_a/runtime.yaml
+      provision_artifact: path/to/private/camera_a/provision
+    depth:
+      mode: native
+    pipeline_config: null
+    local_crop:
+      enabled: false
+
+  - name: camera_b
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_b/runtime.yaml
+      provision_artifact: path/to/private/camera_b/provision
+    depth:
+      mode: native
+    pipeline_config: null
+    local_crop:
+      enabled: false
+
+timing:
+  mode: nearest_host_timestamp
+  maximum_skew_ms: 33.4
+  reference_camera: camera_a
+
+live:
+  buffer_capacity: 2
+  matcher_wait_timeout_s: 0.1
+  join_timeout_s: 5.0
+  telemetry_history_capacity: 10000
+
+workspace_crop:
+  enabled: true
+  x: [-0.25, 0.35]
+  y: [-0.20, 0.30]
+  z: [-0.05, 0.50]
+
+fusion:
+  enabled: false
+  voxel_size_m: 0.005
+  origin: [-0.25, -0.20, -0.05]
+  deterministic: true
+
+sampling:
+  enabled: true
+  mode: voxel_fps
+  num_points: 4096
+  voxel_size: 0.005
+  deterministic: true
+  seed: 31
