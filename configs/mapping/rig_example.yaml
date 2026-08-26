@@ -1,0 +1,31 @@
+schema_version: pointcloud-builder.rig.v1
+output_frame: workspace
+cameras:
+  - name: camera_a
+    enabled: true
+    source:
+      type: camera_rig_replay
+      capture_artifact: path/to/camera_a/capture
+      provision_artifact: path/to/camera_a/provision
+    depth:
+      mode: native
+    pipeline_config: null
+    local_crop:
+      enabled: false
+timing:
+  mode: exact_index
+  maximum_skew_ms: 33.4
+workspace_crop:
+  enabled: true
+  x: [-1.0, 1.0]
+  y: [-1.0, 1.0]
+  z: [-0.2, 2.0]
+fusion:
+  enabled: false
+sampling:
+  enabled: true
+  mode: voxel_fps
+  num_points: 1024
+  voxel_size: 0.01
+  deterministic: true
+  seed: 17
