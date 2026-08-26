@@ -105,6 +105,8 @@ The first path remains the low-latency policy/dynamic observation. The second is
 static workspace history. A frozen TSDF plus the current fused cloud is the default
 production composition; `guarded_continuous` is opt-in and masks transient pixels
 until a fixed surface persists for the configured frame count.
+After a frozen map is loaded and extracted, no live depth packets are sent to it;
+only the separate current-snapshot overlay continues to change.
 
 Record native or FFS depth without re-running inference, then reconstruct offline:
 
@@ -145,6 +147,8 @@ and end-to-end p95, blocks publication above 10% FPS loss or 5 ms p95 increase, 
 records accepted/rejected submissions plus mapper queue/RSS telemetry. Publication
 also requires at least 32 child-RSS samples and, after a 20% warmup, no more than
 256 MiB quartile-median growth or 5 MiB per 100 frames fitted growth.
+Reports also split end-to-end latency into frame-match wait and snapshot processing
+diagnostics without changing the gate.
 
 Coordinate transforms always mean `T_target_from_source`, with column vectors. PCB
 stores `T_workspace_from_camera`; Open3D receives its tested inverse

@@ -423,6 +423,34 @@ class AsyncTsdfMapper:
             latest = value
         return latest
 
+    def wait_for_snapshot(self, *, timeout_s: float = 30.0) -> MapperSnapshot:
+        """Wait for the first bounded mapper snapshot before live acquisition."""
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            snapshot = self.poll_snapshot()
+            if snapshot is not None:
+                return snapshot
+            self._drain_status()
+            if self._error is not None or not self.running:
+                break
+            time.sleep(0.01)
+        raise RuntimeError(self._error or "TSDF mapper snapshot timed out")
+
+    def sample_resources(self, frame_index: int) -> None:
+        """Sample child RSS without submitting a depth frame to a frozen map."""
+
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int):
+            raise TypeError("mapper resource sample index must be an integer")
+        if frame_index < 0:
+            raise ValueError("mapper resource sample index must be non-negative")
+        if self._rss_samples_mb and frame_index <= self._rss_samples_mb[-1][0]:
+            raise ValueError("mapper resource sample indices must increase")
+        self._drain_status()
+        if not self.running:
+            raise RuntimeError(self._error or "TSDF mapper is not running")
+        self._sample_rss(frame_index)
+
     def freeze(self, *, timeout_s: float = 30.0) -> TsdfMapState:
         return self._command("freeze", timeout_s=timeout_s)
 
@@ -538,7 +566,7 @@ class AsyncTsdfMapper:
             elif kind == "error":
                 self._error = str(value)
 
-    def _sample_rss(self) -> None:
+    def _sample_rss(self, sample_index: int | None = None) -> None:
         process = self._process
         if process is None or process.pid is None:
             return
@@ -554,9 +582,14 @@ class AsyncTsdfMapper:
             if line.startswith("VmRSS:"):
                 value = float(line.split()[1]) / 1024.0
                 self._peak_rss_mb = max(self._peak_rss_mb or 0.0, value)
-                sample = (self._submitted, value)
+                sample = (
+                    self._submitted if sample_index is None else sample_index,
+                    value,
+                )
                 if self._rss_samples_mb and self._rss_samples_mb[-1][0] == sample[0]:
                     self._rss_samples_mb[-1] = sample
+                elif self._rss_samples_mb and self._rss_samples_mb[-1][0] > sample[0]:
+                    return
                 else:
                     self._rss_samples_mb.append(sample)
                     if len(self._rss_samples_mb) > 4096:

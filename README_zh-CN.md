@@ -108,6 +108,8 @@ matched cameras -> 逐相机 depth + K + T_workspace_from_camera -> 异步 TSDF 
 第一条是低延迟策略/动态观测；第二条是静态 workspace 历史。生产默认组合为冻结的
 TSDF 加当前 fused cloud。`guarded_continuous` 必须显式启用，并在新表面达到配置的
 连续固定帧数前屏蔽瞬时像素。
+冻结地图完成加载和提取后不再接收 live depth packet；只有独立的 current-snapshot
+overlay 继续更新。
 
 不重复执行 FFS 推理，直接记录 native 或 FFS depth，再离线重建：
 
@@ -147,6 +149,7 @@ PASS 的 snapshot-only 报告。CLI 会比较 processed FPS 与端到端 p95；F
 10% 或 p95 增加超过 5 ms 时拒绝发布，并记录 mapper 提交接受/拒绝数、队列与 RSS。
 发布还要求至少 32 个子进程 RSS 样本；去掉前 20% warmup 后，首尾四分位中位数增长
 不得超过 256 MiB，拟合增长斜率不得超过每 100 帧 5 MiB。
+报告还会分别记录帧匹配等待与 snapshot 处理延迟，用于诊断，但不改变端到端门限。
 
 变换统一表示 `T_target_from_source` 并作用于列向量。PCB 保存
 `T_workspace_from_camera`；Open3D 接收 synthetic parity 已验证的逆矩阵

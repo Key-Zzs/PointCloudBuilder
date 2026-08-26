@@ -51,6 +51,16 @@ than 5 ms. It also fails if fewer than 32 child-RSS samples exist or, after disc
 the first 20% as warmup, RSS has either more than 256 MiB quartile-median growth or a
 fitted slope above 5 MiB per 100 frames.
 
+Both the snapshot baseline and live report retain p50/p95 summaries for frame-match
+wait and snapshot processing separately. These are diagnostic decompositions of the
+unchanged end-to-end latency gate, not alternative ways to pass it.
+
+In `frozen_static`, the mapper loads and extracts the initial map before acquisition,
+then receives no per-frame depth packets: the map is read-only and the current fused
+cloud remains the separate dynamic overlay. Child RSS is still sampled once per
+matched set. `build_static` and `guarded_continuous` continue to receive the original
+per-camera depth observations through the bounded latest-only queue.
+
 Recordings and map artifacts use temporary sibling directories, atomic rename,
 canonical relative paths, exact file-set validation, and SHA-256 receipts. A map holds
 the native `volume.npz`, point/mesh PLY, resolved config, metrics, source receipt, and

@@ -7,6 +7,8 @@ import time
 import pytest
 
 from pointcloud_builder.mapping.process import AsyncTsdfMapper, MapperProcessConfig
+from pointcloud_builder.mapping.open3d import Open3dTsdfMap
+from pointcloud_builder.mapping.performance import evaluate_rss_plateau
 from pointcloud_builder.rig import (
     build_synthetic_rig,
     create_synthetic_scene,
@@ -188,3 +190,36 @@ def test_mapper_start_failure_reaps_non_daemon_child() -> None:
         mapper.start(timeout_s=3.0)
     assert not mapper.running
     assert mapper.telemetry().child_error is not None
+
+
+def test_frozen_mapper_uses_initial_snapshot_without_live_depth(
+    tmp_path,
+) -> None:
+    build_config = _config()
+    source = Open3dTsdfMap(build_config, workspace_frame="workspace")
+    source.integrate(_frame_set())
+    source.freeze()
+    volume = tmp_path / "frozen-volume.npz"
+    source.save(volume)
+    source.close()
+
+    frozen_config = replace(
+        build_config,
+        dynamic=replace(build_config.dynamic, mode="frozen_static"),
+    )
+    mapper = AsyncTsdfMapper(
+        MapperProcessConfig(frozen_config, "workspace", str(volume))
+    )
+    mapper.start()
+    snapshot = mapper.wait_for_snapshot(timeout_s=10.0)
+    assert snapshot.map_state.lifecycle == "frozen"
+    assert snapshot.extraction.point_count > 0
+    for frame_index in range(40):
+        mapper.sample_resources(frame_index)
+    telemetry = mapper.close()
+    assert telemetry.submitted_frame_sets == 0
+    assert telemetry.child_received_frame_sets == 0
+    assert telemetry.child_integrated_frame_sets == 0
+    assert len(telemetry.child_rss_samples_mb) == 40
+    assert evaluate_rss_plateau(telemetry.child_rss_samples_mb)["passed"]
+    assert telemetry.child_error is None

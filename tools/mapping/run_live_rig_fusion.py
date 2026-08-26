@@ -83,9 +83,7 @@ def main() -> None:
             RerunViewerProcess,
         )
 
-        implicit_spawn = not any(
-            (args.rerun_spawn, args.rerun_connect, rerun_record)
-        )
+        implicit_spawn = not any((args.rerun_spawn, args.rerun_connect, rerun_record))
         try:
             viewer = RerunViewerProcess(
                 RerunOutputConfig(
@@ -101,6 +99,8 @@ def main() -> None:
     board_records: dict[str, list[dict[str, Any]]] = {}
     stage_records: dict[str, list[dict[str, Any]]] = {}
     latencies: list[float] = []
+    match_wait_latencies: list[float] = []
+    processing_latencies: list[float] = []
     evidence_indices = sorted(
         {round(index * (args.matched_sets - 1) / 4) for index in range(5)}
     )
@@ -111,6 +111,8 @@ def main() -> None:
         for index in range(args.matched_sets):
             built = pipeline.capture_next()
             latencies.append(built.total_ms)
+            match_wait_latencies.append(built.match_wait_ms)
+            processing_latencies.append(built.processing_ms)
             result = built.result
             for item in result.per_camera_workspace:
                 board_records.setdefault(item.camera_name, []).append(
@@ -285,6 +287,8 @@ def main() -> None:
         "duration_s": duration_s,
         "throughput_fps": throughput_fps,
         "latency_ms": _summary(latencies),
+        "match_wait_latency_ms": _summary(match_wait_latencies),
+        "processing_latency_ms": _summary(processing_latencies),
         "performance_diagnostics": {
             "throughput_target_15hz_met": throughput_fps >= 15.0,
             "end_to_end_p95_66_8ms_met": float(np.quantile(latencies, 0.95)) <= 66.8,

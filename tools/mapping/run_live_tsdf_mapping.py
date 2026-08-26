@@ -97,6 +97,8 @@ def main() -> None:
     acquisition_started = False
     mapper_overheads: list[float] = []
     snapshot_latencies: list[float] = []
+    snapshot_match_wait_latencies: list[float] = []
+    snapshot_processing_latencies: list[float] = []
     mapper_submit_accepted = 0
     mapper_submit_rejected = 0
     viewer_overheads: list[float] = []
@@ -113,20 +115,32 @@ def main() -> None:
         )
         mapper.start()
         mapper_started = True
+        if initial_volume is not None:
+            # Loading/extracting a large frozen map is startup work. Receive the
+            # initial snapshot before capture so it cannot contend with the live
+            # latency interval or remain in the multiprocessing feeder pipe.
+            latest_snapshot = mapper.wait_for_snapshot()
         started = time.perf_counter()
         pipeline.acquisition.start()
         acquisition_started = True
         for index in range(args.matched_sets):
             built = pipeline.capture_next()
             snapshot_latencies.append(built.total_ms)
+            snapshot_match_wait_latencies.append(built.match_wait_ms)
+            snapshot_processing_latencies.append(built.processing_ms)
             result = built.result
             if writer is not None:
                 writer.append(result.depth_frame_set)
             submit_started = time.perf_counter()
-            if mapper.submit(result.depth_frame_set):
-                mapper_submit_accepted += 1
+            if tsdf_config.dynamic.mode == "frozen_static":
+                # A frozen map is read-only by contract. Per-frame depth would be
+                # discarded by the child and only add serialization contention.
+                mapper.sample_resources(index)
             else:
-                mapper_submit_rejected += 1
+                if mapper.submit(result.depth_frame_set):
+                    mapper_submit_accepted += 1
+                else:
+                    mapper_submit_rejected += 1
             mapper_overheads.append((time.perf_counter() - submit_started) * 1000.0)
             snapshot = mapper.poll_snapshot()
             if snapshot is not None:
@@ -229,6 +243,8 @@ def main() -> None:
             matched_sets=args.matched_sets,
             duration_s=duration_s,
             snapshot_latencies_ms=snapshot_latencies,
+            match_wait_latencies_ms=snapshot_match_wait_latencies,
+            processing_latencies_ms=snapshot_processing_latencies,
         )
         acquisition_clean = (
             not acquisition["workers_alive"] and not acquisition["worker_errors"]
@@ -295,6 +311,16 @@ def main() -> None:
         if viewer is not None:
             viewer_telemetry = viewer.close().__dict__
             viewer = None
+        frozen_static = tsdf_config.dynamic.mode == "frozen_static"
+        submissions_complete = (
+            mapper_submit_accepted == 0
+            and mapper_submit_rejected == 0
+            and mapper_telemetry.submitted_frame_sets == 0
+            and mapper_telemetry.child_received_frame_sets == 0
+            if frozen_static
+            else mapper_submit_accepted == args.matched_sets
+            and mapper_submit_rejected == 0
+        )
         mapping_gates = {
             "acquisition_clean": acquisition_clean,
             "snapshot_performance": bool(performance["passed"]),
@@ -303,7 +329,7 @@ def main() -> None:
             and not mapper_telemetry.running,
             "mapper_queue_bounded": mapper_telemetry.maximum_queue_depth
             <= tsdf_config.integration.queue_capacity,
-            "mapper_submissions_accepted": mapper_submit_accepted > 0,
+            "mapper_submission_policy": submissions_complete,
         }
         report = {
             "schema_version": "pointcloud-builder.live-tsdf-report.v1",
@@ -311,12 +337,17 @@ def main() -> None:
             "duration_s": duration_s,
             "snapshot_fps": args.matched_sets / duration_s,
             "snapshot_latency_ms": _summary(snapshot_latencies),
+            "snapshot_match_wait_latency_ms": _summary(snapshot_match_wait_latencies),
+            "snapshot_processing_latency_ms": _summary(snapshot_processing_latencies),
             "performance_comparison": performance,
             "memory_plateau": memory_plateau,
             "acquisition_clean": acquisition_clean,
             "mapper": mapper_telemetry.__dict__,
             "mapper_submit_accepted": mapper_submit_accepted,
             "mapper_submit_rejected": mapper_submit_rejected,
+            "mapper_depth_submission_policy": (
+                "initial_frozen_map_only" if frozen_static else "per_frame_depth"
+            ),
             "mapper_producer_overhead_ms": _summary(mapper_overheads),
             "mapper_producer_overhead_p95_le_5ms": bool(
                 np.quantile(mapper_overheads, 0.95) <= 5.0
@@ -451,6 +482,8 @@ def _performance_comparison(
     matched_sets: int,
     duration_s: float,
     snapshot_latencies_ms: list[float],
+    match_wait_latencies_ms: list[float],
+    processing_latencies_ms: list[float],
 ) -> dict[str, Any]:
     live_fps = matched_sets / duration_s
     live_p95_ms = float(np.quantile(snapshot_latencies_ms, 0.95))
@@ -470,7 +503,7 @@ def _performance_comparison(
         "snapshot_fps_loss_le_10_percent": fps_loss_ratio <= 0.10,
         "snapshot_p95_increase_le_5ms": p95_increase_ms <= 5.0,
     }
-    return {
+    comparison = {
         "evaluated": True,
         "passed": all(gates.values()),
         "baseline_fps": baseline_fps,
@@ -481,6 +514,19 @@ def _performance_comparison(
         "p95_increase_ms": p95_increase_ms,
         "gates": gates,
     }
+    baseline_match_wait = baseline.get("match_wait_latency_ms")
+    baseline_processing = baseline.get("processing_latency_ms")
+    if isinstance(baseline_match_wait, dict) and isinstance(baseline_processing, dict):
+        try:
+            comparison["p95_breakdown_ms"] = {
+                "baseline_match_wait": float(baseline_match_wait["p95"]),
+                "live_match_wait": float(np.quantile(match_wait_latencies_ms, 0.95)),
+                "baseline_processing": float(baseline_processing["p95"]),
+                "live_processing": float(np.quantile(processing_latencies_ms, 0.95)),
+            }
+        except (KeyError, TypeError, ValueError):
+            pass
+    return comparison
 
 
 def _require_publishable_mapper(
