@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pointcloud_builder.workspace.types import FramedPointCloud, WorkspacePointCloud
+from pointcloud_builder.mapping.types import RigDepthFrameSet
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class RigBuildResult:
     per_camera_provenance: dict[str, dict[str, Any]]
     canonical_camera_order: tuple[str, ...]
     frame_match: RigFrameSet
+    depth_frame_set: RigDepthFrameSet
     per_camera_stage_statistics: dict[str, dict[str, Any]] = field(default_factory=dict)
     processing_metadata: dict[str, Any] = field(default_factory=dict)
 

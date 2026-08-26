@@ -16,6 +16,7 @@ from camera_rig.api import (
 
 from pointcloud_builder.config import SamplingConfig, load_config
 from pointcloud_builder.integrations.camera_rig import create_ffs_builder, create_native_builder
+from pointcloud_builder.mapping.depth_packet import provision_identity_sha256
 from pointcloud_builder.rig.config import RigConfig, RigLiveConfig, RigTimingConfig
 from pointcloud_builder.rig.live_buffer import create_live_frame_buffers
 from pointcloud_builder.rig.live_matcher import LiveRigFrameMatcher
@@ -310,7 +311,9 @@ def build_live_rig(
         runtimes[camera.name] = RigCameraRuntime(
             source=SimpleNamespace(camera_name=camera.name),
             pipeline=SingleCameraWorkspacePipeline(
-                context, workspace_crop=config.workspace_crop
+                context,
+                workspace_crop=config.workspace_crop,
+                provision_sha256=provision_identity_sha256(source.provision_artifact),
             ),
             provenance={
                 "source_type": "camera_rig_live",

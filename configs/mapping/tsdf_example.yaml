@@ -1,0 +1,36 @@
+schema_version: pointcloud-builder.tsdf.v1
+
+backend:
+  type: open3d_tensor
+  device: CPU:0
+
+volume:
+  voxel_size_m: 0.005
+  block_resolution: 16
+  block_count: 50000
+  trunc_voxel_multiplier: 4.0
+
+depth:
+  minimum_m: 0.10
+  maximum_m: 2.00
+
+integration:
+  source: ffs_stereo
+  frame_stride: 5
+  maximum_weight: null
+  queue_capacity: 2
+  maximum_update_hz: 5.0
+  maximum_mesh_hz: 1.0
+
+extraction:
+  weight_threshold: 3.0
+  point_cloud: true
+  triangle_mesh: true
+
+dynamic:
+  mode: frozen_static
+  residual_threshold_m: 0.020
+  persistence_frames: 10
+  consistency_tolerance_m: 0.010
+  integrate_background_consistent: true
+  integrate_persistent_new_surface: true

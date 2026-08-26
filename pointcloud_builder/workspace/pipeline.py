@@ -8,6 +8,11 @@ from typing import Any
 
 from pointcloud_builder.config import CropConfig
 from pointcloud_builder.integrations.camera_rig.types import CameraRigBuilderContext
+from pointcloud_builder.mapping.depth_packet import (
+    canonical_bundle_sha256,
+    observation_from_same_pass,
+)
+from pointcloud_builder.mapping.types import RigDepthObservation
 from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.workspace.crop import crop_workspace_cloud
 from pointcloud_builder.workspace.transform import transform_point_cloud
@@ -24,6 +29,7 @@ class SingleCameraWorkspaceStages:
     workspace_raw: WorkspacePointCloud
     workspace_cropped: WorkspacePointCloud
     workspace_sampled: WorkspacePointCloud
+    depth_observation: RigDepthObservation
     metadata: dict[str, Any]
 
 
@@ -35,11 +41,15 @@ class SingleCameraWorkspacePipeline:
         context: CameraRigBuilderContext,
         *,
         workspace_crop: CropConfig,
+        provision_sha256: str | None = None,
     ) -> None:
         if workspace_crop.frame != context.workspace_frame:
             raise ValueError("workspace crop frame must match the CameraRig bundle parent frame")
         self.context = context
         self.workspace_crop = workspace_crop
+        self.provision_sha256 = provision_sha256 or canonical_bundle_sha256(
+            context.calibration.bundle
+        )
 
     def process(self, camera_frame: Any) -> SingleCameraWorkspaceStages:
         """Adapt, deproject once, and expose camera/workspace stages."""
@@ -48,7 +58,9 @@ class SingleCameraWorkspacePipeline:
         adapter_start = pipeline_start
         mapping = self.context.frame_adapter.adapt(camera_frame)
         adapter_ms = (time.perf_counter() - adapter_start) * 1000.0
-        stages, builder_meta = self.context.builder.build_stages(mapping)
+        stages, builder_meta, resolved_depth = (
+            self.context.builder.build_stages_with_resolved_depth(mapping)
+        )
         camera_clouds = {
             name: FramedPointCloud(
                 points=points,
@@ -99,6 +111,12 @@ class SingleCameraWorkspacePipeline:
             workspace_raw=workspace_raw,
             workspace_cropped=workspace_cropped,
             workspace_sampled=workspace_sampled,
+            depth_observation=observation_from_same_pass(
+                mapping=mapping,
+                resolved_depth=resolved_depth,
+                context=self.context,
+                provision_sha256=self.provision_sha256,
+            ),
             metadata={
                 "camera_name": mapping["camera_name"],
                 "timestamp": mapping["timestamp"],

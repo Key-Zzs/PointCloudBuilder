@@ -6,6 +6,7 @@ from camera_rig.api import load_provisioned_camera_bundle
 
 from pointcloud_builder.config import SamplingConfig, load_config
 from pointcloud_builder.integrations.camera_rig import create_ffs_builder, create_native_builder
+from pointcloud_builder.mapping.depth_packet import provision_identity_sha256
 from pointcloud_builder.rig.config import RigConfig
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
 from pointcloud_builder.rig.sources import CameraRigReplaySource
@@ -34,7 +35,13 @@ def build_replay_rig(config: RigConfig, *, device: str = "auto") -> OfflineRigPi
             )
         runtimes[camera.name] = RigCameraRuntime(
             source=CameraRigReplaySource(camera.name, camera.source.capture_artifact),
-            pipeline=SingleCameraWorkspacePipeline(context, workspace_crop=config.workspace_crop),
+            pipeline=SingleCameraWorkspacePipeline(
+                context,
+                workspace_crop=config.workspace_crop,
+                provision_sha256=provision_identity_sha256(
+                    camera.source.provision_artifact
+                ),
+            ),
             provenance={"source_type": "camera_rig_replay", "depth_mode": camera.depth.mode},
         )
     return OfflineRigPipeline(config, runtimes)

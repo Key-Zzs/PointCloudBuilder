@@ -122,6 +122,16 @@ class PointCloudBuilder:
         _, meta, stages = self._build_from_frame(frame, mode="staged")
         return stages, meta
 
+    def build_stages_with_resolved_depth(
+        self,
+        frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+    ) -> tuple[dict[str, Tensor], Meta, ResolvedDepth]:
+        """Return point stages and the exact same-pass depth used to deproject them."""
+
+        resolved = self._resolve_depth(frame)
+        _, meta, stages = self._build_from_frame(frame, mode="staged", resolved=resolved)
+        return stages, meta, resolved
+
     def build_perception_stages(
         self,
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],

@@ -17,6 +17,7 @@ from pointcloud_builder.rig.types import (
     RigFrameSet,
     WorkspaceCloud,
 )
+from pointcloud_builder.mapping.types import RigDepthFrameSet
 from pointcloud_builder.workspace.crop import crop_workspace_cloud
 from pointcloud_builder.workspace.types import WorkspacePointCloud
 
@@ -65,11 +66,13 @@ class RigFrameProcessor:
         per_camera_workspace_raw: list[WorkspacePointCloud] = []
         per_camera_stage_statistics: dict[str, dict[str, Any]] = {}
         timing: dict[str, Any] = {"frame_match": frame_match_ms, "per_camera": {}}
+        depth_observations = []
         for name in self.canonical_order:
             runtime = self.runtimes[name]
             envelope = frame_set.envelopes[name]
             start = time.perf_counter()
             stages = runtime.pipeline.process(envelope.frame)
+            depth_observations.append(stages.depth_observation)
             timing["per_camera"][name] = {
                 **stages.metadata["timing_ms"],
                 "rig_camera_total": (time.perf_counter() - start) * 1000.0,
@@ -170,6 +173,17 @@ class RigFrameProcessor:
         timing["concatenate_crop_fuse_and_global_sampling"] = concat_ms
         timing["total"] = (time.perf_counter() - total_start) * 1000.0
         provenance = {item.camera_name: item.provenance for item in per_camera}
+        if frame_set.match_timestamp_ns is None:
+            raise ValueError("rig depth output requires a matched-set timestamp")
+        matched_set_index = frame_set.match_sequence_index
+        if matched_set_index is None:
+            matched_set_index = frame_set.envelopes[frame_set.reference_camera].frame_index
+        depth_frame_set = RigDepthFrameSet(
+            matched_set_index=matched_set_index,
+            host_timestamp_ns=frame_set.match_timestamp_ns,
+            maximum_skew_ms=frame_set.maximum_skew_ms,
+            observations=tuple(depth_observations),
+        )
         return RigBuildResult(
             per_camera_camera_frame=tuple(per_camera_camera),
             per_camera_workspace=tuple(per_camera),
@@ -182,6 +196,7 @@ class RigFrameProcessor:
             per_camera_provenance=provenance,
             canonical_camera_order=self.canonical_order,
             frame_match=frame_set,
+            depth_frame_set=depth_frame_set,
             per_camera_stage_statistics=per_camera_stage_statistics,
             processing_metadata=processing_metadata,
         )
