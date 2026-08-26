@@ -39,6 +39,7 @@ logs/
 runs/
 outputs/
 benchmark_results/
+.local/
 
 # RGB-D captures and generated point-cloud artifacts
 # Keep YAML camera/config files trackable; ignore heavy frame data and exports.
