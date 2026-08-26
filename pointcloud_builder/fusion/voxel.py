@@ -49,7 +49,7 @@ def voxel_fuse_workspace_clouds(
             cloud=WorkspacePointCloud(
                 points=points.clone(),
                 frame=frame,
-                metadata={"fusion": provenance.to_summary()},
+                metadata={"fusion": provenance.to_compact_summary()},
             ),
             provenance=provenance,
         )
@@ -78,7 +78,7 @@ def voxel_fuse_workspace_clouds(
                     "voxel_size_m": config.voxel_size_m,
                     "origin": list(config.origin),
                     "deterministic": config.deterministic,
-                    **provenance.to_summary(),
+                    **provenance.to_compact_summary(),
                 }
             },
         ),

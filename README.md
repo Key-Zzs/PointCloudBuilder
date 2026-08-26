@@ -16,7 +16,8 @@ workspace clouds, fused voxel centroids, the final sampled tensor, and a provena
 sidecar. It is current-snapshot only: it does not retain a map, TSDF, voxel history, or
 cross-time accumulation. See `docs/camera-rig-integration.md`,
 `docs/offline-rig-orchestration.md`, `docs/live-rig-acquisition.md`, and
-`docs/workspace-fusion.md`.
+`docs/workspace-fusion.md`. Real dual-camera snapshot acceptance is documented in
+`docs/real-multicamera-fusion.md`.
 
 Training and deployment must share the same PointCloudBuilder.
 

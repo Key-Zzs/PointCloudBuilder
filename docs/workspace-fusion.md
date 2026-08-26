@@ -20,6 +20,9 @@ The sidecar reports total input points, output voxels, per-camera input and uniq
 counts, multi-camera voxel count, and aligned per-voxel source-camera and point counts.
 Point tensors do not embed camera IDs. `RigBuildResult` exposes per-camera camera-frame
 and workspace clouds plus concatenated, workspace-cropped, fused, and sampled stages.
+The cloud metadata carries the compact scalar summary; full aligned per-voxel tensors
+remain authoritative on `RigBuildResult.fusion_provenance` and are expanded only by
+`to_summary()` for explicit offline inspection.
 
 Supported boundary cases include a one-camera fallback, empty individual or all-empty
 clouds, unequal point counts, Nx3/Nx6, negative workspace coordinates, CPU/CUDA, and

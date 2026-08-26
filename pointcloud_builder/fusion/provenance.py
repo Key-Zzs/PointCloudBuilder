@@ -16,19 +16,25 @@ def build_fusion_provenance(
     point_counts: torch.Tensor,
 ) -> FusionProvenance:
     per_input = {name: int(keys.shape[0]) for name, keys in zip(names, keys_by_camera, strict=True)}
-    key_sources: dict[tuple[int, int, int], set[str]] = {}
-    unique_contribution: dict[str, int] = {}
-    for name, keys in zip(names, keys_by_camera, strict=True):
-        local = {tuple(int(value) for value in row) for row in keys.detach().cpu().tolist()}
-        unique_contribution[name] = len(local)
-        for key in local:
-            key_sources.setdefault(key, set()).add(name)
-    ordered_keys = [tuple(int(value) for value in row) for row in unique_keys.detach().cpu().tolist()]
-    source_counts = torch.tensor(
-        [len(key_sources[key]) for key in ordered_keys],
-        dtype=torch.int64,
-        device=unique_keys.device,
-    )
+    unique_by_camera = [torch.unique(keys, dim=0, sorted=True) for keys in keys_by_camera]
+    unique_contribution = {
+        name: int(keys.shape[0])
+        for name, keys in zip(names, unique_by_camera, strict=True)
+    }
+    if unique_keys.shape[0]:
+        merged_keys, source_counts = torch.unique(
+            torch.cat(unique_by_camera, dim=0),
+            dim=0,
+            sorted=True,
+            return_counts=True,
+        )
+        if not torch.equal(merged_keys, unique_keys):
+            raise RuntimeError("fusion provenance key order differs from fused voxel order")
+        source_counts = source_counts.to(dtype=torch.int64)
+    else:
+        source_counts = torch.empty(
+            (0,), dtype=torch.int64, device=unique_keys.device
+        )
     return FusionProvenance(
         input_point_count=sum(per_input.values()),
         output_voxel_count=int(unique_keys.shape[0]),

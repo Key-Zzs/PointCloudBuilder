@@ -137,6 +137,7 @@ def main() -> None:
     )
     report = {
         "schema_version": "pointcloud-builder.live-single-camera.v1",
+        "camera_name": camera_config.camera.name,
         "depth_source": args.depth_source,
         "source_frame": context.source_frame,
         "workspace_frame": context.workspace_frame,
@@ -226,6 +227,7 @@ def _run_once(
 ) -> dict[str, Any]:
     timings: list[dict[str, float]] = []
     plane_records: list[dict[str, Any]] = []
+    stage_records: list[dict[str, Any]] = []
     previous_numbers: dict[str, int] = {}
     previous_host_timestamp: int | None = None
     per_stream_discontinuities: dict[str, int] = {}
@@ -239,7 +241,45 @@ def _run_once(
             result = live.capture_next()
             timings.append(result.timing_ms)
             metrics = evaluate_expected_plane(result.stages.workspace_raw, plane)
-            plane_records.append(metrics.to_dict())
+            plane_record = metrics.to_dict()
+            board_points = _select_plane_xy(
+                result.stages.workspace_raw.points[:, :3], plane
+            )
+            plane_record["outlier_ratio"] = float(
+                (torch.abs(board_points[:, 2] - plane.expected_z_m) > 0.040)
+                .float()
+                .mean()
+                .item()
+            )
+            plane_records.append(plane_record)
+            builder_metadata = result.stages.metadata.get("builder", {})
+            ffs_metadata = builder_metadata.get("ffs", {})
+            valid_disparity = ffs_metadata.get("valid_disparity_count")
+            invalid_disparity = ffs_metadata.get("invalid_disparity_count")
+            disparity_total = (
+                int(valid_disparity) + int(invalid_disparity)
+                if valid_disparity is not None and invalid_disparity is not None
+                else 0
+            )
+            total_pixels = int(context.builder.camera.width) * int(
+                context.builder.camera.height
+            )
+            stage_records.append(
+                {
+                    "valid_depth_ratio": int(
+                        builder_metadata.get(
+                            "num_raw_points", result.stages.camera_raw.points.shape[0]
+                        )
+                    )
+                    / total_pixels,
+                    "valid_disparity_ratio": (
+                        int(valid_disparity) / disparity_total
+                        if valid_disparity is not None and disparity_total
+                        else None
+                    ),
+                    "ffs_backend": ffs_metadata.get("backend"),
+                }
+            )
             numbers = result.stages.metadata["frame_numbers"]
             if previous_numbers:
                 for stream, number in numbers.items():
@@ -307,6 +347,29 @@ def _run_once(
             ),
             "maximum_normal_angle_deg": max(
                 float(item["normal_angle_to_expected_deg"]) for item in plane_records
+            ),
+            "rmse_m": statistics.median(
+                float(item["rmse_m"]) for item in plane_records
+            ),
+            "outlier_ratio": statistics.median(
+                float(item["outlier_ratio"]) for item in plane_records
+            ),
+        },
+        "stage": {
+            "valid_depth_ratio": statistics.median(
+                float(item["valid_depth_ratio"]) for item in stage_records
+            ),
+            "valid_disparity_ratio": (
+                statistics.median(
+                    float(item["valid_disparity_ratio"])
+                    for item in stage_records
+                    if item["valid_disparity_ratio"] is not None
+                )
+                if any(item["valid_disparity_ratio"] is not None for item in stage_records)
+                else None
+            ),
+            "ffs_backends": sorted(
+                {str(item["ffs_backend"]) for item in stage_records if item["ffs_backend"]}
             ),
         },
         "rss_peak_bytes": rss_peak,
@@ -391,6 +454,15 @@ def _sampling(value: Any) -> SamplingConfig:
         deterministic=bool(raw.get("deterministic", False)),
         pad_mode=str(raw.get("pad_mode", "repeat")),  # type: ignore[arg-type]
     )
+
+
+def _select_plane_xy(points: torch.Tensor, plane: ExpectedPlaneRegion) -> torch.Tensor:
+    return points[
+        (points[:, 0] >= plane.x[0])
+        & (points[:, 0] <= plane.x[1])
+        & (points[:, 1] >= plane.y[0])
+        & (points[:, 1] <= plane.y[1])
+    ]
 
 
 def _plane(value: Any, frame: str) -> ExpectedPlaneRegion:

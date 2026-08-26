@@ -17,7 +17,10 @@ import yaml
 
 from pointcloud_builder.rig import build_live_rig, load_rig_config
 from pointcloud_builder.visualization import save_ascii_ply
-from pointcloud_builder.workspace import ExpectedPlaneRegion, evaluate_expected_plane
+from pointcloud_builder.workspace import (
+    ExpectedPlaneRegion,
+    evaluate_expected_plane,
+)
 
 
 def main() -> None:
@@ -234,6 +237,13 @@ def _run_once(
                 stage_records.setdefault(name, []).append(dict(item))
             for item in built.result.per_camera_workspace:
                 metrics = evaluate_expected_plane(item.cloud, plane).to_dict()
+                board_points = _select_plane_xy(item.cloud.points[:, :3], plane)
+                metrics["outlier_ratio"] = float(
+                    (torch.abs(board_points[:, 2] - plane.expected_z_m) > 0.040)
+                    .float()
+                    .mean()
+                    .item()
+                )
                 plane_records.setdefault(item.camera_name, []).append(metrics)
                 frame_score = max(frame_score, float(metrics["p95_abs_z_m"]))
             if evidence:
@@ -381,7 +391,20 @@ def _plane_summary(records: list[dict[str, Any]]) -> dict[str, float | int]:
         "median_abs_z_m": statistics.median(float(item["median_abs_z_m"]) for item in records),
         "p95_abs_z_m": _quantile([float(item["p95_abs_z_m"]) for item in records], 0.95),
         "maximum_normal_angle_deg": max(float(item["normal_angle_to_expected_deg"]) for item in records),
+        "rmse_m": statistics.median(float(item["rmse_m"]) for item in records),
+        "outlier_ratio": statistics.median(
+            float(item["outlier_ratio"]) for item in records
+        ),
     }
+
+
+def _select_plane_xy(points: torch.Tensor, plane: ExpectedPlaneRegion) -> torch.Tensor:
+    return points[
+        (points[:, 0] >= plane.x[0])
+        & (points[:, 0] <= plane.x[1])
+        & (points[:, 1] >= plane.y[0])
+        & (points[:, 1] <= plane.y[1])
+    ]
 
 
 def _stage_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
