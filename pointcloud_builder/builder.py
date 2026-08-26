@@ -155,31 +155,27 @@ class PointCloudBuilder:
         resolved = resolved or self._resolve_depth(frame)
         depth = resolved.depth
         intrinsics = resolved.intrinsics
-        stage_timer = _StageTiming(self.device) if resolved.metadata is not None else None
+        stage_timer = _StageTiming(self.device)
         points, valid_mask = deproject_depth(
             depth,
             intrinsics,
             resolved.effective_depth_scale,
             flatten=True,
         )
-        if stage_timer is not None:
-            stage_timer.mark("deprojection")
+        stage_timer.mark("deprojection")
         colors, rgb_meta = self._rgb_for_raw_points(
             frame,
             points,
             valid_mask,
             depth_to_color_extrinsics=resolved.depth_to_color_extrinsics,
         )
-        if stage_timer is not None:
-            stage_timer.mark("rgb_mapping")
+        stage_timer.mark("rgb_mapping")
         raw_point_cloud = pack_point_cloud(points, colors)
         cropped_point_cloud, _ = crop_point_cloud(raw_point_cloud, self.config.crop)
-        if stage_timer is not None:
-            stage_timer.mark("crop")
+        stage_timer.mark("crop")
         sampled_point_cloud, sampling_meta = sample_point_cloud(cropped_point_cloud, self.config.sampling)
-        if stage_timer is not None:
-            stage_timer.mark("sampling")
-        stage_timing = stage_timer.finish() if stage_timer is not None else None
+        stage_timer.mark("sampling")
+        stage_timing = stage_timer.finish()
         output_stage = "sampled" if self.config.sampling.enabled else ("cropped" if self.config.crop.enabled else "raw")
         meta: Meta = {
             "stage": output_stage,
@@ -215,13 +211,14 @@ class PointCloudBuilder:
                 else ("color" if self.camera.aligned_depth_to_color else "depth")
             ),
             "rgb": rgb_meta,
+            "timing_ms": stage_timing,
         }
         if resolved.metadata is not None:
             meta["depth_source"] = "ffs_stereo"
             meta["effective_depth_scale"] = resolved.effective_depth_scale
             meta["ffs"] = resolved.metadata
             meta["ffs"].setdefault("timing_ms", {}).update(
-                stage_timing or {}
+                stage_timing
             )
         return sampled_point_cloud, meta, {
             "raw": raw_point_cloud,

@@ -1,0 +1,6 @@
+depth_source: native
+frames: 300
+reopen_frames: 60
+camera_config: relative/path/to/private-camera-config
+provision_artifact: relative/path/to/private-provision-artifact
+mapping_config: relative/path/to/mapping-config

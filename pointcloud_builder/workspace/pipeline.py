@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 from pointcloud_builder.config import CropConfig
@@ -43,7 +44,10 @@ class SingleCameraWorkspacePipeline:
     def process(self, camera_frame: Any) -> SingleCameraWorkspaceStages:
         """Adapt, deproject once, and expose camera/workspace stages."""
 
+        pipeline_start = time.perf_counter()
+        adapter_start = pipeline_start
         mapping = self.context.frame_adapter.adapt(camera_frame)
+        adapter_ms = (time.perf_counter() - adapter_start) * 1000.0
         stages, builder_meta = self.context.builder.build_stages(mapping)
         camera_clouds = {
             name: FramedPointCloud(
@@ -53,10 +57,17 @@ class SingleCameraWorkspacePipeline:
             )
             for name, points in stages.items()
         }
+        transform_start = time.perf_counter()
         workspace_raw = transform_point_cloud(
             camera_clouds["raw"], self.context.T_workspace_from_source
         )
+        _sync_if_cuda(workspace_raw.points)
+        transform_ms = (time.perf_counter() - transform_start) * 1000.0
+        workspace_crop_start = time.perf_counter()
         workspace_cropped = crop_workspace_cloud(workspace_raw, self.workspace_crop)
+        _sync_if_cuda(workspace_cropped.points)
+        workspace_crop_ms = (time.perf_counter() - workspace_crop_start) * 1000.0
+        workspace_sampling_start = time.perf_counter()
         sampled, sampling_meta = sample_point_cloud(
             workspace_cropped.points,
             self.context.builder.config.sampling,
@@ -66,6 +77,21 @@ class SingleCameraWorkspacePipeline:
             frame=self.context.workspace_frame,
             metadata={**workspace_cropped.metadata, "sampling": sampling_meta},
         )
+        _sync_if_cuda(workspace_sampled.points)
+        workspace_sampling_ms = (time.perf_counter() - workspace_sampling_start) * 1000.0
+        builder_timing = dict(builder_meta.get("timing_ms", {}))
+        ffs_timing = dict(builder_meta.get("ffs", {}).get("timing_ms", {}))
+        timing_ms = {
+            "frame_adapter": adapter_ms,
+            "depth_inference": float(ffs_timing.get("inference", 0.0)),
+            "deprojection": float(builder_timing.get("deprojection", 0.0)),
+            "local_crop": float(builder_timing.get("crop", 0.0)),
+            "camera_sampling": float(builder_timing.get("sampling", 0.0)),
+            "workspace_transform": transform_ms,
+            "workspace_crop": workspace_crop_ms,
+            "sampling": workspace_sampling_ms,
+            "total_workspace_pipeline": (time.perf_counter() - pipeline_start) * 1000.0,
+        }
         return SingleCameraWorkspaceStages(
             camera_raw=camera_clouds["raw"],
             camera_cropped=camera_clouds["cropped"],
@@ -83,5 +109,13 @@ class SingleCameraWorkspacePipeline:
                 "workspace_frame": self.context.workspace_frame,
                 "depth_mode": self.context.depth_mode,
                 "builder": builder_meta,
+                "timing_ms": timing_ms,
             },
         )
+
+
+def _sync_if_cuda(points: Any) -> None:
+    if getattr(points, "is_cuda", False):
+        import torch
+
+        torch.cuda.current_stream(points.device).synchronize()
