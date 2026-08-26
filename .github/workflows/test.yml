@@ -76,4 +76,5 @@ jobs:
           pytest -q \
             tests/test_mapping_recording.py \
             tests/test_tsdf_mapping.py \
-            tests/test_tsdf_mapper_process.py
+            tests/test_tsdf_mapper_process.py \
+            tests/test_guarded_tsdf.py
