@@ -52,7 +52,7 @@ def _raw(names: tuple[str, ...], *, timing_mode: str = "exact_index") -> dict:
 
 
 def _assert_scene_geometry(result) -> None:
-    assert result.concatenated_workspace_cloud.frame == "workspace"
+    assert result.workspace_cropped.frame == "workspace"
     for item in result.per_camera_workspace_clouds:
         points = item.cloud.points[:, :3]
         plane = points[points[:, 2].abs() < 0.004]
@@ -79,8 +79,8 @@ def test_full_pipeline_supports_one_two_and_three_analytic_cameras() -> None:
         result = build_synthetic_rig(parse_rig_config(_raw(names)), scene).build(1)
         assert result.canonical_camera_order == tuple(sorted(names))
         assert [item.camera_name for item in result.per_camera_workspace_clouds] == sorted(names)
-        assert result.concatenated_workspace_cloud.points.shape == (1024, 3)
-        assert result.concatenated_workspace_cloud.metadata["pre_sampling_count"] == sum(
+        assert result.sampled.points.shape == (1024, 3)
+        assert result.sampled.metadata["pre_sampling_count"] == sum(
             item.cloud.points.shape[0] for item in result.per_camera_workspace_clouds
         )
         _assert_scene_geometry(result)
@@ -115,10 +115,10 @@ def test_yaml_camera_order_does_not_change_identity_or_concatenated_output() -> 
     forward = build_synthetic_rig(parse_rig_config(raw), scene).build(0)
     reverse = build_synthetic_rig(parse_rig_config(reversed_raw), scene).build(0)
     assert forward.canonical_camera_order == reverse.canonical_camera_order == names
-    assert forward.concatenated_workspace_cloud.metadata == reverse.concatenated_workspace_cloud.metadata
+    assert forward.sampled.metadata == reverse.sampled.metadata
     assert torch.equal(
-        forward.concatenated_workspace_cloud.points,
-        reverse.concatenated_workspace_cloud.points,
+        forward.sampled.points,
+        reverse.sampled.points,
     )
     for left, right in zip(
         forward.per_camera_workspace_clouds, reverse.per_camera_workspace_clouds, strict=True

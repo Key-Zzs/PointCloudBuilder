@@ -17,6 +17,7 @@ from pointcloud_builder.rig.synthetic import SyntheticScene, build_synthetic_rig
 from pointcloud_builder.rig.types import (
     CameraFrameEnvelope,
     PerCameraCloud,
+    PerCameraFramedCloud,
     RigBuildResult,
     RigFrameSet,
     WorkspaceCloud,
@@ -28,6 +29,7 @@ __all__ = [
     "CameraRigReplaySource",
     "OfflineRigPipeline",
     "PerCameraCloud",
+    "PerCameraFramedCloud",
     "RigBuildResult",
     "RigCameraConfig",
     "RigCameraRuntime",

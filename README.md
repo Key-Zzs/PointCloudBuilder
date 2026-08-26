@@ -2,6 +2,21 @@
 
 PointCloudBuilder is a plug-and-play real-time RGB-D point cloud construction module for robot learning pipelines. It uses PyTorch CUDA tensors to deproject RGB-D frames into camera-frame point clouds from YAML-configured camera intrinsics, optionally produces RGB point clouds when aligned_depth_to_color is enabled, applies YAML-configured workspace cropping, and outputs fixed-size point clouds using FPS, stride, random, voxel, voxel_random, or voxel_fps sampling. Offline visualization and benchmark tools are provided for raw, cropped, and sampled point clouds, while realtime control remains decoupled from visualization.
 
+## CameraRig, workspace, and rig fusion
+
+CameraRig is pinned at `v1.0.0` under `third_party/CameraRig` and owns one camera's
+frame, calibration, and fixed-mount bundle. PointCloudBuilder consumes only the stable
+`camera_rig.api`, defines native depth XYZ in the depth optical frame and FFS XYZ in
+the left-IR optical frame, then owns workspace transformation, the versioned
+multi-camera list, host-timestamp matching, deterministic snapshot voxel fusion, and
+one global post-fusion sampling step.
+
+The rig pipeline exposes per-camera camera/workspace clouds, concatenated and cropped
+workspace clouds, fused voxel centroids, the final sampled tensor, and a provenance
+sidecar. It is current-snapshot only: it does not retain a map, TSDF, voxel history, or
+cross-time accumulation. See `docs/camera-rig-integration.md`,
+`docs/offline-rig-orchestration.md`, and `docs/workspace-fusion.md`.
+
 Training and deployment must share the same PointCloudBuilder.
 
 ## Repository Description
@@ -246,7 +261,7 @@ Required benchmark script names:
 python tools/camera/detect_realsense.py
 
 python tools/camera/capture_d435i_aligned_rgbd.py \
-  --serial 344522070241 \
+  --serial YOUR_DEVICE_SERIAL \
   --width 424 \
   --height 240 \
   --fps 30 \

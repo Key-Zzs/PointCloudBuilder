@@ -8,9 +8,10 @@ for XYZRGB tensors, only XYZ changes.
 
 `SingleCameraWorkspacePipeline` exposes `camera_raw`, `camera_cropped`,
 `camera_sampled`, `workspace_raw`, `workspace_cropped`, and `workspace_sampled`.
-Workspace crop occurs after the source-to-workspace transform. M2 permits the legacy
-single-camera sampling stage; multi-camera fusion disables per-camera sampling and
-samples globally after fusion.
+The local camera-frame crop is applied before the source-to-workspace transform;
+workspace crop occurs afterward. M2 permits the legacy single-camera sampling stage;
+multi-camera fusion reads the pre-sampling cropped stage, disables per-camera sampling,
+and samples globally after fusion.
 
 `ExpectedPlaneRegion` is target-independent. It selects a workspace XYZ region and
 reports point count, signed Z bias, median/P95 absolute Z, RMSE, fitted normal, and

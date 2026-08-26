@@ -59,7 +59,7 @@ def test_rig_config_is_strict_and_versioned() -> None:
         (lambda raw: raw["cameras"][0].update({"unknown": 1}), "unknown fields"),
         (lambda raw: raw.update({"cameras": []}), "non-empty"),
         (lambda raw: raw["cameras"].append(deepcopy(raw["cameras"][0])), "duplicate"),
-        (lambda raw: raw["fusion"].update({"enabled": True}), "M6"),
+        (lambda raw: raw["fusion"].update({"unknown": True}), "unknown fields"),
     ],
 )
 def test_rig_config_rejects_invalid_contracts(mutator, message: str) -> None:

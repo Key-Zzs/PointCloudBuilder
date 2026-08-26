@@ -37,10 +37,10 @@ def main() -> None:
         result = build_synthetic_rig(parse_rig_config(_config(active)), scene).build(1)
         runs[str(count)] = {
             "canonical_camera_order": list(result.canonical_camera_order),
-            "pre_sampling_count": result.concatenated_workspace_cloud.metadata[
+            "pre_sampling_count": result.sampled.metadata[
                 "pre_sampling_count"
             ],
-            "sampled_count": int(result.concatenated_workspace_cloud.points.shape[0]),
+            "sampled_count": int(result.sampled.points.shape[0]),
             "geometry": _geometry(result),
             "timing_report_ms": result.timing_report_ms,
             "wall_time_ms": (time.perf_counter() - started) * 1000.0,
@@ -52,11 +52,10 @@ def main() -> None:
     reverse = build_synthetic_rig(parse_rig_config(reversed_config), scene).build(1)
     order_invariant = bool(
         forward.canonical_camera_order == reverse.canonical_camera_order
-        and forward.concatenated_workspace_cloud.metadata
-        == reverse.concatenated_workspace_cloud.metadata
+        and forward.sampled.metadata == reverse.sampled.metadata
         and torch.equal(
-            forward.concatenated_workspace_cloud.points,
-            reverse.concatenated_workspace_cloud.points,
+            forward.sampled.points,
+            reverse.sampled.points,
         )
     )
     nearest_config = _config(names)
@@ -64,7 +63,7 @@ def main() -> None:
     nearest = build_synthetic_rig(parse_rig_config(nearest_config), scene).build(1)
     geometry = _geometry(forward)
     save_ascii_ply(
-        forward.concatenated_workspace_cloud.points,
+        forward.workspace_cropped.points,
         output / "concatenated_workspace.ply",
     )
     _render_colored(forward, output / "three_camera_workspace.png")

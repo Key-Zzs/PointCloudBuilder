@@ -59,7 +59,7 @@ class SingleCameraWorkspacePipeline:
         }
         transform_start = time.perf_counter()
         workspace_raw = transform_point_cloud(
-            camera_clouds["raw"], self.context.T_workspace_from_source
+            camera_clouds["cropped"], self.context.T_workspace_from_source
         )
         _sync_if_cuda(workspace_raw.points)
         transform_ms = (time.perf_counter() - transform_start) * 1000.0

@@ -6,6 +6,20 @@ PointCloudBuilder 是一个面向机器人学习流程的 RGB-D 转相机坐标�
 D435i 采集一帧 aligned RGB-D、可视化生成的点云，并 benchmark 反投影、裁剪
 和采样等基础模块。
 
+## CameraRig、workspace 与 rig fusion
+
+仓库以 `third_party/CameraRig` 固定 CameraRig `v1.0.0`。CameraRig 负责单相机
+frame、calibration 与 fixed-mount bundle；PointCloudBuilder 只消费稳定的
+`camera_rig.api`，并负责 workspace 变换、版本化多相机列表、host timestamp
+匹配、当前 snapshot 的确定性 voxel fusion，以及 fusion 后唯一一次全局采样。
+
+Native depth XYZ 的源坐标系是 depth optical frame；FFS XYZ 的源坐标系是
+left-IR optical frame。rig pipeline 暴露每相机 camera/workspace、concatenated、
+workspace-cropped、fused 与 sampled 阶段及独立 provenance sidecar。M6 不维护
+persistent map、TSDF、voxel history 或跨时间累计。详见
+`docs/camera-rig-integration.md`、`docs/offline-rig-orchestration.md` 与
+`docs/workspace-fusion.md`。
+
 ## 第三阶段范围
 
 - 从 YAML 读取相机内参。
@@ -156,7 +170,7 @@ RGB-D：
 ```bash
 conda run -n dual_arm_teleop python \
   tools/camera/capture_d435i_aligned_rgbd.py \
-  --serial 344522070241 \
+  --serial YOUR_DEVICE_SERIAL \
   --width 424 \
   --height 240 \
   --fps 30 \

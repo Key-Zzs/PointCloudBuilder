@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from pointcloud_builder.workspace.types import WorkspacePointCloud
+from pointcloud_builder.workspace.types import FramedPointCloud, WorkspacePointCloud
 
 
 @dataclass(frozen=True)
@@ -48,10 +48,29 @@ class PerCameraCloud(WorkspaceCloud):
 
 
 @dataclass(frozen=True)
+class PerCameraFramedCloud:
+    camera_name: str
+    cloud: FramedPointCloud
+
+
+@dataclass(frozen=True)
 class RigBuildResult:
-    per_camera_workspace_clouds: tuple[PerCameraCloud, ...]
-    concatenated_workspace_cloud: WorkspacePointCloud
+    per_camera_camera_frame: tuple[PerCameraFramedCloud, ...]
+    per_camera_workspace: tuple[PerCameraCloud, ...]
+    concatenated: WorkspacePointCloud
+    workspace_cropped: WorkspacePointCloud
+    fused: WorkspacePointCloud
+    sampled: WorkspacePointCloud
+    fusion_provenance: Any | None
     timing_report_ms: dict[str, Any]
     per_camera_provenance: dict[str, dict[str, Any]]
     canonical_camera_order: tuple[str, ...]
     frame_match: RigFrameSet
+
+    @property
+    def per_camera_workspace_clouds(self) -> tuple[PerCameraCloud, ...]:
+        return self.per_camera_workspace
+
+    @property
+    def concatenated_workspace_cloud(self) -> WorkspacePointCloud:
+        return self.workspace_cropped

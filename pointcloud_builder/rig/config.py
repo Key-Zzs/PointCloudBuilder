@@ -9,6 +9,7 @@ from typing import Any, Literal
 import yaml
 
 from pointcloud_builder.config import CropConfig, SamplingConfig
+from pointcloud_builder.fusion.config import VoxelFusionConfig
 
 RIG_SCHEMA_VERSION = "pointcloud-builder.rig.v1"
 
@@ -49,8 +50,12 @@ class RigConfig:
     cameras: tuple[RigCameraConfig, ...]
     timing: RigTimingConfig
     workspace_crop: CropConfig
-    fusion_enabled: bool
+    fusion: VoxelFusionConfig
     sampling: SamplingConfig
+
+    @property
+    def fusion_enabled(self) -> bool:
+        return self.fusion.enabled
 
     @property
     def enabled_cameras(self) -> tuple[RigCameraConfig, ...]:
@@ -82,16 +87,23 @@ def parse_rig_config(raw: dict[str, Any], *, base_dir: Path | None = None) -> Ri
     timing = _timing(raw.get("timing"), names)
     workspace_crop = _crop(raw.get("workspace_crop"), output_frame, "workspace_crop")
     fusion = _mapping(raw.get("fusion"), "fusion")
-    _keys(fusion, {"enabled"}, "fusion")
-    if bool(fusion.get("enabled", False)):
-        raise ValueError("fusion.enabled must be false until the M6 fusion layer is configured")
+    _keys(fusion, {"enabled", "voxel_size_m", "origin", "deterministic"}, "fusion")
+    origin_raw = fusion.get("origin", [0.0, 0.0, 0.0])
+    if not isinstance(origin_raw, list) or len(origin_raw) != 3:
+        raise ValueError("fusion.origin must be a three-element list")
+    fusion_config = VoxelFusionConfig(
+        enabled=bool(fusion.get("enabled", False)),
+        voxel_size_m=float(fusion.get("voxel_size_m", 0.01)),
+        origin=tuple(float(value) for value in origin_raw),  # type: ignore[arg-type]
+        deterministic=bool(fusion.get("deterministic", True)),
+    )
     return RigConfig(
         schema_version=RIG_SCHEMA_VERSION,
         output_frame=output_frame,
         cameras=cameras,
         timing=timing,
         workspace_crop=workspace_crop,
-        fusion_enabled=False,
+        fusion=fusion_config,
         sampling=_sampling(raw.get("sampling")),
     )
 
