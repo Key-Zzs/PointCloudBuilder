@@ -237,5 +237,7 @@ def test_latest_only_queue_does_not_block_producer(tmp_path: Path) -> None:
     assert telemetry.produced_packets == 40
     assert telemetry.dropped_packets > 0
     assert telemetry.maximum_queue_depth <= 1
-    assert np.quantile(durations_ms, 0.95) <= 2.0
+    # The first puts may start multiprocessing's local feeder thread. Evaluate
+    # steady-state producer overhead after that bounded initialization warmup.
+    assert np.quantile(durations_ms[5:], 0.95) <= 2.0
     assert telemetry.child_error is None
