@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ from pointcloud_builder.visualization.rerun.conversion import (
     bounded_cloud,
     bounded_rgb_preview,
 )
+from pointcloud_builder.visualization.rerun.blueprint import default_blueprint
 from pointcloud_builder.visualization.rerun.packet import (
     CameraVisualization,
     MapVisualization,
@@ -79,6 +81,35 @@ def test_core_import_does_not_import_optional_rerun_sdk() -> None:
         env=environment,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_default_blueprint_includes_all_spatial_mapping_entities() -> None:
+    class _BlueprintNode:
+        def __init__(self, *children: object, **properties: object) -> None:
+            self.children = children
+            self.properties = properties
+
+    blueprint_api = SimpleNamespace(
+        Blueprint=_BlueprintNode,
+        Horizontal=_BlueprintNode,
+        Vertical=_BlueprintNode,
+        Spatial3DView=_BlueprintNode,
+        Spatial2DView=_BlueprintNode,
+        TimeSeriesView=_BlueprintNode,
+    )
+    result = default_blueprint(SimpleNamespace(blueprint=blueprint_api))
+    assert result is not None
+    horizontal = result.children[0]
+    workspace = horizontal.children[0]
+    assert workspace.properties["origin"] == "/"
+    assert workspace.properties["contents"] == [
+        "/world/**",
+        "/rig/**",
+        "/clouds/**",
+        "/map/tsdf_mesh",
+        "/map/tsdf_points",
+        "/map/dynamic_overlay",
+    ]
 
 
 def test_packet_copies_cpu_arrays_and_rejects_non_rigid_or_private_payloads() -> None:

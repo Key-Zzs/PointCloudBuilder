@@ -13,7 +13,18 @@ def default_blueprint(rr: Any) -> Any | None:
         return None
     return blueprint.Blueprint(
         blueprint.Horizontal(
-            blueprint.Spatial3DView(name="Workspace", origin="/world"),
+            blueprint.Spatial3DView(
+                name="Workspace",
+                origin="/",
+                contents=[
+                    "/world/**",
+                    "/rig/**",
+                    "/clouds/**",
+                    "/map/tsdf_mesh",
+                    "/map/tsdf_points",
+                    "/map/dynamic_overlay",
+                ],
+            ),
             blueprint.Vertical(
                 blueprint.Spatial2DView(name="Camera A", origin="/rig/camera_a/rgb"),
                 blueprint.Spatial2DView(name="Camera B", origin="/rig/camera_b/rgb"),
