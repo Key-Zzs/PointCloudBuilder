@@ -14,8 +14,23 @@ def test_shared_loader_supports_stereo_npz(tmp_path) -> None:
     path = tmp_path / "stereo.npz"
     np.savez(path, left_ir=np.zeros((2, 2), dtype=np.uint8), right_ir=np.ones((2, 2), dtype=np.uint8), color=np.zeros((2, 2, 3), dtype=np.uint8))
     frame = load_frame(path)
-    assert set(("left_ir", "right_ir", "rgb")) <= set(frame)
+    assert {"left_ir", "right_ir", "rgb"} <= set(frame)
     assert "color" not in frame
+
+
+def test_shared_loader_normalizes_camera_rig_snapshot_keys(tmp_path) -> None:
+    path = tmp_path / "camera-rig-snapshot.npz"
+    np.savez(
+        path,
+        ir_left=np.zeros((2, 2), dtype=np.uint8),
+        ir_right=np.ones((2, 2), dtype=np.uint8),
+        color=np.zeros((2, 2, 3), dtype=np.uint8),
+    )
+
+    frame = load_frame(path)
+
+    assert {"left_ir", "right_ir", "rgb"} <= set(frame)
+    assert not {"ir_left", "ir_right", "color"} & set(frame)
 
 
 def test_stereo_no_show_writes_all_offline_artifacts(tmp_path) -> None:

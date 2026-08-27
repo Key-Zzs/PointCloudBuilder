@@ -172,7 +172,11 @@ Smoke `pytorch`, `tensorrt_single`, `tensorrt_two_stage`, then
 `--artifact-dir .local/ffs/artifacts` and
 `--plugin-library .local/ffs/build/libffs_gwc_plugin.so`. For each backend, create a
 private pipeline YAML from `configs/mapping/ffs_workspace_example.yaml` with that
-backend and its checked asset paths, then run the same fresh CameraRig NPZ frame:
+backend and its checked asset paths. Keep these standalone smoke configs at
+`pointcloud.use_rgb: false`; they do not have an authoritative IR-to-color transform.
+Then run the same fresh CameraRig NPZ frame:
+CameraRig snapshot keys `ir_left`, `ir_right`, and `color` are normalized by the
+shared offline loader to PCB's canonical `left_ir`, `right_ir`, and `rgb` keys.
 
 ```bash
 for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
@@ -183,6 +187,12 @@ for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
 done
 ```
 
+For live RGB reconstruction, create a separate
+`.local/configs/ffs_tensorrt_plugin_rgb.yaml` from the checked plugin route and set
+`pointcloud.use_rgb: true` plus `output_format: xyzrgb`. The live CameraRig integration
+supplies the authoritative IR-to-color transform; do not invent one in a standalone
+smoke config.
+
 ## 12. Single-camera XYZ/XYZRGB
 
 ```bash
@@ -190,7 +200,7 @@ python tools/mapping/run_live_single_camera.py \
   --camera-config .local/camera_a/runtime.yaml \
   --provision .local/camera_a/provision \
   --mapping-config .local/configs/mapping.yaml \
-  --ffs-config .local/configs/ffs_tensorrt_plugin.yaml \
+  --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
   --depth-source ffs_stereo --frames 300 \
   --output .local/evidence/camera_a \
   --report .local/reports/camera_a.json

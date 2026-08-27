@@ -168,7 +168,10 @@ python scripts/prepare_ffs_assets.py --build-tensorrt \
 `--artifact-dir .local/ffs/artifacts` 和
 `--plugin-library .local/ffs/build/libffs_gwc_plugin.so`。每个 backend 从
 `configs/mapping/ffs_workspace_example.yaml` 创建私有 pipeline YAML，写入该 backend
-及已检查的资产路径，并对同一个全新 CameraRig NPZ frame 运行：
+及已检查的资产路径。Standalone smoke 配置必须保持 `pointcloud.use_rgb: false`，
+因为它没有权威 IR→color 外参。然后对同一个全新 CameraRig NPZ frame 运行：
+共享 offline loader 会把 CameraRig snapshot 的 `ir_left`、`ir_right`、`color`
+规范化为 PCB canonical `left_ir`、`right_ir`、`rgb` 键。
 
 ```bash
 for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
@@ -179,6 +182,11 @@ for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
 done
 ```
 
+Live RGB 重建应从已检查的 plugin route 单独创建
+`.local/configs/ffs_tensorrt_plugin_rgb.yaml`，设置 `pointcloud.use_rgb: true` 和
+`output_format: xyzrgb`。Live CameraRig 集成会提供权威 IR→color 外参；不得在
+standalone smoke 配置中编造外参。
+
 ## 12. 单相机 XYZ/XYZRGB
 
 ```bash
@@ -186,7 +194,7 @@ python tools/mapping/run_live_single_camera.py \
   --camera-config .local/camera_a/runtime.yaml \
   --provision .local/camera_a/provision \
   --mapping-config .local/configs/mapping.yaml \
-  --ffs-config .local/configs/ffs_tensorrt_plugin.yaml \
+  --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
   --depth-source ffs_stereo --frames 300 \
   --output .local/evidence/camera_a \
   --report .local/reports/camera_a.json

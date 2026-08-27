@@ -7,9 +7,10 @@ import argparse
 import json
 from pathlib import Path
 
+from visualize_ffs_stereo_pipeline import save_pipeline_artifacts
+
 from pointcloud_builder import PointCloudBuilder
 from pointcloud_builder.frame_io import load_frame
-from visualize_ffs_stereo_pipeline import save_pipeline_artifacts
 
 
 def main() -> int:
@@ -21,8 +22,12 @@ def main() -> int:
     args = parser.parse_args()
     builder = PointCloudBuilder.from_yaml(args.config)
     frame = load_frame(args.input)
-    if "left_ir" not in frame or "right_ir" not in frame:
-        raise KeyError("Stereo FFS input must contain left_ir and right_ir")
+    ffs = builder.config.depth_source.ffs
+    if ffs is None:
+        raise ValueError("FFS smoke config must use depth_source.mode=ffs_stereo")
+    missing = [key for key in (ffs.left_key, ffs.right_key) if key not in frame]
+    if missing:
+        raise KeyError(f"Stereo FFS input is missing configured keys: {missing}")
     perception, meta = builder.build_perception_stages(frame)
     print(json.dumps(save_pipeline_artifacts(perception, meta, Path(args.output_dir), no_show=args.no_show), indent=2))
     return 0
