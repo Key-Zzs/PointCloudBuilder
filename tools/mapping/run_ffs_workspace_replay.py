@@ -53,12 +53,14 @@ def main() -> None:
         bundle,
         device=configured.device,
         sampling=sampling,
+        use_rgb=configured.pointcloud.use_rgb,
     )
     ffs_context = create_ffs_builder(
         bundle,
         ffs_config=configured.depth_source.ffs,
         device=configured.device,
         sampling=sampling,
+        use_rgb=configured.pointcloud.use_rgb,
     )
     workspace_crop = _crop(mapping.get("workspace_crop"), native_context.workspace_frame)
     native_pipeline = SingleCameraWorkspacePipeline(

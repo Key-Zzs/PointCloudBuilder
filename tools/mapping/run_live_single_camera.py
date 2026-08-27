@@ -29,6 +29,19 @@ from pointcloud_builder.workspace import (
 from run_single_camera_replay import _render_open3d_acceptance
 
 
+def _create_ffs_context(bundle: Any, config_path: str, sampling: SamplingConfig) -> Any:
+    loaded = load_config(config_path)
+    if loaded.depth_source.ffs is None:
+        raise ValueError("FFS config must declare depth_source.mode=ffs_stereo")
+    return create_ffs_builder(
+        bundle,
+        ffs_config=loaded.depth_source.ffs,
+        device=loaded.device,
+        sampling=sampling,
+        use_rgb=loaded.pointcloud.use_rgb,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--camera-config", required=True)
@@ -65,15 +78,7 @@ def main() -> None:
     if args.depth_source == "native":
         context = create_native_builder(bundle, device="cuda", sampling=sampling)
     else:
-        loaded = load_config(args.ffs_config)
-        if loaded.depth_source.ffs is None:
-            raise ValueError("FFS config must declare depth_source.mode=ffs_stereo")
-        context = create_ffs_builder(
-            bundle,
-            ffs_config=loaded.depth_source.ffs,
-            device=loaded.device,
-            sampling=sampling,
-        )
+        context = _create_ffs_context(bundle, args.ffs_config, sampling)
     workspace_crop = _crop(mapping.get("workspace_crop"), context.workspace_frame)
     workspace_pipeline = SingleCameraWorkspacePipeline(context, workspace_crop=workspace_crop)
     source = CameraRigLiveSource(camera_config)
