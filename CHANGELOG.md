@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-08-27
 
 ### Added
 
@@ -13,6 +13,8 @@
 - Persistent Open3D TSDF build, freeze, overlay, extraction, save and load workflows.
 - Interactive until-interrupted TSDF/Rerun operator mode with bounded statistics.
 - Dedicated reconstruction environment, doctor, FFS asset checker and command validation.
+- Clean-room reproduction from a fresh clone through fixed-camera calibration, all four
+  FFS routes, dual-camera RGB reconstruction, Rerun, offline/live TSDF, and save/load.
 
 ### Changed
 

@@ -11,6 +11,10 @@ PointCloudBuilder 是固定多相机 RGB-D 三维重建系统，支持 CameraRig
 （FFS）TensorRT-plugin FP16 深度、dense XYZRGB voxel fusion，以及独立 Open3D TSDF
 mapper。重建 tensor、可视化与持久地图是三种独立输出。
 
+0.2.0 工作流已从全新 clone 和隔离环境完成复现，覆盖固定相机标定、FFS、双相机 RGB、
+Rerun、offline/live TSDF 及地图 save/load。硬件 identity 与实体证据仍只保存在私有
+`.local/` 下。
+
 ## 2. 架构
 
 ```text
@@ -355,7 +359,8 @@ python tools/mapping/benchmark_fusion_voxels.py \
   --mapping-config .local/configs/mapping.yaml --frames 30 \
   --report .local/reports/fusion-voxel-sweep.json
 python tools/mapping/benchmark_world_reconstruction.py \
-  --rig-config .local/configs/replay_rig.yaml --frames 100 --warmup 10 \
+  --input-mode live --rig-config .local/configs/live_rig_ffs_rgb_compact.yaml \
+  --frames 60 --warmup 5 \
   --report .local/reports/reconstruction.json
 ```
 

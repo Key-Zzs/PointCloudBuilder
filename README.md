@@ -13,6 +13,10 @@ workspace, Fast-FoundationStereo (FFS) TensorRT-plugin FP16 depth, dense XYZRGB 
 fusion, and an independent Open3D TSDF mapper. Reconstruction tensors, visualization,
 and persistent maps remain separate outputs.
 
+The 0.2.0 workflow was reproduced from a fresh clone and isolated environment through
+fixed-camera calibration, FFS, dual-camera RGB, Rerun, offline/live TSDF, and map
+save/load. Hardware identities and physical evidence remain private under `.local/`.
+
 ## 2. Architecture
 
 ```text
@@ -367,7 +371,8 @@ python tools/mapping/benchmark_fusion_voxels.py \
   --mapping-config .local/configs/mapping.yaml --frames 30 \
   --report .local/reports/fusion-voxel-sweep.json
 python tools/mapping/benchmark_world_reconstruction.py \
-  --rig-config .local/configs/replay_rig.yaml --frames 100 --warmup 10 \
+  --input-mode live --rig-config .local/configs/live_rig_ffs_rgb_compact.yaml \
+  --frames 60 --warmup 5 \
   --report .local/reports/reconstruction.json
 ```
 

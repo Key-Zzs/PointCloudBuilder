@@ -31,6 +31,9 @@ jobs:
       - name: Validate documented commands
         run: python scripts/check_documented_commands.py
 
+      - name: Run no-hardware environment doctor
+        run: python scripts/doctor_reconstruction_env.py --no-hardware
+
       - name: Build distributions
         run: python -m build
 

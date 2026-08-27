@@ -20,10 +20,14 @@ REQUIRED_PATHS = (
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
     "configs/mapping/raw_rgb_concatenation_example.yaml",
+    "tools/mapping/run_live_reconstruction_profile.py",
     "tools/mapping/run_live_tsdf_mapping.py",
     "tools/mapping/record_live_rig_depth.py",
     "tools/mapping/build_tsdf_offline.py",
+    "tools/mapping/extract_tsdf_geometry.py",
+    "tools/mapping/validate_tsdf_map.py",
     "tools/mapping/benchmark_fusion_voxels.py",
+    "tools/mapping/benchmark_world_reconstruction.py",
 )
 INTERACTIVE_FLAGS = (
     "--interactive",
@@ -35,6 +39,8 @@ INTERACTIVE_FLAGS = (
     "--viewer-point-budget",
 )
 LIVE_RIG_FLAGS = ("--acceptance-scope",)
+PROFILE_FLAGS = ("--profile", "--matched-sets", "--viewer", "--rerun-record")
+BENCHMARK_FLAGS = ("--input-mode", "--frames", "--warmup", "--report")
 
 
 def main() -> int:
@@ -72,6 +78,29 @@ def main() -> int:
     checks["live_rig_help_exit"] = live_rig_help.returncode == 0
     for flag in LIVE_RIG_FLAGS:
         checks[f"live_rig_flag:{flag}"] = flag in live_rig_help.stdout
+    for name, relative, flags in (
+        (
+            "live_reconstruction_profile",
+            "tools/mapping/run_live_reconstruction_profile.py",
+            PROFILE_FLAGS,
+        ),
+        (
+            "world_reconstruction_benchmark",
+            "tools/mapping/benchmark_world_reconstruction.py",
+            BENCHMARK_FLAGS,
+        ),
+    ):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / relative), "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=help_env,
+        )
+        checks[f"{name}_help_exit"] = result.returncode == 0
+        for flag in flags:
+            checks[f"{name}_flag:{flag}"] = flag in result.stdout
     for readme in READMES:
         text = readme.read_text(encoding="utf-8")
         checks[f"{readme.name}:policy:pose_validated"] = (
@@ -82,6 +111,8 @@ def main() -> int:
         for flag in INTERACTIVE_FLAGS:
             checks[f"{readme.name}:flag:{flag}"] = flag in text
         for flag in LIVE_RIG_FLAGS:
+            checks[f"{readme.name}:flag:{flag}"] = flag in text
+        for flag in PROFILE_FLAGS + BENCHMARK_FLAGS:
             checks[f"{readme.name}:flag:{flag}"] = flag in text
         for command_path in re.findall(
             r"(?:python\s+|\./)([A-Za-z0-9_./-]+\.(?:py|sh))", text
