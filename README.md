@@ -237,6 +237,14 @@ biased; a frame is never reused across matched sets.
 Start from `configs/mapping/raw_rgb_concatenation_example.yaml`. It has fusion OFF and
 sampling OFF, exposing dense `/clouds/concatenated` for calibration overlap/debugging.
 
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile raw --rig-config .local/configs/live_rig_ffs_rgb_raw.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 60 \
+  --output .local/evidence/raw-rgb --report .local/reports/raw-rgb.json \
+  --viewer rerun --rerun-spawn --rerun-record .local/evidence/raw-rgb.rrd
+```
+
 ## 16. Dense RGB fusion
 
 `configs/mapping/dense_rgb_reconstruction_example.yaml` is the recommended profile:
@@ -252,6 +260,13 @@ Voxel fusion and sampling are different operations:
 
 Recommended dense reconstruction is fusion ON, sampling OFF.
 
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile dense --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 60 \
+  --output .local/evidence/dense-rgb --report .local/reports/dense-rgb.json
+```
+
 ## 17. Crop
 
 The production order is optional camera-frame local crop, workspace transform, one
@@ -264,6 +279,13 @@ sampling. Crop uses XYZ and preserves RGB columns.
 30,000-point FPS after fusion. It preserves each selected point's RGB. `voxel_fps` and
 `voxel_random` remain explicit advanced compatibility modes, but are not defaults for
 an already voxel-fused cloud.
+
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile compact --rig-config .local/configs/live_rig_ffs_rgb_compact.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 1 \
+  --output .local/evidence/compact-rgb --report .local/reports/compact-rgb.json
+```
 
 ## 19. Rerun live visualization
 

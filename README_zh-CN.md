@@ -230,6 +230,14 @@ frame number 仅用于诊断。Buffer 有界且偏向最新帧；同一帧不会
 从 `configs/mapping/raw_rgb_concatenation_example.yaml` 开始。它关闭 fusion 与 sampling，
 通过 dense `/clouds/concatenated` 检查标定重合和调试问题。
 
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile raw --rig-config .local/configs/live_rig_ffs_rgb_raw.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 60 \
+  --output .local/evidence/raw-rgb --report .local/reports/raw-rgb.json \
+  --viewer rerun --rerun-spawn --rerun-record .local/evidence/raw-rgb.rrd
+```
+
 ## 16. Dense RGB fusion
 
 推荐 profile 是 `configs/mapping/dense_rgb_reconstruction_example.yaml`：2.5 mm fusion
@@ -244,6 +252,13 @@ Voxel fusion 与 sampling 不是同一个操作：
 
 推荐 dense reconstruction 为 fusion ON、sampling OFF。
 
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile dense --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 60 \
+  --output .local/evidence/dense-rgb --report .local/reports/dense-rgb.json
+```
+
 ## 17. Crop
 
 生产顺序是：可选 camera-frame local crop、workspace transform、逐相机唯一一次 workspace
@@ -255,6 +270,13 @@ RGB 列。
 `configs/mapping/compact_rgb_reconstruction_example.yaml` 在 fusion 后执行一次全局
 30,000 点 FPS，并保留所选点的 RGB。`voxel_fps` 与 `voxel_random` 作为显式高级兼容模式
 保留，但不是已 voxel-fused cloud 的默认值。
+
+```bash
+python tools/mapping/run_live_reconstruction_profile.py \
+  --profile compact --rig-config .local/configs/live_rig_ffs_rgb_compact.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml --matched-sets 1 \
+  --output .local/evidence/compact-rgb --report .local/reports/compact-rgb.json
+```
 
 ## 19. Rerun 实时可视化
 
