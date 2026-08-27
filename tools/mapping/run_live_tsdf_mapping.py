@@ -4,14 +4,22 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from collections.abc import MutableSequence, Sequence
 from dataclasses import replace
 import json
 from pathlib import Path
 import resource
+import signal
 import statistics
 import tempfile
 import time
 from typing import Any
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 
@@ -30,36 +38,92 @@ from pointcloud_builder.reconstruction_timing import summarize_ms
 from pointcloud_builder.rig import build_live_rig, load_rig_config
 
 
-def main() -> None:
+DEFAULT_FINITE_MATCHED_SETS = 300
+DEFAULT_FINITE_VIEWER_POINT_BUDGET = 30_000
+DEFAULT_INTERACTIVE_VIEWER_POINT_BUDGET = 100_000
+DEFAULT_INTERACTIVE_STATS_WINDOW = 3_000
+
+
+class _StopRequest:
+    """Signal-safe cooperative stop state for operator mode."""
+
+    def __init__(self) -> None:
+        self.signal_name: str | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.signal_name is not None
+
+    def request(self, signum: int) -> None:
+        self.signal_name = signal.Signals(signum).name
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rig-config", required=True)
     parser.add_argument("--tsdf-config", required=True)
-    parser.add_argument("--matched-sets", type=int, default=300)
+    run_mode = parser.add_mutually_exclusive_group()
+    run_mode.add_argument("--matched-sets", type=int)
+    run_mode.add_argument(
+        "--interactive",
+        action="store_true",
+        help="run until SIGINT/SIGTERM with Rerun spawned by default",
+    )
     parser.add_argument("--build-warmup-sets", type=int, default=0)
     parser.add_argument("--initial-map")
     parser.add_argument("--map-output")
     parser.add_argument("--recording-output")
     parser.add_argument("--snapshot-baseline-report")
-    parser.add_argument("--report", required=True)
-    parser.add_argument("--viewer", choices=("none", "rerun"), default="none")
+    parser.add_argument("--report")
+    parser.add_argument("--viewer", choices=("none", "rerun"))
     parser.add_argument("--rerun-connect")
     parser.add_argument("--rerun-spawn", action="store_true")
     parser.add_argument("--rerun-record")
-    parser.add_argument("--viewer-point-budget", type=int, default=30_000)
-    args = parser.parse_args()
+    parser.add_argument("--viewer-point-budget", type=int)
+    parser.add_argument(
+        "--interactive-stats-window",
+        type=int,
+        default=DEFAULT_INTERACTIVE_STATS_WINDOW,
+    )
+    return parser
+
+
+def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Resolve mode-dependent defaults without weakening finite acceptance."""
+
+    if args.matched_sets is None and not args.interactive:
+        args.matched_sets = DEFAULT_FINITE_MATCHED_SETS
+    if args.viewer is None:
+        args.viewer = "rerun" if args.interactive else "none"
+    if args.viewer_point_budget is None:
+        args.viewer_point_budget = (
+            DEFAULT_INTERACTIVE_VIEWER_POINT_BUDGET
+            if args.interactive
+            else DEFAULT_FINITE_VIEWER_POINT_BUDGET
+        )
+    return args
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = resolve_args(build_parser().parse_args(argv))
     if (
-        args.matched_sets <= 0
+        (args.matched_sets is not None and args.matched_sets <= 0)
         or args.build_warmup_sets < 0
         or args.viewer_point_budget <= 0
+        or args.interactive_stats_window <= 0
     ):
-        raise ValueError("matched-set count and viewer point budget must be positive")
-    report_path = _private_output(args.report)
+        raise ValueError("counts, point budget, and statistics window must be positive")
+    if args.interactive and args.map_output is not None:
+        raise ValueError("--interactive cannot publish a formally accepted --map-output")
+    if args.interactive and args.snapshot_baseline_report is not None:
+        raise ValueError("--interactive does not use a finite snapshot baseline report")
+    report_path = _private_output(args.report) if args.report else None
     map_output = _private_output(args.map_output) if args.map_output else None
     recording_output = (
         _private_output(args.recording_output) if args.recording_output else None
     )
     rerun_record = _private_output(args.rerun_record) if args.rerun_record else None
-    if report_path.exists():
+    if report_path is not None and report_path.exists():
         raise FileExistsError(f"live TSDF report already exists: {report_path}")
     if rerun_record is not None and rerun_record.exists():
         raise FileExistsError(f"Rerun recording already exists: {rerun_record}")
@@ -70,10 +134,14 @@ def main() -> None:
 
     rig_config = load_rig_config(args.rig_config)
     tsdf_config = load_tsdf_config(args.tsdf_config)
-    baseline = _load_snapshot_baseline(
-        args.snapshot_baseline_report,
-        rig_config_sha256=sha256_file(args.rig_config),
-        matched_sets=args.matched_sets,
+    baseline = (
+        None
+        if args.interactive
+        else _load_snapshot_baseline(
+            args.snapshot_baseline_report,
+            rig_config_sha256=sha256_file(args.rig_config),
+            matched_sets=args.matched_sets,
+        )
     )
     source_modes = {camera.depth.mode for camera in rig_config.enabled_cameras}
     if source_modes != {tsdf_config.integration.source}:
@@ -106,19 +174,26 @@ def main() -> None:
     mapper_started = False
     mapper_telemetry = None
     acquisition_started = False
-    mapper_overheads: list[float] = []
-    snapshot_latencies: list[float] = []
-    snapshot_match_wait_latencies: list[float] = []
-    snapshot_processing_latencies: list[float] = []
+    mapper_overheads = _history(args)
+    snapshot_latencies = _history(args)
+    snapshot_match_wait_latencies = _history(args)
+    snapshot_processing_latencies = _history(args)
     mapper_submit_accepted = 0
     mapper_submit_rejected = 0
     warmup_submit_accepted = 0
     warmup_submit_rejected = 0
-    viewer_overheads: list[float] = []
+    viewer_overheads = _history(args)
     latest_snapshot = None
     last_revision = None
+    matched_set_count = 0
+    stop_request = _StopRequest()
+    original_signal_handlers = (
+        _install_signal_handlers(stop_request) if args.interactive else {}
+    )
     try:
         viewer, viewer_error = _start_viewer(args, rerun_record)
+        if args.interactive and viewer_error is not None:
+            raise RuntimeError(f"interactive Rerun startup failed: {viewer_error}")
         writer = (
             RigDepthRecordingWriter(
                 recording_output,
@@ -142,6 +217,8 @@ def main() -> None:
         pipeline.acquisition.start()
         acquisition_started = True
         for _ in range(args.build_warmup_sets):
+            if stop_request.requested:
+                break
             built = pipeline.capture_next()
             if writer is not None:
                 writer.append(built.result.depth_frame_set)
@@ -156,8 +233,12 @@ def main() -> None:
             mapper.flush()
             mapper.reset_acceptance_window()
         started = time.perf_counter()
-        for index in range(args.matched_sets):
+        while not stop_request.requested and (
+            args.interactive or matched_set_count < args.matched_sets
+        ):
+            index = matched_set_count
             built = pipeline.capture_next()
+            matched_set_count += 1
             snapshot_latencies.append(built.total_ms)
             snapshot_match_wait_latencies.append(built.match_wait_ms)
             snapshot_processing_latencies.append(built.processing_ms)
@@ -189,12 +270,18 @@ def main() -> None:
                     metrics = {
                         "skew_ms": float(result.frame_match.maximum_skew_ms),
                         "processing_fps": 1000.0 / max(built.processing_ms, 1e-9),
-                        "capture_fps": (index + 1)
+                        "capture_fps": matched_set_count
                         / max(time.perf_counter() - started, 1e-9),
-                        "match_fps": (index + 1)
+                        "match_fps": matched_set_count
                         / max(time.perf_counter() - started, 1e-9),
                         "input_points": float(result.concatenated.points.shape[0]),
                         "fused_voxels": float(result.fused.points.shape[0]),
+                        "actual_concatenated_points": float(
+                            result.concatenated.points.shape[0]
+                        ),
+                        "actual_fused_points": float(result.fused.points.shape[0]),
+                        "actual_sampled_points": float(result.sampled.points.shape[0]),
+                        "viewer_point_budget": float(args.viewer_point_budget),
                         "map_update_ms": (
                             0.0
                             if latest_snapshot is None
@@ -263,6 +350,10 @@ def main() -> None:
                     viewer_error = f"{type(error).__name__}: {str(error)[:500]}"
                     viewer_telemetry = viewer.close(timeout_s=5.0).__dict__
                     viewer = None
+                    if args.interactive:
+                        raise RuntimeError(
+                            f"interactive Rerun viewer failed: {viewer_error}"
+                        ) from error
                 finally:
                     viewer_overheads.append(
                         (time.perf_counter() - view_started) * 1000.0
@@ -271,13 +362,21 @@ def main() -> None:
         acquisition_started = False
         acquisition = pipeline.acquisition.report()
         duration_s = time.perf_counter() - started
-        performance = _performance_comparison(
-            baseline,
-            matched_sets=args.matched_sets,
-            duration_s=duration_s,
-            snapshot_latencies_ms=snapshot_latencies,
-            match_wait_latencies_ms=snapshot_match_wait_latencies,
-            processing_latencies_ms=snapshot_processing_latencies,
+        performance = (
+            {
+                "evaluated": False,
+                "passed": True,
+                "reason": "interactive operator mode has no finite acceptance baseline",
+            }
+            if args.interactive
+            else _performance_comparison(
+                baseline,
+                matched_sets=matched_set_count,
+                duration_s=duration_s,
+                snapshot_latencies_ms=snapshot_latencies,
+                match_wait_latencies_ms=snapshot_match_wait_latencies,
+                processing_latencies_ms=snapshot_processing_latencies,
+            )
         )
         acquisition_clean = (
             not acquisition["workers_alive"] and not acquisition["worker_errors"]
@@ -294,9 +393,12 @@ def main() -> None:
             writer.finalize(
                 report={
                     "schema_version": "pointcloud-builder.live-tsdf-source.v1",
-                    "matched_sets": args.matched_sets + args.build_warmup_sets,
+                    "matched_sets": matched_set_count + args.build_warmup_sets,
                     "build_warmup_sets": args.build_warmup_sets,
-                    "acceptance_sets": args.matched_sets,
+                    "acceptance_sets": (
+                        None if args.interactive else matched_set_count
+                    ),
+                    "interactive": args.interactive,
                     "depth_source": tsdf_config.integration.source,
                 }
             )
@@ -337,10 +439,10 @@ def main() -> None:
                             source_recording_sha256=str(recording_sha),
                             integration_metrics={
                                 "live_matched_sets": (
-                                    args.matched_sets + args.build_warmup_sets
+                                    matched_set_count + args.build_warmup_sets
                                 ),
                                 "build_warmup_sets": args.build_warmup_sets,
-                                "acceptance_sets": args.matched_sets,
+                                "acceptance_sets": matched_set_count,
                                 "duration_s": duration_s,
                                 "mapper_telemetry": mapper_telemetry.__dict__,
                             },
@@ -362,7 +464,7 @@ def main() -> None:
             and mapper_telemetry.submitted_frame_sets == 0
             and mapper_telemetry.child_received_frame_sets == 0
             if frozen_static
-            else mapper_submit_accepted == args.matched_sets
+            else mapper_submit_accepted == matched_set_count
             and mapper_submit_rejected == 0
             and warmup_submit_accepted == args.build_warmup_sets
             and warmup_submit_rejected == 0
@@ -370,28 +472,42 @@ def main() -> None:
         mapping_gates = {
             "acquisition_clean": acquisition_clean,
             "snapshot_performance": bool(performance["passed"]),
-            "mapper_memory_plateau": bool(memory_plateau["passed"]),
             "mapper_child_clean": mapper_telemetry.child_error is None
             and not mapper_telemetry.running,
             "mapper_queue_bounded": mapper_telemetry.maximum_queue_depth
             <= tsdf_config.integration.queue_capacity,
             "mapper_submission_policy": submissions_complete,
         }
+        if not args.interactive:
+            mapping_gates["mapper_memory_plateau"] = bool(memory_plateau["passed"])
+        if args.interactive and viewer_telemetry is not None:
+            mapping_gates["viewer_child_clean"] = (
+                viewer_error is None
+                and viewer_telemetry["child_error"] is None
+                and not viewer_telemetry["running"]
+            )
         if map_output is not None:
             mapping_gates["map_publication"] = map_published
         report = {
             "schema_version": "pointcloud-builder.live-tsdf-report.v1",
-            "matched_sets": args.matched_sets,
+            "mode": "interactive" if args.interactive else "finite_acceptance",
+            "interrupted_by": stop_request.signal_name,
+            "matched_sets": matched_set_count,
             "build_warmup_sets": args.build_warmup_sets,
-            "recording_matched_sets": args.matched_sets + args.build_warmup_sets,
+            "recording_matched_sets": matched_set_count + args.build_warmup_sets,
             "duration_s": duration_s,
-            "snapshot_fps": args.matched_sets / duration_s,
+            "snapshot_fps": matched_set_count / max(duration_s, 1e-9),
+            "statistics_window": (
+                args.interactive_stats_window if args.interactive else None
+            ),
             "snapshot_latency_ms": _summary(snapshot_latencies),
             "snapshot_match_wait_latency_ms": _summary(snapshot_match_wait_latencies),
             "snapshot_processing_latency_ms": _summary(snapshot_processing_latencies),
             "performance_comparison": performance,
             "memory_plateau": memory_plateau,
+            "acquisition": acquisition,
             "acquisition_clean": acquisition_clean,
+            "viewer_point_budget": args.viewer_point_budget,
             "mapper": mapper_telemetry.__dict__,
             "tsdf_timing_ms": _timing_stage_summary(
                 mapper_telemetry.child_timing_samples_ms
@@ -405,7 +521,7 @@ def main() -> None:
             ),
             "mapper_producer_overhead_ms": _summary(mapper_overheads),
             "mapper_producer_overhead_p95_le_5ms": bool(
-                np.quantile(mapper_overheads, 0.95) <= 5.0
+                not mapper_overheads or np.quantile(mapper_overheads, 0.95) <= 5.0
             ),
             "viewer": {
                 "error": viewer_error,
@@ -418,12 +534,16 @@ def main() -> None:
             "gates": mapping_gates,
             "passed": all(mapping_gates.values()),
         }
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        print(json.dumps(report, indent=2, sort_keys=True))
+        if report_path is not None:
+            _write_report(report_path, report)
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(json.dumps(_stdout_summary(report), indent=2, sort_keys=True))
+        if args.interactive and not report["passed"]:
+            failed = [name for name, passed in mapping_gates.items() if not passed]
+            raise RuntimeError(
+                "interactive mapping failed operational gates: " + ", ".join(failed)
+            )
         if publication_error is not None:
             raise RuntimeError(publication_error)
     except BaseException:
@@ -437,6 +557,7 @@ def main() -> None:
             mapper.close(timeout_s=10.0)
         if viewer is not None:
             viewer.close(timeout_s=10.0)
+        _restore_signal_handlers(original_signal_handlers)
 
 
 def _start_viewer(args: Any, record_path: Path | None):
@@ -449,7 +570,9 @@ def _start_viewer(args: Any, record_path: Path | None):
         RerunViewerProcess,
     )
 
-    implicit_spawn = not any((args.rerun_spawn, args.rerun_connect, record_path))
+    implicit_spawn = (
+        args.interactive and args.rerun_connect is None
+    ) or not any((args.rerun_spawn, args.rerun_connect, record_path))
     viewer = RerunViewerProcess(
         RerunOutputConfig(
             spawn=bool(args.rerun_spawn or implicit_spawn),
@@ -472,7 +595,60 @@ def _private_output(value: str) -> Path:
     return output
 
 
-def _summary(values: list[float]) -> dict[str, float] | None:
+def _history(args: argparse.Namespace) -> MutableSequence[float]:
+    """Return finite full history or a bounded interactive rolling window."""
+
+    if args.interactive:
+        return deque(maxlen=args.interactive_stats_window)
+    return []
+
+
+def _install_signal_handlers(
+    stop_request: _StopRequest,
+) -> dict[int, Any]:
+    originals = {
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+    }
+
+    def request_stop(signum: int, _frame: Any) -> None:
+        stop_request.request(signum)
+
+    for signum in originals:
+        signal.signal(signum, request_stop)
+    return originals
+
+
+def _restore_signal_handlers(originals: dict[int, Any]) -> None:
+    for signum, handler in originals.items():
+        signal.signal(signum, handler)
+
+
+def _write_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _stdout_summary(report: dict[str, Any]) -> dict[str, Any]:
+    viewer = report["viewer"]
+    telemetry = viewer.get("telemetry") or {}
+    acquisition = report.get("acquisition") or {}
+    return {
+        "mode": report["mode"],
+        "interrupted_by": report["interrupted_by"],
+        "matched_sets": report["matched_sets"],
+        "duration_s": report["duration_s"],
+        "snapshot_fps": report["snapshot_fps"],
+        "viewer_dropped_packets": telemetry.get("dropped_packets", 0),
+        "worker_errors": acquisition.get("worker_errors", []),
+        "passed": report["passed"],
+    }
+
+
+def _summary(values: Sequence[float]) -> dict[str, float] | None:
     if not values:
         return None
     return {

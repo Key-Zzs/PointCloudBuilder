@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import signal
+import socket
+import subprocess
+import time
 from typing import Any
 
 import numpy as np
@@ -25,15 +31,24 @@ class RerunPacketLogger:
     ) -> None:
         self.rr = require_rerun()
         self.recording = self.rr.RecordingStream(application_id)
+        self._headless_viewer: subprocess.Popen[bytes] | None = None
         blueprint = default_blueprint(self.rr)
         record_output: Path | None = None
         if record_path is not None:
             record_output = Path(record_path)
             record_output.parent.mkdir(parents=True, exist_ok=True)
-        if spawn:
+        headless_spawn = spawn and not any(
+            os.environ.get(name) for name in ("DISPLAY", "WAYLAND_DISPLAY")
+        )
+        headless_url = None
+        if headless_spawn:
+            self._headless_viewer, headless_url = _spawn_headless_viewer()
+        elif spawn:
             self.recording.spawn(default_blueprint=blueprint)
         sinks = []
-        if spawn:
+        if headless_url is not None:
+            sinks.append(self.rr.GrpcSink(headless_url))
+        elif spawn:
             sinks.append(self.rr.GrpcSink())
         elif connect_url is not None:
             sinks.append(self.rr.GrpcSink(connect_url))
@@ -41,7 +56,7 @@ class RerunPacketLogger:
             sinks.append(self.rr.FileSink(record_output))
         # spawn() is enough for viewer-only mode. set_sinks() is required for
         # an explicit connection, file-only output, or a viewer+file tee.
-        if not spawn or record_output is not None:
+        if headless_spawn or not spawn or record_output is not None:
             self.recording.set_sinks(*sinks, default_blueprint=blueprint)
         self._last_static_revision: int | None = None
         self._log_static()
@@ -185,5 +200,57 @@ class RerunPacketLogger:
             self.recording.log("/map/dynamic_mask", rr.Image(image))
 
     def close(self) -> None:
-        self.recording.flush(timeout_sec=30.0)
-        self.recording.disconnect()
+        try:
+            self.recording.flush(timeout_sec=30.0)
+            self.recording.disconnect()
+        finally:
+            process = self._headless_viewer
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5.0)
+
+
+def _spawn_headless_viewer() -> tuple[subprocess.Popen[bytes], str]:
+    executable = shutil.which("rerun")
+    if executable is None:
+        raise RuntimeError("Rerun Viewer executable is not available in PATH")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    process = subprocess.Popen(
+        [
+            executable,
+            "--headless",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--memory-limit",
+            "1GiB",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        # The CLI parent owns terminal Ctrl+C.  Keep the automatically managed
+        # viewer out of that process group so the logger can flush before
+        # terminating it explicitly in close().
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"headless Rerun Viewer exited with code {process.returncode}"
+            )
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                return process, f"rerun+http://127.0.0.1:{port}/proxy"
+        except OSError:
+            time.sleep(0.05)
+    process.terminate()
+    process.wait(timeout=5.0)
+    raise RuntimeError("headless Rerun Viewer did not bind in time")

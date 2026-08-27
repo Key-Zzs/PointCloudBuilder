@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import multiprocessing as mp
 from pathlib import Path
 import queue
+import signal
 import threading
 import time
 from typing import Any
@@ -97,6 +98,10 @@ def _mapper_main(
     status_queue: Any,
     config: MapperProcessConfig,
 ) -> None:
+    # Ctrl+C is handled cooperatively by the CLI parent.  A terminal delivers
+    # SIGINT to the whole process group; letting the child handle it produces a
+    # spurious traceback and bypasses the parent's ordered shutdown protocol.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     mapper = None
     received = rate_limited = control_discarded = integrated = snapshots = 0
     try:

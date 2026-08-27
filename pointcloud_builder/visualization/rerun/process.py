@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import multiprocessing as mp
 from pathlib import Path
 import queue
+import signal
 import time
 from typing import Any
 
@@ -68,6 +69,9 @@ def _offer_status(status_queue: Any, value: tuple[str, object]) -> None:
 def _logger_main(
     packet_queue: Any, status_queue: Any, config: RerunOutputConfig
 ) -> None:
+    # The interactive CLI parent owns terminal interruption and sends the
+    # sentinel after acquisition/mapper shutdown begins.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     logger = None
     logged = 0
     try:
