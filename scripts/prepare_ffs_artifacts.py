@@ -171,6 +171,11 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--model-config", type=Path, default=None)
     parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
+    parser.add_argument(
+        "--plugin-library",
+        type=Path,
+        default=REPO_ROOT / "ffs_reproduction/build/libffs_gwc_plugin.so",
+    )
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--max-disp", type=int, default=192)
@@ -382,7 +387,7 @@ def main() -> int:
     two_route = manifest["routes"]["tensorrt_two_stage"]
     two_route["build_status"] = "success" if two_feature_build is not None and two_post_build is not None else "failed"
     two_route["parser_status"] = "success" if two_route["build_status"] == "success" else "partial_or_failed"
-    plugin_library = REPO_ROOT / "ffs_reproduction/build/libffs_gwc_plugin.so"
+    plugin_library = args.plugin_library.expanduser().resolve()
     if plugin_library.is_file():
         plugin_build = attempt(
             "tensorrt_plugin", plugin_onnx, plugin_engine, plugin_error, plugin_library=plugin_library

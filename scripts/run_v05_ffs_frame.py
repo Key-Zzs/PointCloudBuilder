@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -14,9 +15,7 @@ import torch
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTER_REPO_ROOT = REPO_ROOT.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-sys.path.insert(0, str(OUTER_REPO_ROOT / "tools"))
 
 from pointcloud_builder import PointCloudBuilder  # noqa: E402
 from pointcloud_builder.config import parse_config  # noqa: E402
@@ -60,6 +59,8 @@ def _resolve_config(
     precision: str | None = None,
     builder_optimization_level: int | None = None,
     workspace_gib: float | None = None,
+    artifact_dir: Path | None = None,
+    plugin_library: Path | None = None,
 ) -> Any:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -96,7 +97,11 @@ def _resolve_config(
         ffs["builder_optimization_level"] = builder_optimization_level
     if workspace_gib is not None:
         ffs["workspace_gib"] = workspace_gib
-    artifact_dir = (REPO_ROOT / "ffs_reproduction/artifacts").resolve()
+    artifact_dir = (
+        (REPO_ROOT / "ffs_reproduction/artifacts").resolve()
+        if artifact_dir is None
+        else artifact_dir.expanduser().resolve()
+    )
     artifact_id = str(artifact_id or ffs.get("artifact_id", "fp16_o3"))
     # The CLI-selected variant is authoritative for every backend, including
     # the PyTorch reference metadata.  Keeping the YAML default here would
@@ -117,7 +122,11 @@ def _resolve_config(
         },
         "tensorrt_plugin": {
             "engine_path": artifact_dir / f"tensorrt_plugin_{artifact_id}.engine",
-            "plugin_library_path": REPO_ROOT / "ffs_reproduction/build/libffs_gwc_plugin.so",
+            "plugin_library_path": (
+                REPO_ROOT / "ffs_reproduction/build/libffs_gwc_plugin.so"
+                if plugin_library is None
+                else plugin_library.expanduser().resolve()
+            ),
             "manifest_path": artifact_dir / f"tensorrt_plugin_{artifact_id}.manifest.json",
             "config_path": artifact_dir / f"tensorrt_plugin_{artifact_id}.yaml",
         },
@@ -195,17 +204,31 @@ def main() -> int:
     parser.add_argument("--precision", choices=("fp16", "fp32"), default=None)
     parser.add_argument("--builder-optimization-level", type=int, choices=range(6), default=None)
     parser.add_argument("--workspace-gib", type=float, default=None)
+    parser.add_argument("--artifact-dir", type=Path, default=None)
+    parser.add_argument("--plugin-library", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--no-show", action="store_true")
+    parser.add_argument(
+        "--sidecar-reader-dir",
+        type=Path,
+        help="explicit directory containing optional lerobot_rgbd_source.py",
+    )
     args = parser.parse_args()
     import pyarrow.parquet as pq
 
+    if args.sidecar_reader_dir is not None:
+        reader_dir = args.sidecar_reader_dir.expanduser().resolve()
+        if not (reader_dir / "lerobot_rgbd_source.py").is_file():
+            raise FileNotFoundError(
+                f"--sidecar-reader-dir has no lerobot_rgbd_source.py: {reader_dir}"
+            )
+        sys.path.insert(0, str(reader_dir))
     try:
-        import lerobot_rgbd_source
+        lerobot_rgbd_source = importlib.import_module("lerobot_rgbd_source")
     except ImportError as exc:
         raise RuntimeError(
-            "run_v05_ffs_frame.py requires tools/lerobot_rgbd_source.py "
-            "from the parent 3D-Diffusion-Policy checkout"
+            "run_v05_ffs_frame.py is an optional dataset utility; install its "
+            "sidecar reader or pass --sidecar-reader-dir explicitly"
         ) from exc
 
     root = args.dataset_root.expanduser().resolve()
@@ -228,6 +251,7 @@ def main() -> int:
     config = _resolve_config(
         args.builder_config.expanduser().resolve(), root, args.camera, args.backend, args.artifact_id,
         args.precision, args.builder_optimization_level, args.workspace_gib,
+        args.artifact_dir, args.plugin_library,
     )
     rgb = _decode_rgb(root, args.camera, args.global_frame_index) if config.pointcloud.use_rgb else None
     input_frame = {

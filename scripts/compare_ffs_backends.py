@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -15,11 +16,8 @@ import torch
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTER_REPO_ROOT = REPO_ROOT.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
-sys.path.insert(0, str(OUTER_REPO_ROOT / "tools"))
 
-import lerobot_rgbd_source  # noqa: E402
 from pointcloud_builder import PointCloudBuilder  # noqa: E402
 from run_v05_ffs_frame import _resolve_config  # noqa: E402
 
@@ -76,7 +74,26 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--backend", choices=BACKENDS, action="append", dest="backends")
     parser.add_argument("--thresholds", type=Path, default=REPO_ROOT / "ffs_reproduction/configs/parity_thresholds.yaml")
+    parser.add_argument(
+        "--sidecar-reader-dir",
+        type=Path,
+        help="explicit directory containing optional lerobot_rgbd_source.py",
+    )
     args = parser.parse_args()
+    if args.sidecar_reader_dir is not None:
+        reader_dir = args.sidecar_reader_dir.expanduser().resolve()
+        if not (reader_dir / "lerobot_rgbd_source.py").is_file():
+            raise FileNotFoundError(
+                f"--sidecar-reader-dir has no lerobot_rgbd_source.py: {reader_dir}"
+            )
+        sys.path.insert(0, str(reader_dir))
+    try:
+        lerobot_rgbd_source = importlib.import_module("lerobot_rgbd_source")
+    except ImportError as exc:
+        raise RuntimeError(
+            "compare_ffs_backends.py is an optional dataset utility; install its "
+            "sidecar reader or pass --sidecar-reader-dir explicitly"
+        ) from exc
     backends = tuple(args.backends or BACKENDS)
     root = args.dataset_root.expanduser().resolve()
     info = json.loads((root / "meta/info.json").read_text(encoding="utf-8"))
