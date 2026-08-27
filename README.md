@@ -216,11 +216,15 @@ python tools/mapping/run_live_rig.py \
   --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --mapping-config .local/configs/mapping.yaml \
   --frames 1000 --reopen-frames 60 \
+  --acceptance-scope capture_matching \
   --output .local/evidence/live-rig \
   --report .local/reports/live-rig.json
 ```
 
 Camera sessions are worker-owned; open/capture/close stay on the same worker thread.
+`capture_matching` is the CR7 scope: it enforces concurrent capture, complete delivered
+matched sets, host-time skew, no frame reuse, and clean lifecycle. It still records
+geometry and FFS performance, but CR18 owns their formal benchmark interpretation.
 
 ## 14. Frame matching
 

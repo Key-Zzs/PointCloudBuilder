@@ -210,11 +210,15 @@ python tools/mapping/run_live_rig.py \
   --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --mapping-config .local/configs/mapping.yaml \
   --frames 1000 --reopen-frames 60 \
+  --acceptance-scope capture_matching \
   --output .local/evidence/live-rig \
   --report .local/reports/live-rig.json
 ```
 
 Camera session 由 worker 独占，open/capture/close 始终在同一 worker thread。
+`capture_matching` 是 CR7 scope：强制并发采集、完整交付 matched sets、host-time
+skew、无帧复用和干净 lifecycle。它仍记录 geometry 与 FFS performance，但其正式
+benchmark 解释由 CR18 负责。
 
 ## 14. 帧匹配
 

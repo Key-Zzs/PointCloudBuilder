@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 READMES = (ROOT / "README.md", ROOT / "README_zh-CN.md")
@@ -35,6 +34,7 @@ INTERACTIVE_FLAGS = (
     "--rerun-record",
     "--viewer-point-budget",
 )
+LIVE_RIG_FLAGS = ("--acceptance-scope",)
 
 
 def main() -> int:
@@ -61,6 +61,17 @@ def main() -> int:
     checks["interactive_help_exit"] = help_result.returncode == 0
     for flag in INTERACTIVE_FLAGS:
         checks[f"interactive_flag:{flag}"] = flag in help_result.stdout
+    live_rig_help = subprocess.run(
+        [sys.executable, str(ROOT / "tools/mapping/run_live_rig.py"), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=help_env,
+    )
+    checks["live_rig_help_exit"] = live_rig_help.returncode == 0
+    for flag in LIVE_RIG_FLAGS:
+        checks[f"live_rig_flag:{flag}"] = flag in live_rig_help.stdout
     for readme in READMES:
         text = readme.read_text(encoding="utf-8")
         checks[f"{readme.name}:policy:pose_validated"] = (
@@ -69,6 +80,8 @@ def main() -> int:
         for relative in REQUIRED_PATHS:
             checks[f"{readme.name}:reference:{relative}"] = relative in text
         for flag in INTERACTIVE_FLAGS:
+            checks[f"{readme.name}:flag:{flag}"] = flag in text
+        for flag in LIVE_RIG_FLAGS:
             checks[f"{readme.name}:flag:{flag}"] = flag in text
         for command_path in re.findall(
             r"(?:python\s+|\./)([A-Za-z0-9_./-]+\.(?:py|sh))", text

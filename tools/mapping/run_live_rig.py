@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import statistics
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -34,6 +34,15 @@ def main() -> None:
     parser.add_argument("--memory-sample-every", type=int, default=0)
     parser.add_argument("--memory-samples")
     parser.add_argument("--no-evidence", action="store_true")
+    parser.add_argument(
+        "--acceptance-scope",
+        choices=("full", "capture_matching"),
+        default="full",
+        help=(
+            "full preserves the legacy geometry/performance gates; capture_matching "
+            "enforces only concurrent capture, matched-set delivery, and lifecycle"
+        ),
+    )
     args = parser.parse_args()
     if args.frames <= 0 or args.reopen_frames < 0:
         raise ValueError("--frames must be positive and --reopen-frames non-negative")
@@ -83,18 +92,12 @@ def main() -> None:
     }
     is_ffs = all(mode == "ffs_stereo" for mode in depth_modes.values())
     processed_fps = primary["received_frames"] / primary["duration_s"]
-    matcher_passed = bool(
-        primary["received_frames"] == args.frames
-        and matcher["matched_sets"] >= args.frames
-        and matcher["match_ratio"] >= 0.95
-        and matcher["absolute_skew_ms"][config.timing.reference_camera or sorted(cameras)[0]]["p95"] == 0.0
-        and max(
-            float(item["p95"] or 0.0)
-            for item in matcher["absolute_skew_ms"].values()
-        )
-        <= 33.4
-        and float(matcher["maximum_absolute_skew_ms"]) <= 66.8
-        and matcher["frame_reuse_violations"] == 0
+    matcher_passed = _matcher_passed(
+        matcher,
+        received_frames=primary["received_frames"],
+        requested_frames=args.frames,
+        reference_camera=config.timing.reference_camera or min(cameras),
+        require_match_ratio=args.acceptance_scope == "full",
     )
     camera_passed = all(
         item["captured"] >= args.frames
@@ -131,28 +134,30 @@ def main() -> None:
     throughput_passed = not is_ffs or processed_fps >= 15.0
     latency_p95 = float(primary["timing_ms"]["total_ms"]["p95"])
     latency_passed = not is_ffs or latency_p95 <= 66.8
+    gates = {
+        "camera_capture": camera_passed,
+        "matcher": matcher_passed,
+        "geometry": geometry_passed,
+        "lifecycle_and_reopen": lifecycle_passed,
+        "ffs_processed_fps": throughput_passed,
+        "ffs_end_to_end_p95": latency_passed,
+    }
+    enforced_gates = (
+        tuple(gates)
+        if args.acceptance_scope == "full"
+        else ("camera_capture", "matcher", "lifecycle_and_reopen")
+    )
     report = {
         "schema_version": "pointcloud-builder.live-rig-acceptance.v1",
         "snapshot_only": True,
+        "acceptance_scope": args.acceptance_scope,
+        "enforced_gates": list(enforced_gates),
         "depth_modes": depth_modes,
         "runs": runs,
         "processed_fps": processed_fps,
-        "gates": {
-            "camera_capture": camera_passed,
-            "matcher": matcher_passed,
-            "geometry": geometry_passed,
-            "lifecycle_and_reopen": lifecycle_passed,
-            "ffs_processed_fps": throughput_passed,
-            "ffs_end_to_end_p95": latency_passed,
-        },
-        "passed": bool(
-            camera_passed
-            and matcher_passed
-            and geometry_passed
-            and lifecycle_passed
-            and throughput_passed
-            and latency_passed
-        ),
+        "matcher_retention_ratio_passed": bool(matcher["match_ratio"] >= 0.95),
+        "gates": gates,
+        "passed": bool(all(gates[name] for name in enforced_gates)),
     }
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.memory_samples:
@@ -165,6 +170,8 @@ def main() -> None:
         json.dumps(
             {
                 "passed": report["passed"],
+                "acceptance_scope": args.acceptance_scope,
+                "enforced_gates": report["enforced_gates"],
                 "depth_modes": depth_modes,
                 "processed_fps": processed_fps,
                 "gates": report["gates"],
@@ -184,6 +191,32 @@ def main() -> None:
     )
     if not report["passed"]:
         raise SystemExit("live rig acceptance failed")
+
+
+def _matcher_passed(
+    matcher: dict[str, Any],
+    *,
+    received_frames: int,
+    requested_frames: int,
+    reference_camera: str,
+    require_match_ratio: bool,
+) -> bool:
+    """Validate delivered matches without conflating latest-biased retention with sync."""
+
+    return bool(
+        received_frames == requested_frames
+        and matcher["matched_sets"] >= requested_frames
+        and (not require_match_ratio or matcher["match_ratio"] >= 0.95)
+        and matcher["absolute_skew_ms"][reference_camera]["p95"] == 0.0
+        and max(
+            float(item["p95"] or 0.0)
+            for item in matcher["absolute_skew_ms"].values()
+        )
+        <= 33.4
+        and float(matcher["maximum_absolute_skew_ms"]) <= 66.8
+        and matcher["frame_reuse_violations"] == 0
+        and matcher["wait_timeouts"] == 0
+    )
 
 
 def _run_once(
