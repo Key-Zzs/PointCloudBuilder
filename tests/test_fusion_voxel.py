@@ -73,6 +73,8 @@ def test_voxel_fusion_supports_xyzrgb_arithmetic_mean() -> None:
         atol=1e-7,
         rtol=0,
     )
+    assert result.cloud.metadata["fusion"]["geometry_aggregation"] == "centroid"
+    assert result.cloud.metadata["fusion"]["rgb_aggregation"] == "mean"
 
 
 def test_empty_one_camera_all_empty_and_different_counts_are_supported() -> None:

@@ -217,9 +217,10 @@ def main() -> None:
         for item in records
     )
     processing_order_passed = bool(
-        selected.processing_metadata["workspace_crop_stage"] == "after_concatenation"
+        selected.processing_metadata["workspace_crop_stage"]
+        == "once_per_camera_after_workspace_transform_before_concatenation"
         and selected.processing_metadata["fusion_input_stage"]
-        == "per_camera_workspace_cropped"
+        == "workspace_cropped_concatenation"
         and selected.processing_metadata["global_sampling_input_stage"] == "fused"
     )
     matcher_passed = bool(

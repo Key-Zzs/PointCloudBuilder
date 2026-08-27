@@ -125,6 +125,7 @@ class SingleCameraWorkspacePipeline:
             ),
             "depth_inference": float(ffs_timing.get("inference", 0.0)),
             "deprojection": float(builder_timing.get("deprojection", 0.0)),
+            "rgb_mapping": float(builder_timing.get("rgb_mapping", 0.0)),
             "local_crop": float(builder_timing.get("crop", 0.0)),
             "camera_sampling": float(builder_timing.get("sampling", 0.0)),
             "workspace_transform": transform_ms,

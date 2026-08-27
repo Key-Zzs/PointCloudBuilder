@@ -19,7 +19,6 @@ from pointcloud_builder.rig.types import (
 )
 from pointcloud_builder.mapping.types import RigDepthFrameSet
 from pointcloud_builder.reconstruction_timing import ReconstructionTiming
-from pointcloud_builder.workspace.crop import crop_workspace_cloud
 from pointcloud_builder.workspace.types import WorkspacePointCloud
 
 
@@ -99,9 +98,13 @@ class RigFrameProcessor:
                     legacy_camera_timing["depth_resolution"]
                 ),
                 "deprojection_ms": float(legacy_camera_timing["deprojection"]),
+                "rgb_mapping_ms": float(legacy_camera_timing["rgb_mapping"]),
                 "local_crop_ms": float(legacy_camera_timing["local_crop"]),
                 "workspace_transform_ms": float(
                     legacy_camera_timing["workspace_transform"]
+                ),
+                "workspace_crop_ms": float(
+                    legacy_camera_timing["workspace_crop"]
                 ),
                 "raw_to_workspace_per_camera_ms": float(
                     legacy_camera_timing["rig_camera_total"]
@@ -139,12 +142,15 @@ class RigFrameProcessor:
         )
 
         concat_start = time.perf_counter() if self.timing_enabled else 0.0
-        tensors = [cloud.points for cloud in per_camera_workspace_raw]
-        if len({int(points.shape[1]) for points in tensors}) != 1:
+        raw_tensors = [cloud.points for cloud in per_camera_workspace_raw]
+        cropped_tensors = [cloud.cloud.points for cloud in per_camera]
+        if len({int(points.shape[1]) for points in raw_tensors}) != 1:
             raise ValueError("per-camera clouds must have the same channel count")
-        concatenated = torch.cat(tensors, dim=0)
+        concatenated = torch.cat(raw_tensors, dim=0)
+        workspace_cropped_points = torch.cat(cropped_tensors, dim=0)
         if self.timing_enabled:
             _sync_if_cuda(concatenated)
+            _sync_if_cuda(workspace_cropped_points)
         concatenate_ms = (
             (time.perf_counter() - concat_start) * 1000.0
             if self.timing_enabled
@@ -167,16 +173,26 @@ class RigFrameProcessor:
                 "timing_mode": self.config.timing.mode,
             },
         )
-        crop_start = time.perf_counter() if self.timing_enabled else 0.0
-        workspace_cropped = crop_workspace_cloud(
-            concatenated_cloud, self.config.workspace_crop
+        workspace_cropped = WorkspacePointCloud(
+            points=workspace_cropped_points,
+            frame=self.config.output_frame,
+            metadata={
+                **concatenated_cloud.metadata,
+                "workspace_crop": {
+                    "enabled": self.config.workspace_crop.enabled,
+                    "frame": self.config.workspace_crop.frame,
+                    "x": self.config.workspace_crop.x,
+                    "y": self.config.workspace_crop.y,
+                    "z": self.config.workspace_crop.z,
+                    "input_count": int(concatenated_cloud.points.shape[0]),
+                    "output_count": int(workspace_cropped_points.shape[0]),
+                    "execution": "once_per_camera_before_canonical_concatenation",
+                },
+            },
         )
-        if self.timing_enabled:
-            _sync_if_cuda(workspace_cropped.points)
-        workspace_crop_ms = (
-            (time.perf_counter() - crop_start) * 1000.0
-            if self.timing_enabled
-            else 0.0
+        workspace_crop_ms = sum(
+            float(timing["per_camera"][name]["workspace_crop"])
+            for name in self.canonical_order
         )
         cropped_total_ms = (
             (time.perf_counter() - processing_start) * 1000.0
@@ -228,10 +244,18 @@ class RigFrameProcessor:
             "canonical_camera_order": list(self.canonical_order),
             "per_camera_processing": "sequential_canonical_order",
             "concatenation_input_stage": "per_camera_workspace_raw",
-            "workspace_crop_stage": "after_concatenation",
-            "fusion_input_stage": "per_camera_workspace_cropped",
+            "workspace_crop_stage": (
+                "once_per_camera_after_workspace_transform_before_concatenation"
+            ),
+            "fusion_input_stage": "workspace_cropped_concatenation",
             "global_sampling_input_stage": (
                 "fused" if self.config.fusion.enabled else "workspace_cropped"
+            ),
+            "geometry_aggregation": (
+                "centroid" if self.config.fusion.enabled else "none"
+            ),
+            "rgb_aggregation": (
+                "mean" if self.config.fusion.enabled else "none"
             ),
             "point_counts": {
                 "concatenated": int(concatenated_cloud.points.shape[0]),

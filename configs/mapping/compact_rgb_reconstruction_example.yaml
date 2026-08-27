@@ -1,0 +1,51 @@
+schema_version: pointcloud-builder.rig.v1
+output_frame: workspace
+
+cameras:
+  - name: camera_a
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_a/runtime.yaml
+      provision_artifact: path/to/private/camera_a/provision
+    depth: {mode: ffs_stereo}
+    pointcloud: {use_rgb: true}
+    pipeline_config: path/to/private/ffs_tensorrt_plugin.yaml
+    local_crop: {enabled: false}
+  - name: camera_b
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_b/runtime.yaml
+      provision_artifact: path/to/private/camera_b/provision
+    depth: {mode: ffs_stereo}
+    pointcloud: {use_rgb: true}
+    pipeline_config: path/to/private/ffs_tensorrt_plugin.yaml
+    local_crop: {enabled: false}
+
+timing:
+  mode: nearest_host_timestamp
+  maximum_skew_ms: 33.4
+  reference_camera: camera_a
+live:
+  buffer_capacity: 2
+  matcher_wait_timeout_s: 0.1
+  join_timeout_s: 5.0
+  telemetry_history_capacity: 10000
+workspace_crop:
+  enabled: true
+  x: [-1.0, 1.0]
+  y: [-1.0, 1.0]
+  z: [-0.2, 2.0]
+fusion:
+  enabled: true
+  voxel_size_m: 0.0025
+  origin: [-1.0, -1.0, -0.2]
+  deterministic: true
+sampling:
+  enabled: true
+  mode: fps
+  num_points: 30000
+  voxel_size: 0.0025
+  deterministic: true
+  seed: 23

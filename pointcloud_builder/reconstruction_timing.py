@@ -29,8 +29,10 @@ CURRENT_CAMERA_STAGES = frozenset(
         "frame_adapter_ms",
         "depth_resolution_ms",
         "deprojection_ms",
+        "rgb_mapping_ms",
         "local_crop_ms",
         "workspace_transform_ms",
+        "workspace_crop_ms",
         "raw_to_workspace_per_camera_ms",
     }
 )

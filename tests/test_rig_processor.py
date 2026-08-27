@@ -117,9 +117,13 @@ def test_processor_reports_scalar_stage_counts_and_m6_stage_order() -> None:
         "canonical_camera_order": ["camera_a", "camera_b"],
         "per_camera_processing": "sequential_canonical_order",
         "concatenation_input_stage": "per_camera_workspace_raw",
-        "workspace_crop_stage": "after_concatenation",
-        "fusion_input_stage": "per_camera_workspace_cropped",
+        "workspace_crop_stage": (
+            "once_per_camera_after_workspace_transform_before_concatenation"
+        ),
+        "fusion_input_stage": "workspace_cropped_concatenation",
         "global_sampling_input_stage": "fused",
+        "geometry_aggregation": "centroid",
+        "rgb_aggregation": "mean",
         "point_counts": {
             "concatenated": result.concatenated.points.shape[0],
             "workspace_cropped": result.workspace_cropped.points.shape[0],

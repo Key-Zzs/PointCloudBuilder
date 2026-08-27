@@ -38,6 +38,22 @@ def test_sampling_preserves_xyzrgb_shape() -> None:
     assert meta["sampled_count"] == 10
 
 
+def test_disabled_sampling_is_identity_and_performs_no_voxel_or_fps_work() -> None:
+    point_cloud = torch.rand((16, 6), dtype=torch.float32)
+    sampled, meta = sample_point_cloud(
+        point_cloud,
+        SamplingConfig(
+            enabled=False,
+            mode="voxel_fps",
+            num_points=3,
+            voxel_size=1e-6,
+        ),
+    )
+    assert sampled is point_cloud
+    assert meta["sampling_enabled"] is False
+    assert meta["candidate_count"] == len(point_cloud)
+
+
 def test_repeat_padding_when_input_is_smaller() -> None:
     point_cloud = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.float32)
     sampled, meta = sample_point_cloud(

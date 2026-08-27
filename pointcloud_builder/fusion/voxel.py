@@ -16,6 +16,12 @@ from pointcloud_builder.workspace.types import WorkspacePointCloud
 def voxel_fuse_workspace_clouds(
     clouds: Sequence[Any], config: VoxelFusionConfig
 ) -> FusionResult:
+    """Fuse workspace clouds using XYZ centroids and mean RGB per voxel.
+
+    Voxel keys are computed from XYZ only. For ``Nx6`` input, XYZ and normalized
+    float RGB channels are each arithmetic means over all observations in a
+    voxel. The output therefore retains the ``Nx6`` ``[XYZ, RGB]`` contract.
+    """
     if not clouds:
         raise ValueError("voxel fusion requires at least one camera cloud")
     ordered = sorted(clouds, key=lambda item: item.camera_name)
@@ -49,7 +55,16 @@ def voxel_fuse_workspace_clouds(
             cloud=WorkspacePointCloud(
                 points=points.clone(),
                 frame=frame,
-                metadata={"fusion": provenance.to_compact_summary()},
+                metadata={
+                    "fusion": {
+                        "voxel_size_m": config.voxel_size_m,
+                        "origin": list(config.origin),
+                        "deterministic": config.deterministic,
+                        "geometry_aggregation": "centroid",
+                        "rgb_aggregation": "mean" if channels == 6 else "none",
+                        **provenance.to_compact_summary(),
+                    }
+                },
             ),
             provenance=provenance,
         )
@@ -78,6 +93,8 @@ def voxel_fuse_workspace_clouds(
                     "voxel_size_m": config.voxel_size_m,
                     "origin": list(config.origin),
                     "deterministic": config.deterministic,
+                    "geometry_aggregation": "centroid",
+                    "rgb_aggregation": "mean" if channels == 6 else "none",
                     **provenance.to_compact_summary(),
                 }
             },

@@ -38,9 +38,9 @@ fusion:
   origin: [-1.0, -1.0, -0.2]
   deterministic: true
 sampling:
-  enabled: true
-  mode: voxel_fps
-  num_points: 1024
-  voxel_size: 0.01
+  enabled: false
+  mode: fps
+  num_points: 30000
+  voxel_size: 0.005
   deterministic: true
   seed: 23
