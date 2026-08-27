@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
 import sys
-from types import ModuleType
 from pathlib import Path
 
 PATH = Path(__file__).parents[1] / "tools/mapping/run_live_rig.py"
@@ -10,14 +11,28 @@ sys.path.insert(0, str(PATH.parent))
 SPEC = importlib.util.spec_from_file_location("run_live_rig", PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
-PSUTIL_MISSING = importlib.util.find_spec("psutil") is None
-if PSUTIL_MISSING:
-    sys.modules["psutil"] = ModuleType("psutil")
-try:
-    SPEC.loader.exec_module(MODULE)
-finally:
-    if PSUTIL_MISSING:
-        sys.modules.pop("psutil", None)
+SPEC.loader.exec_module(MODULE)
+
+
+def test_help_does_not_import_optional_psutil(tmp_path: Path) -> None:
+    (tmp_path / "psutil.py").write_text(
+        "raise RuntimeError('psutil imported during --help')\n", encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        (str(tmp_path), str(PATH.parents[2]), str(PATH.parents[2] / "third_party/CameraRig/src"))
+    )
+    result = subprocess.run(
+        [sys.executable, str(PATH), "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=PATH.parents[2],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--acceptance-scope" in result.stdout
 
 
 def _matcher() -> dict:

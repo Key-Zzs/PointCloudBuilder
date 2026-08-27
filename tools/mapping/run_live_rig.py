@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import psutil
 import torch
 import yaml
 
@@ -50,6 +49,8 @@ def main() -> None:
         raise ValueError("--memory-sample-every must be non-negative")
     if bool(args.memory_samples) != bool(args.memory_sample_every):
         raise ValueError("--memory-samples and --memory-sample-every must be used together")
+
+    import psutil
 
     config = load_rig_config(args.rig_config)
     mapping = yaml.safe_load(Path(args.mapping_config).read_text(encoding="utf-8"))
