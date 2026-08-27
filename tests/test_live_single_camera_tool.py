@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import ModuleType
 from types import SimpleNamespace
 
 from pointcloud_builder.config import SamplingConfig
@@ -13,7 +14,14 @@ sys.path.insert(0, str(PATH.parent))
 SPEC = importlib.util.spec_from_file_location("run_live_single_camera", PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+PSUTIL_MISSING = importlib.util.find_spec("psutil") is None
+if PSUTIL_MISSING:
+    sys.modules["psutil"] = ModuleType("psutil")
+try:
+    SPEC.loader.exec_module(MODULE)
+finally:
+    if PSUTIL_MISSING:
+        sys.modules.pop("psutil", None)
 
 
 def test_ffs_context_honors_rgb_config(monkeypatch) -> None:
