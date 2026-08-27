@@ -128,7 +128,10 @@ camera-rig provision validate --artifact .local/camera_a/provision
 Repeat those commands for camera B. Start private runtime YAML from
 `third_party/CameraRig/configs/examples/single_camera_contract.yaml` and provision YAML
 from `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml`; insert only
-the discovered serial under `.local/` and point both provisions at the same target.
+the discovered serial under `.local/`, point both provisions at the same target, and
+set `target.detection_policy: pose_validated` so provisioning uses the same current-board
+policy as the required preflight. Calibration residual and pose-stability thresholds
+remain unchanged.
 
 Never reuse extrinsics after a failed physical coverage gate.
 

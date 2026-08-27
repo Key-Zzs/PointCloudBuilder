@@ -63,6 +63,9 @@ def main() -> int:
         checks[f"interactive_flag:{flag}"] = flag in help_result.stdout
     for readme in READMES:
         text = readme.read_text(encoding="utf-8")
+        checks[f"{readme.name}:policy:pose_validated"] = (
+            "target.detection_policy: pose_validated" in text
+        )
         for relative in REQUIRED_PATHS:
             checks[f"{readme.name}:reference:{relative}"] = relative in text
         for flag in INTERACTIVE_FLAGS:

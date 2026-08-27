@@ -125,7 +125,9 @@ camera-rig provision validate --artifact .local/camera_a/provision
 camera B 执行同样命令。私有 runtime YAML 从
 `third_party/CameraRig/configs/examples/single_camera_contract.yaml` 开始，provision YAML
 从 `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml` 开始；只在
-`.local/` 写入发现的序列号，并让两份 provision 配置指向同一个 target。
+`.local/` 写入发现的序列号，让两份 provision 配置指向同一个 target，并设置
+`target.detection_policy: pose_validated`，使 provision 使用与必做 preflight 相同的
+当前实体板策略。标定残差与姿态稳定性阈值保持不变。
 
 实体 coverage gate 失败后禁止复用旧 extrinsics。
 
