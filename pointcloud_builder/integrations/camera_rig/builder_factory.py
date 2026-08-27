@@ -18,7 +18,9 @@ from pointcloud_builder.integrations.camera_rig.calibration_adapter import (
     calibration_from_camera_bundle,
 )
 from pointcloud_builder.integrations.camera_rig.dependencies import CameraBundle
-from pointcloud_builder.integrations.camera_rig.frame_adapter import CameraRigFrameAdapter
+from pointcloud_builder.integrations.camera_rig.frame_adapter import (
+    CameraRigFrameAdapter,
+)
 from pointcloud_builder.integrations.camera_rig.ffs_calibration_adapter import (
     calibration_from_camera_bundle as ffs_calibration_from_camera_bundle,
 )
@@ -34,8 +36,9 @@ def create_native_builder(
     device: str = "auto",
     crop: CropConfig | None = None,
     sampling: SamplingConfig | None = None,
+    use_rgb: bool = False,
 ) -> CameraRigBuilderContext:
-    """Create an unaligned raw-depth XYZ builder without hand-copied calibration."""
+    """Create an unaligned raw-depth builder without hand-copied calibration."""
 
     calibration = calibration_from_camera_bundle(
         bundle,
@@ -56,8 +59,9 @@ def create_native_builder(
             depth_to_color_extrinsics=T_color_from_depth.extrinsics,
         ),
         pointcloud=PointCloudConfig(
-            use_rgb=False,
-            output_format="xyz",
+            use_rgb=use_rgb,
+            output_format="xyzrgb" if use_rgb else "xyz",
+            rgb_mapping="project_depth_to_color",
             xyz_frame="depth",
         ),
         device=device,
@@ -70,11 +74,13 @@ def create_native_builder(
         calibration=calibration,
         source_frame=source_frame,
         workspace_frame=calibration.workspace_frame,
-        T_workspace_from_source=calibration.transform(source_frame, calibration.workspace_frame),
+        T_workspace_from_source=calibration.transform(
+            source_frame, calibration.workspace_frame
+        ),
         depth_mode="native",
         frame_adapter=CameraRigFrameAdapter(
             bundle,
-            required_streams=("depth",),
+            required_streams=("color", "depth") if use_rgb else ("depth",),
             timestamp_stream="depth",
         ),
     )
@@ -88,14 +94,17 @@ def create_ffs_builder(
     crop: CropConfig | None = None,
     sampling: SamplingConfig | None = None,
     backend: Any | None = None,
+    use_rgb: bool = False,
 ) -> CameraRigBuilderContext:
-    """Create an XYZ FFS builder from CameraBundle stereo calibration."""
+    """Create an FFS builder from CameraBundle stereo and color calibration."""
 
     calibration = calibration_from_camera_bundle(
         bundle,
         required_streams=("color", "ir_left", "ir_right"),
     )
-    ffs_calibration = ffs_calibration_from_camera_bundle(bundle, calibration.camera_name)
+    ffs_calibration = ffs_calibration_from_camera_bundle(
+        bundle, calibration.camera_name
+    )
     source_frame = calibration.intrinsic_frames["ir_left"]
     T_color_from_left = calibration.transform(
         source_frame, calibration.intrinsic_frames["color"]
@@ -110,8 +119,9 @@ def create_ffs_builder(
             depth_to_color_extrinsics=T_color_from_left.extrinsics,
         ),
         pointcloud=PointCloudConfig(
-            use_rgb=False,
-            output_format="xyz",
+            use_rgb=use_rgb,
+            output_format="xyzrgb" if use_rgb else "xyz",
+            rgb_mapping="project_depth_to_color",
             xyz_frame="depth",
         ),
         device=device,
@@ -133,11 +143,15 @@ def create_ffs_builder(
         calibration=calibration,
         source_frame=source_frame,
         workspace_frame=calibration.workspace_frame,
-        T_workspace_from_source=calibration.transform(source_frame, calibration.workspace_frame),
+        T_workspace_from_source=calibration.transform(
+            source_frame, calibration.workspace_frame
+        ),
         depth_mode="ffs_stereo",
         frame_adapter=CameraRigFrameAdapter(
             bundle,
-            required_streams=("ir_left", "ir_right"),
+            required_streams=("color", "ir_left", "ir_right")
+            if use_rgb
+            else ("ir_left", "ir_right"),
             timestamp_stream="ir_left",
         ),
     )

@@ -5,6 +5,7 @@ from pointcloud_builder.rig.config import (
     RigCameraConfig,
     RigConfig,
     RigDepthConfig,
+    RigPointCloudConfig,
     RigSourceConfig,
     RigTimingConfig,
     load_rig_config,
@@ -21,7 +22,11 @@ from pointcloud_builder.rig.live import (
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
 from pointcloud_builder.rig.processor import RigFrameProcessor
 from pointcloud_builder.rig.sources import CameraRigReplaySource, SyntheticCameraSource
-from pointcloud_builder.rig.synthetic import SyntheticScene, build_synthetic_rig, create_synthetic_scene
+from pointcloud_builder.rig.synthetic import (
+    SyntheticScene,
+    build_synthetic_rig,
+    create_synthetic_scene,
+)
 from pointcloud_builder.rig.types import (
     CameraFrameEnvelope,
     PerCameraCloud,
@@ -48,6 +53,7 @@ __all__ = [
     "RigFrameProcessor",
     "RigConfig",
     "RigDepthConfig",
+    "RigPointCloudConfig",
     "RigFrameSet",
     "RigSourceConfig",
     "RigTimingConfig",

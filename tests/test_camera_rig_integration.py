@@ -9,7 +9,13 @@ import sys
 import numpy as np
 import pytest
 
-from camera_rig.api import CameraFrame, CameraIntrinsics, RigidTransform, StreamFrame, load_camera_bundle
+from camera_rig.api import (
+    CameraFrame,
+    CameraIntrinsics,
+    RigidTransform,
+    StreamFrame,
+    load_camera_bundle,
+)
 from pointcloud_builder.integrations.camera_rig import (
     CameraRigFrameAdapter,
     TransformResolutionError,
@@ -80,9 +86,9 @@ def test_frame_adapter_preserves_rgb_depth_ir_and_timing_without_copy() -> None:
 
 def test_frame_adapter_fails_closed_for_pipeline_required_stream() -> None:
     with pytest.raises(ValueError, match="missing required streams"):
-        CameraRigFrameAdapter(_bundle(), required_streams=("ir_left", "ir_right")).adapt(
-            _camera_frame(omit="ir_right")
-        )
+        CameraRigFrameAdapter(
+            _bundle(), required_streams=("ir_left", "ir_right")
+        ).adapt(_camera_frame(omit="ir_right"))
 
 
 @pytest.mark.parametrize(
@@ -92,7 +98,9 @@ def test_frame_adapter_fails_closed_for_pipeline_required_stream() -> None:
         ("serial", "ANOTHER-SYNTHETIC-SERIAL", "serial"),
     ],
 )
-def test_frame_adapter_binds_frame_identity_to_bundle(field: str, value: str, message: str) -> None:
+def test_frame_adapter_binds_frame_identity_to_bundle(
+    field: str, value: str, message: str
+) -> None:
     frame = replace(_camera_frame(), **{field: value})
     with pytest.raises(ValueError, match=message):
         CameraRigFrameAdapter(_bundle(), required_streams=("depth",)).adapt(frame)
@@ -174,6 +182,12 @@ def test_native_factory_uses_bundle_scale_intrinsics_and_frames() -> None:
     assert context.T_workspace_from_source.source_frame == context.source_frame
     assert context.T_workspace_from_source.target_frame == "workspace"
 
+    rgb_context = create_native_builder(_bundle(), device="cpu", use_rgb=True)
+    assert rgb_context.builder.config.pointcloud.use_rgb is True
+    assert rgb_context.builder.config.pointcloud.output_format == "xyzrgb"
+    assert rgb_context.builder.config.pointcloud.rgb_mapping == "project_depth_to_color"
+    assert rgb_context.frame_adapter.required_streams == ("color", "depth")
+
 
 def test_bundle_validation_failed_missing_mount_name_and_frame_mismatch() -> None:
     bundle = _bundle()
@@ -205,12 +219,19 @@ def test_integration_imports_only_camera_rig_stable_api() -> None:
     for path in sorted(integration.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("camera_rig"):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.startswith("camera_rig")
+            ):
                 if node.module != "camera_rig.api":
                     violations.append(f"{path.name}:{node.lineno}:{node.module}")
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("camera_rig") and alias.name != "camera_rig.api":
+                    if (
+                        alias.name.startswith("camera_rig")
+                        and alias.name != "camera_rig.api"
+                    ):
                         violations.append(f"{path.name}:{node.lineno}:{alias.name}")
     assert violations == []
 

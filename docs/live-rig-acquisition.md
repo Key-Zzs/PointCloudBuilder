@@ -26,8 +26,15 @@ workspace crop, optional deterministic snapshot voxel fusion, and one global sam
 step. Fusion is current-frame-set only; live acquisition does not create a persistent
 map, TSDF, temporal voxel state, or cross-time accumulated cloud.
 
-`configs/mapping/live_rig_example.yaml` documents the portable public schema. A private
-hardware run can be accepted with:
+`configs/mapping/live_rig_example.yaml` documents the portable public schema. Each
+camera may opt into RGB point features with `pointcloud.use_rgb: true`. Native depth
+and FFS left-IR depth are projected into the calibrated color camera with the CameraRig
+bundle's intrinsics and `T_color_from_depth`; color remains attached through workspace
+transforms, crop, voxel fusion, and global sampling. The default is `false` for
+backward-compatible XYZ output. RGB mode requires the color stream and fails closed if
+it is absent.
+
+A private hardware run can be accepted with:
 
 ```bash
 python tools/mapping/run_live_rig.py \

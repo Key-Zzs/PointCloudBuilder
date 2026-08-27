@@ -15,7 +15,10 @@ from camera_rig.api import (
 )
 
 from pointcloud_builder.config import SamplingConfig, load_config
-from pointcloud_builder.integrations.camera_rig import create_ffs_builder, create_native_builder
+from pointcloud_builder.integrations.camera_rig import (
+    create_ffs_builder,
+    create_native_builder,
+)
 from pointcloud_builder.mapping.depth_packet import provision_identity_sha256
 from pointcloud_builder.rig.config import RigConfig, RigLiveConfig, RigTimingConfig
 from pointcloud_builder.rig.live_buffer import create_live_frame_buffers
@@ -54,7 +57,9 @@ class LiveRigAcquisition:
         if len(camera_configs) < 2:
             raise ValueError("live rig acquisition requires at least two cameras")
         if timing.mode != "nearest_host_timestamp":
-            raise ValueError("live rig acquisition requires nearest_host_timestamp timing")
+            raise ValueError(
+                "live rig acquisition requires nearest_host_timestamp timing"
+            )
         self.camera_configs = dict(camera_configs)
         self.camera_names = tuple(sorted(camera_configs))
         self.timing = timing
@@ -229,7 +234,9 @@ class LiveRigPipeline:
         frame_set = self.acquisition.next_frame_set(timeout_s)
         match_wait_ms = (time.perf_counter() - match_start) * 1000.0
         if frame_set is None:
-            raise TimeoutError("no complete live rig frame set was matched before timeout")
+            raise TimeoutError(
+                "no complete live rig frame set was matched before timeout"
+            )
         processing_start = time.perf_counter()
         result = self.processor.process_frame_set(
             frame_set,
@@ -260,8 +267,12 @@ def build_live_rig(
 ) -> LiveRigPipeline:
     """Build validated CameraRig live workers and one shared frame processor."""
 
-    if any(camera.source.type != "camera_rig_live" for camera in config.enabled_cameras):
-        raise ValueError("build_live_rig requires every enabled source to be camera_rig_live")
+    if any(
+        camera.source.type != "camera_rig_live" for camera in config.enabled_cameras
+    ):
+        raise ValueError(
+            "build_live_rig requires every enabled source to be camera_rig_live"
+        )
     no_sampling = SamplingConfig(mode="stride", num_points=1, enabled=False)
     camera_configs: dict[str, Any] = {}
     runtimes: dict[str, RigCameraRuntime] = {}
@@ -273,9 +284,13 @@ def build_live_rig(
         if camera_config.camera.name != camera.name:
             raise ValueError(f"camera {camera.name!r} runtime config identity mismatch")
         if bundle.device.camera_name != camera.name:
-            raise ValueError(f"camera {camera.name!r} provision bundle identity mismatch")
+            raise ValueError(
+                f"camera {camera.name!r} provision bundle identity mismatch"
+            )
         if camera_config.camera.serial != bundle.device.serial:
-            raise ValueError(f"camera {camera.name!r} runtime/provision serial mismatch")
+            raise ValueError(
+                f"camera {camera.name!r} runtime/provision serial mismatch"
+            )
         if camera_config.camera.serial in serials:
             raise ValueError("live rig cameras must have distinct serial identities")
         serials.add(camera_config.camera.serial)
@@ -293,19 +308,25 @@ def build_live_rig(
                 device=device,
                 crop=camera.local_crop,
                 sampling=no_sampling,
+                use_rgb=camera.pointcloud.use_rgb,
             )
         else:
             if camera.pipeline_config is None:
-                raise ValueError(f"camera {camera.name!r} FFS mode requires pipeline_config")
+                raise ValueError(
+                    f"camera {camera.name!r} FFS mode requires pipeline_config"
+                )
             pipeline_config = load_config(camera.pipeline_config)
             if pipeline_config.depth_source.ffs is None:
-                raise ValueError(f"camera {camera.name!r} pipeline_config has no FFS section")
+                raise ValueError(
+                    f"camera {camera.name!r} pipeline_config has no FFS section"
+                )
             context = create_ffs_builder(
                 bundle,
                 ffs_config=pipeline_config.depth_source.ffs,
                 device=device,
                 crop=camera.local_crop,
                 sampling=no_sampling,
+                use_rgb=camera.pointcloud.use_rgb,
             )
         camera_configs[camera.name] = camera_config
         runtimes[camera.name] = RigCameraRuntime(
@@ -318,6 +339,7 @@ def build_live_rig(
             provenance={
                 "source_type": "camera_rig_live",
                 "depth_mode": camera.depth.mode,
+                "pointcloud_format": ("xyzrgb" if camera.pointcloud.use_rgb else "xyz"),
             },
         )
     validate_rig_runtimes(config, runtimes)

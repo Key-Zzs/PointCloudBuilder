@@ -72,9 +72,25 @@ def _live_raw() -> dict:
 def test_rig_config_is_strict_and_versioned() -> None:
     config = parse_rig_config(_raw())
     assert config.schema_version == "pointcloud-builder.rig.v1"
-    assert [camera.name for camera in config.enabled_cameras] == ["camera_a", "camera_b"]
+    assert [camera.name for camera in config.enabled_cameras] == [
+        "camera_a",
+        "camera_b",
+    ]
     assert config.output_frame == config.workspace_crop.frame == "workspace"
+    assert all(not camera.pointcloud.use_rgb for camera in config.cameras)
     assert config.live is None
+
+
+def test_per_camera_rgb_pointcloud_is_explicit_and_strict() -> None:
+    raw = _raw()
+    raw["cameras"][0]["pointcloud"] = {"use_rgb": True}
+    config = parse_rig_config(raw)
+    assert config.cameras[0].pointcloud.use_rgb is True
+    assert config.cameras[1].pointcloud.use_rgb is False
+
+    raw["cameras"][0]["pointcloud"]["unknown"] = True
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_rig_config(raw)
 
 
 @pytest.mark.parametrize(
@@ -94,7 +110,9 @@ def test_rig_config_rejects_invalid_contracts(mutator, message: str) -> None:
         parse_rig_config(raw)
 
 
-def test_live_source_union_resolves_only_camera_config_and_provision(tmp_path: Path) -> None:
+def test_live_source_union_resolves_only_camera_config_and_provision(
+    tmp_path: Path,
+) -> None:
     raw = _live_raw()
     config = parse_rig_config(raw, base_dir=tmp_path)
     source = config.cameras[0].source
@@ -251,6 +269,7 @@ def test_live_section_is_optional_for_live_sources() -> None:
     ("path", "value"),
     [
         (("cameras", 0, "enabled"), "true"),
+        (("cameras", 0, "pointcloud", "use_rgb"), 1),
         (("workspace_crop", "enabled"), 1),
         (("fusion", "enabled"), "false"),
         (("fusion", "deterministic"), 1),
@@ -262,6 +281,7 @@ def test_live_section_is_optional_for_live_sources() -> None:
 )
 def test_boolean_and_integer_fields_are_not_coerced(path: tuple, value: object) -> None:
     raw = _raw()
+    raw["cameras"][0]["pointcloud"] = {"use_rgb": False}
     target = raw
     for key in path[:-1]:
         target = target[key]

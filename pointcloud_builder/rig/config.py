@@ -47,11 +47,19 @@ class RigDepthConfig:
 
 
 @dataclass(frozen=True)
+class RigPointCloudConfig:
+    """Per-camera point features produced before workspace fusion."""
+
+    use_rgb: bool = False
+
+
+@dataclass(frozen=True)
 class RigCameraConfig:
     name: str
     enabled: bool
     source: RigSourceConfig
     depth: RigDepthConfig
+    pointcloud: RigPointCloudConfig
     pipeline_config: str | None
     local_crop: CropConfig
 
@@ -164,7 +172,19 @@ def parse_rig_config(raw: dict[str, Any], *, base_dir: Path | None = None) -> Ri
 
 def _camera(value: Any, output_frame: str, base_dir: Path | None) -> RigCameraConfig:
     raw = _mapping(value, "cameras[]")
-    _keys(raw, {"name", "enabled", "source", "depth", "pipeline_config", "local_crop"}, "cameras[]")
+    _keys(
+        raw,
+        {
+            "name",
+            "enabled",
+            "source",
+            "depth",
+            "pointcloud",
+            "pipeline_config",
+            "local_crop",
+        },
+        "cameras[]",
+    )
     name = _nonempty(raw.get("name"), "cameras[].name")
     source = _source(raw.get("source"), name, base_dir)
     depth_raw = _mapping(raw.get("depth"), f"camera {name}.depth")
@@ -173,18 +193,32 @@ def _camera(value: Any, output_frame: str, base_dir: Path | None) -> RigCameraCo
     if depth_mode not in {"native", "ffs_stereo"}:
         raise ValueError(f"camera {name}.depth.mode is unsupported")
     pipeline_value = raw.get("pipeline_config")
-    pipeline_config = None if pipeline_value is None else _path(pipeline_value, f"camera {name}.pipeline_config", base_dir)
+    pipeline_config = (
+        None
+        if pipeline_value is None
+        else _path(pipeline_value, f"camera {name}.pipeline_config", base_dir)
+    )
     return RigCameraConfig(
         name=name,
         enabled=_boolean(raw.get("enabled", True), f"camera {name}.enabled"),
         source=source,
         depth=RigDepthConfig(mode=depth_mode),  # type: ignore[arg-type]
+        pointcloud=_pointcloud(raw.get("pointcloud"), name),
         pipeline_config=pipeline_config,
         local_crop=_crop(
             raw.get("local_crop"),
             f"{name}/{'depth' if depth_mode == 'native' else 'ir_left'}_optical",
             f"camera {name}.local_crop",
         ),
+    )
+
+
+def _pointcloud(value: Any, camera_name: str) -> RigPointCloudConfig:
+    label = f"camera {camera_name}.pointcloud"
+    raw = {} if value is None else _mapping(value, label)
+    _keys(raw, {"use_rgb"}, label)
+    return RigPointCloudConfig(
+        use_rgb=_boolean(raw.get("use_rgb", False), f"{label}.use_rgb")
     )
 
 
@@ -242,7 +276,11 @@ def _timing(value: Any, enabled_camera_names: list[str]) -> RigTimingConfig:
     reference = raw.get("reference_camera")
     if reference is not None and str(reference) not in enabled_camera_names:
         raise ValueError("timing.reference_camera must name an enabled camera")
-    return RigTimingConfig(mode=mode, maximum_skew_ms=maximum_skew_ms, reference_camera=None if reference is None else str(reference))  # type: ignore[arg-type]
+    return RigTimingConfig(
+        mode=mode,
+        maximum_skew_ms=maximum_skew_ms,
+        reference_camera=None if reference is None else str(reference),
+    )  # type: ignore[arg-type]
 
 
 def _crop(value: Any, frame: str, label: str) -> CropConfig:
@@ -259,14 +297,29 @@ def _crop(value: Any, frame: str, label: str) -> CropConfig:
 
 def _sampling(value: Any) -> SamplingConfig:
     raw = _mapping(value, "sampling")
-    _keys(raw, {"enabled", "mode", "num_points", "stride", "voxel_size", "seed", "deterministic", "pad_mode"}, "sampling")
+    _keys(
+        raw,
+        {
+            "enabled",
+            "mode",
+            "num_points",
+            "stride",
+            "voxel_size",
+            "seed",
+            "deterministic",
+            "pad_mode",
+        },
+        "sampling",
+    )
     return SamplingConfig(
         enabled=_boolean(raw.get("enabled", True), "sampling.enabled"),
         mode=str(raw.get("mode", "voxel_fps")),  # type: ignore[arg-type]
         num_points=_integer(raw.get("num_points", 1024), "sampling.num_points"),
         stride=_integer(raw.get("stride", 1), "sampling.stride"),
         voxel_size=float(raw.get("voxel_size", 0.01)),
-        seed=None if raw.get("seed") is None else _integer(raw["seed"], "sampling.seed"),
+        seed=None
+        if raw.get("seed") is None
+        else _integer(raw["seed"], "sampling.seed"),
         deterministic=_boolean(
             raw.get("deterministic", True), "sampling.deterministic"
         ),
@@ -304,9 +357,7 @@ def _live(value: Any) -> RigLiveConfig:
         "live.telemetry_history_capacity",
     )
     if not 1 <= telemetry_history_capacity <= 100_000:
-        raise ValueError(
-            "live.telemetry_history_capacity must be between 1 and 100000"
-        )
+        raise ValueError("live.telemetry_history_capacity must be between 1 and 100000")
     return RigLiveConfig(
         buffer_capacity=buffer_capacity,
         matcher_wait_timeout_s=matcher_wait_timeout_s,

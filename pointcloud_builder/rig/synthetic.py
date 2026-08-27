@@ -57,7 +57,9 @@ def create_synthetic_scene(
         depth = _render_depth(pose, width, height, fx=82.0, fy=82.0)
         camera_frames = []
         for frame_index in range(frame_count):
-            timestamp = 1_000_000_000 + frame_index * 33_333_333 + int(offsets.get(name, 0))
+            timestamp = (
+                1_000_000_000 + frame_index * 33_333_333 + int(offsets.get(name, 0))
+            )
             camera_frames.append(
                 CameraFrame(
                     camera_name=name,
@@ -95,6 +97,7 @@ def build_synthetic_rig(config: RigConfig, scene: SyntheticScene) -> OfflineRigP
             device="cpu",
             crop=camera.local_crop,
             sampling=no_sampling,
+            use_rgb=camera.pointcloud.use_rgb,
         )
         if context.workspace_frame != config.output_frame:
             raise ValueError(
@@ -102,7 +105,9 @@ def build_synthetic_rig(config: RigConfig, scene: SyntheticScene) -> OfflineRigP
             )
         runtimes[camera.name] = RigCameraRuntime(
             source=SyntheticCameraSource(camera.name, frames),
-            pipeline=SingleCameraWorkspacePipeline(context, workspace_crop=config.workspace_crop),
+            pipeline=SingleCameraWorkspacePipeline(
+                context, workspace_crop=config.workspace_crop
+            ),
             provenance={
                 "source_type": "synthetic",
                 "scene": "analytic_plane_box_v1",
@@ -169,8 +174,13 @@ def _ray_box_entry(
     return np.where(hit, t_near, np.inf)
 
 
-def _bundle_dict(name: str, pose: np.ndarray, width: int, height: int) -> dict[str, Any]:
-    frames = {stream: f"{name}/{stream}_optical" for stream in ("color", "depth", "ir_left", "ir_right")}
+def _bundle_dict(
+    name: str, pose: np.ndarray, width: int, height: int
+) -> dict[str, Any]:
+    frames = {
+        stream: f"{name}/{stream}_optical"
+        for stream in ("color", "depth", "ir_left", "ir_right")
+    }
     profiles = {}
     intrinsics = {}
     formats = {"color": "rgb8", "depth": "z16", "ir_left": "y8", "ir_right": "y8"}
