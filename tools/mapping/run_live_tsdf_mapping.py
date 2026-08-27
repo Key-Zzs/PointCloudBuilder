@@ -114,7 +114,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     ):
         raise ValueError("counts, point budget, and statistics window must be positive")
     if args.interactive and args.map_output is not None:
-        raise ValueError("--interactive cannot publish a formally accepted --map-output")
+        raise ValueError(
+            "--interactive cannot publish a formally accepted --map-output"
+        )
     if args.interactive and args.snapshot_baseline_report is not None:
         raise ValueError("--interactive does not use a finite snapshot baseline report")
     report_path = _private_output(args.report) if args.report else None
@@ -570,9 +572,9 @@ def _start_viewer(args: Any, record_path: Path | None):
         RerunViewerProcess,
     )
 
-    implicit_spawn = (
-        args.interactive and args.rerun_connect is None
-    ) or not any((args.rerun_spawn, args.rerun_connect, record_path))
+    implicit_spawn = (args.interactive and args.rerun_connect is None) or not any(
+        (args.rerun_spawn, args.rerun_connect, record_path)
+    )
     viewer = RerunViewerProcess(
         RerunOutputConfig(
             spawn=bool(args.rerun_spawn or implicit_spawn),
@@ -695,10 +697,18 @@ def _load_snapshot_baseline(
     if value is None:
         return None
     baseline = json.loads(Path(value).read_text(encoding="utf-8"))
+    schema = baseline.get("schema_version") if isinstance(baseline, dict) else None
+    formal_fusion = schema == "pointcloud-builder.real-multicamera-fusion.v1"
+    profile_viewer = baseline.get("viewer") if isinstance(baseline, dict) else None
+    dense_profile = bool(
+        schema == "pointcloud-builder.live-reconstruction-profile.v1"
+        and baseline.get("profile") == "dense"
+        and isinstance(profile_viewer, dict)
+        and profile_viewer.get("requested") is False
+    )
     if (
         not isinstance(baseline, dict)
-        or baseline.get("schema_version")
-        != "pointcloud-builder.real-multicamera-fusion.v1"
+        or not (formal_fusion or dense_profile)
         or baseline.get("snapshot_only") is not True
         or baseline.get("persistent_mapping") is not False
         or baseline.get("passed") is not True

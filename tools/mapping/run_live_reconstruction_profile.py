@@ -240,6 +240,8 @@ def main() -> None:
 
     report = {
         "schema_version": "pointcloud-builder.live-reconstruction-profile.v1",
+        "snapshot_only": True,
+        "persistent_mapping": False,
         "profile": profile,
         "rig_config_sha256": _sha256_file(args.rig_config),
         "mapping_config_sha256": _sha256_file(args.mapping_config),

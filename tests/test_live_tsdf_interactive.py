@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 import signal
+from pathlib import Path
 
 import pytest
-
 
 PATH = Path(__file__).parents[1] / "tools/mapping/run_live_tsdf_mapping.py"
 SPEC = importlib.util.spec_from_file_location("run_live_tsdf_mapping", PATH)
@@ -109,3 +108,52 @@ def test_report_writer_is_explicit_and_stdout_summary_is_small(tmp_path: Path) -
     }
     MODULE._write_report(destination, report)
     assert json.loads(destination.read_text(encoding="utf-8")) == report
+
+
+def test_dense_profile_report_is_an_accepted_snapshot_baseline(tmp_path: Path) -> None:
+    baseline = {
+        "schema_version": "pointcloud-builder.live-reconstruction-profile.v1",
+        "snapshot_only": True,
+        "persistent_mapping": False,
+        "profile": "dense",
+        "viewer": {"requested": False},
+        "passed": True,
+        "rig_config_sha256": "rig-sha",
+        "matched_sets": 300,
+        "throughput_fps": 10.0,
+        "latency_ms": {"p95": 100.0},
+    }
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    assert (
+        MODULE._load_snapshot_baseline(
+            str(path), rig_config_sha256="rig-sha", matched_sets=300
+        )
+        == baseline
+    )
+
+
+@pytest.mark.parametrize("profile", ["raw", "compact"])
+def test_non_dense_profile_report_is_not_a_snapshot_baseline(
+    tmp_path: Path, profile: str
+) -> None:
+    baseline = {
+        "schema_version": "pointcloud-builder.live-reconstruction-profile.v1",
+        "snapshot_only": True,
+        "persistent_mapping": False,
+        "profile": profile,
+        "viewer": {"requested": False},
+        "passed": True,
+        "rig_config_sha256": "rig-sha",
+        "matched_sets": 300,
+        "throughput_fps": 10.0,
+        "latency_ms": {"p95": 100.0},
+    }
+    path = tmp_path / f"{profile}.json"
+    path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="snapshot baseline"):
+        MODULE._load_snapshot_baseline(
+            str(path), rig_config_sha256="rig-sha", matched_sets=300
+        )
