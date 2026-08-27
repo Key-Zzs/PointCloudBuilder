@@ -25,6 +25,7 @@ dev = [
   "imageio>=2.31",
   "onnx==1.18.0",
   "opencv-contrib-python-headless==4.14.0.94",
+  "omegaconf==2.3.0",
   "Pillow>=9.0",
   "timm==1.0.28",
 ]
