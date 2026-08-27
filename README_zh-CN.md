@@ -60,7 +60,8 @@ conda activate pcb-reconstruction
 
 可通过 `PCB_ENV_NAME=my-env` 使用另一个隔离名称。环境固定关键
 Python/PyTorch/CUDA/TensorRT/OpenCV ABI，并只安装一个 `cv2` provider：
-`opencv-contrib-python-headless==4.14.0.94`。
+`opencv-contrib-python-headless==4.14.0.94`。环境还固定安装 OmegaConf，用于反序列化
+官方 FFS checkpoint 元数据。
 
 ## 7. Doctor
 

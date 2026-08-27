@@ -62,7 +62,8 @@ conda activate pcb-reconstruction
 
 Set `PCB_ENV_NAME=my-env` to choose another isolated name. The environment pins the
 critical Python/PyTorch/CUDA/TensorRT/OpenCV ABI and installs exactly one `cv2`
-provider: `opencv-contrib-python-headless==4.14.0.94`.
+provider: `opencv-contrib-python-headless==4.14.0.94`. It also pins OmegaConf,
+which is required to deserialize the official FFS checkpoint metadata.
 
 ## 7. Doctor
 

@@ -31,6 +31,7 @@ def test_reconstruction_environment_pins_one_opencv_provider_and_critical_abi() 
     assert "pyrealsense2==2.58.3.10794" in pip
     assert "open3d==0.19.0" in pip
     assert "rerun-sdk==0.36.3" in pip
+    assert "omegaconf==2.3.0" in pip
 
 
 def test_doctor_never_reads_or_reports_realsense_serial_numbers() -> None:

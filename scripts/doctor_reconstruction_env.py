@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import platform
 import sys
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -79,6 +79,7 @@ def _core_import_checks(*, no_hardware: bool) -> list[Check]:
         ("numpy", "numpy", "numpy", False),
         ("yaml", "PyYAML", "yaml", False),
         ("camera_rig", "camera-rig", "camera_rig", False),
+        ("omegaconf", "omegaconf", "omegaconf", False),
         ("tensorrt", "tensorrt-cu13", "tensorrt", True),
         ("pyrealsense2", "pyrealsense2", "pyrealsense2", True),
         ("open3d", "open3d", "open3d", True),
