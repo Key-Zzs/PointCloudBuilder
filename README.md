@@ -1,489 +1,375 @@
 # PointCloudBuilder
 
-PointCloudBuilder is a deployment-oriented RGB-D geometry pipeline for robot learning.
-It supports single-camera point-cloud construction, CameraRig fixed-camera integration,
-native depth and FFS stereo, real concurrent fixed multi-camera capture, host-time frame
-matching, workspace transforms, deterministic current-snapshot fusion, independent
-Rerun visualization, and optional persistent TSDF mapping. Realtime policy input stays
-decoupled from visualization and map maintenance.
+PointCloudBuilder is a fixed multi-camera RGB-D reconstruction system supporting
+CameraRig calibration, FFS stereo depth, metric XYZ/XYZRGB reconstruction, workspace
+fusion, optional crop/sampling, Rerun visualization, and persistent TSDF mapping.
 
-## CameraRig, workspace, and rig fusion
+[中文手册](README_zh-CN.md)
 
-CameraRig is pinned to the reviewed `develop` deployment-readiness commit under
-`third_party/CameraRig` and owns one camera's
-frame, calibration, and fixed-mount bundle. PointCloudBuilder consumes only the stable
-`camera_rig.api`, defines native depth XYZ in the depth optical frame and FFS XYZ in
-the left-IR optical frame, then owns workspace transformation, the versioned
-multi-camera list, host-timestamp matching, deterministic snapshot voxel fusion, and
-one global post-fusion sampling step.
+## 1. Overview
 
-The rig pipeline exposes per-camera camera/workspace clouds, concatenated and cropped
-workspace clouds, fused voxel centroids, the final sampled tensor, and a provenance
-sidecar. The policy-facing path remains current-snapshot only. A separate optional
-Open3D process consumes same-pass per-camera depth rays to maintain a persistent map;
-the 4096-point policy tensor is never used as TSDF input. See `docs/camera-rig-integration.md`,
-`docs/offline-rig-orchestration.md`, `docs/live-rig-acquisition.md`, and
-`docs/workspace-fusion.md`. Real dual-camera snapshot acceptance is documented in
-`docs/real-multicamera-fusion.md`.
+The production route is two fixed Intel RealSense D435i cameras, a shared calibrated
+workspace, Fast-FoundationStereo (FFS) TensorRT-plugin FP16 depth, dense XYZRGB voxel
+fusion, and an independent Open3D TSDF mapper. Reconstruction tensors, visualization,
+and persistent maps remain separate outputs.
 
-Training and deployment must share the same PointCloudBuilder.
+## 2. Architecture
 
-## Repository Description
+```text
+CameraRig frames -> FFS depth -> camera-frame XYZRGB -> local crop
+-> T_workspace_from_camera -> workspace crop -> canonical concatenate
+-> voxel centroid fusion -> optional global FPS -> current snapshot
 
-This repository provides one reusable pipeline for offline training data conversion and realtime robot inference:
-
-1. deproject RGB-D to raw camera-frame point cloud;
-2. crop point cloud by YAML workspace bounds;
-3. sample point cloud to a fixed number of points;
-4. return a `torch.Tensor` point cloud and metadata.
-
-The realtime builder path does not import Open3D, matplotlib, or GUI code. Visualization lives in offline scripts and `pointcloud_builder.visualization`.
-
-## Installation
-
-```bash
-python -m pip install -e ".[dev]"
+same-pass per-camera depth + K + T_workspace_from_camera
+-> independent TSDF process -> extract/crop/sample/mesh -> persistent map
 ```
 
-Optional offline visualization dependency:
+TSDF never consumes the fused or sampled point cloud. Rerun uses a bounded latest-only
+process queue and cannot change reconstruction tensors.
+
+## 3. Supported hardware
+
+- Two fixed RealSense D435i cameras on USB 3 links.
+- NVIDIA GPU compatible with the selected PyTorch, CUDA and TensorRT packages.
+- One known ChArUco target shared by both fixed-camera provisions.
+- Linux is the validated deployment platform.
+
+## 4. Coordinate conventions
+
+Transforms are named `T_target_from_source` and act on column vectors. Native depth
+XYZ starts in `<camera>/depth_optical`; FFS XYZ starts in `<camera>/ir_left_optical`.
+PCB stores `T_workspace_from_camera`; Open3D receives the tested inverse
+`T_camera_from_workspace`. XYZ is `float32` metres. RGB is float RGB in `[0,1]`.
+
+## 5. Clone
 
 ```bash
-python -m pip install -e ".[viz]"
-```
-
-Optional independent Rerun and persistent TSDF dependencies are pinned to the
-versions validated on Python 3.10:
-
-```bash
-python -m pip install -e ".[rerun]"  # rerun-sdk==0.36.3
-python -m pip install -e ".[tsdf]"   # open3d==0.19.0
-```
-
-## Deployment-ready multi-camera mapping
-
-Initialize the reviewed CameraRig pin before installation:
-
-```bash
+git clone --branch develop/mapping --recurse-submodules \
+  https://github.com/Key-Zzs/PointCloudBuilder.git PointCloudBuilder
+cd PointCloudBuilder
 git submodule update --init --recursive
-python -m pip install -e third_party/CameraRig
 ```
 
-Keep runtime YAML, provision bundles, and reports private. Before a dual-camera run,
-inspect USB link/profile state, perform the pose-free target preflight, provision each
-fixed camera against the same resolved target, and validate each provision:
+## 6. Clean environment setup
+
+The standard environment is `pcb-reconstruction`; `dp3` is not part of the public
+setup contract. Its declarative specification is `environment.reconstruction.yml`.
 
 ```bash
-camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
-camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
-  --target .local/target/target_spec.json --frames 60 \
-  --policy pose_validated --report .local/reports/camera_a_preflight.json \
-  --overlays .local/overlays/camera_a
-camera-rig provision fixed ...
-camera-rig provision validate ...
+./scripts/bootstrap_reconstruction_env.sh
+conda activate pcb-reconstruction
 ```
 
-Repeat the preflight/provision pair for camera B, then run bounded concurrent capture
-and host-time matching before enabling fusion:
+Set `PCB_ENV_NAME=my-env` to choose another isolated name. The environment pins the
+critical Python/PyTorch/CUDA/TensorRT/OpenCV ABI and installs exactly one `cv2`
+provider: `opencv-contrib-python-headless==4.14.0.94`.
+
+## 7. Doctor
+
+```bash
+python scripts/doctor_reconstruction_env.py --no-hardware
+python scripts/doctor_reconstruction_env.py --asset-root .local/ffs
+```
+
+The full doctor checks Python, Conda, Torch/CUDA/GPU, TensorRT, OpenCV/ArUco,
+pyrealsense2, Open3D, Rerun, CameraRig, two D435i devices, USB 3 descriptors, and the
+private FFS bundle. It never prints camera serial numbers.
+
+## 8. Camera discovery
+
+```bash
+camera-rig device list
+camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+python tools/mapping/check_usb_topology.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --report .local/reports/usb-topology.json
+```
+
+Discover identities interactively, then write serials only to ignored `.local/` YAML.
+
+## 9. Calibration target
+
+Use one target specification for both cameras. The validated standard target is
+`charuco_a4_v1`: `DICT_5X5_100`, 7x5 squares, 30 mm squares, 22 mm markers, and
+`legacy_pattern=false`. Generate/inspect it with CameraRig, print at 100% scale, and
+preserve `target_spec.json` beside the physical target. Its frame has +X right, +Y up,
+and +Z out of the board.
+
+```bash
+mkdir -p .local/target
+camera-rig target generate \
+  --config third_party/CameraRig/configs/targets/charuco_a4_v1.yaml \
+  --output .local/target/charuco_a4_v1
+camera-rig target inspect \
+  --target .local/target/charuco_a4_v1/target_spec.json
+```
+
+Regenerating this artifact is sufficient when the already printed board is unchanged;
+compare the resolved specification and print-scale rulers before preflight.
+
+## 10. Fixed camera calibration
+
+For each camera, run pose-only preflight before provisioning; use the same workspace
+and target for camera A and B.
+
+```bash
+camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
+  --target .local/target/charuco_a4_v1/target_spec.json \
+  --frames 60 --policy pose_validated \
+  --report .local/reports/camera_a-preflight.json \
+  --overlays .local/overlays/camera_a
+camera-rig provision fixed \
+  --config .local/camera_a/fixed_provision.yaml \
+  --output .local/camera_a/provision
+camera-rig provision validate --artifact .local/camera_a/provision
+```
+
+Repeat those commands for camera B. Start private runtime YAML from
+`third_party/CameraRig/configs/examples/single_camera_contract.yaml` and provision YAML
+from `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml`; insert only
+the discovered serial under `.local/` and point both provisions at the same target.
+
+Never reuse extrinsics after a failed physical coverage gate.
+
+## 11. FFS setup
+
+FFS assets are external and private. Place the official `20-30-48` checkpoint and
+`cfg.yaml` under `.local/ffs/artifacts/`. Expected SHA-256 values are:
+
+```text
+model_best_bp2_serialize.pth  98b5a9acf39fbfa795025de8cea95ce123daa40f6b6234d719167751024cf692
+cfg.yaml                       d45afe99b176454d5aff416edf16c8da6a99579f8f374b927f37907442a7d6bc
+```
+
+The source is the [official NVlabs repository](https://github.com/NVlabs/Fast-FoundationStereo)
+and its [official weights folder](https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link).
+Download `20-30-48` in a browser, then manually copy the two named files into the
+destination above. TensorRT C++ headers can be obtained without an old checkout:
+
+```bash
+git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
+  https://github.com/NVIDIA/TensorRT.git .local/third_party/TensorRT
+git -C .local/third_party/TensorRT sparse-checkout set include
+```
+
+Check or build all routes without importing a sibling repository at runtime:
+
+```bash
+python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
+python scripts/prepare_ffs_assets.py --build-tensorrt \
+  --asset-root .local/ffs \
+  --checkpoint path/to/20-30-48/model_best_bp2_serialize.pth \
+  --model-config path/to/20-30-48/cfg.yaml \
+  --tensorrt-root .local/third_party/TensorRT
+```
+
+Smoke `pytorch`, `tensorrt_single`, `tensorrt_two_stage`, then
+`tensorrt_plugin`; production uses only `tensorrt_plugin` FP16. The smoke CLI accepts
+`--artifact-dir .local/ffs/artifacts` and
+`--plugin-library .local/ffs/build/libffs_gwc_plugin.so`. For each backend, create a
+private pipeline YAML from `configs/mapping/ffs_workspace_example.yaml` with that
+backend and its checked asset paths, then run the same fresh CameraRig NPZ frame:
+
+```bash
+for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
+  python scripts/run_ffs_stereo_frame.py \
+    --config ".local/configs/ffs_${backend}.yaml" \
+    --input .local/captures/camera_a/frames/frame_000000.npz \
+    --output-dir ".local/evidence/ffs-${backend}" --no-show
+done
+```
+
+## 12. Single-camera XYZ/XYZRGB
+
+```bash
+python tools/mapping/run_live_single_camera.py \
+  --camera-config .local/camera_a/runtime.yaml \
+  --provision .local/camera_a/provision \
+  --mapping-config .local/configs/mapping.yaml \
+  --ffs-config .local/configs/ffs_tensorrt_plugin.yaml \
+  --depth-source ffs_stereo --frames 300 \
+  --output .local/evidence/camera_a \
+  --report .local/reports/camera_a.json
+```
+
+Set `pointcloud.use_rgb: true` for Nx6. Depth points outside the color imager are
+explicit black RGB, never fabricated colors.
+
+## 13. Multi-camera acquisition
 
 ```bash
 python tools/mapping/run_live_rig.py \
-  --rig-config .local/configs/live_rig.yaml \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --mapping-config .local/configs/mapping.yaml \
   --frames 1000 --reopen-frames 60 \
-  --output .local/evidence/live_rig \
-  --report .local/reports/live_rig.json
+  --output .local/evidence/live-rig \
+  --report .local/reports/live-rig.json
 ```
 
-The runtime has two deliberately separate outputs:
+Camera sessions are worker-owned; open/capture/close stay on the same worker thread.
 
-```text
-matched cameras -> per-camera cloud -> snapshot voxel fusion -> global sampling
-matched cameras -> per-camera depth + K + T_workspace_from_camera -> async TSDF map
+## 14. Frame matching
+
+Live rigs match only `host_receive_timestamp_ns` with the configured maximum skew.
+Device timestamps and frame numbers are diagnostics. Buffers are bounded and latest
+biased; a frame is never reused across matched sets.
+
+## 15. Raw concatenation
+
+Start from `configs/mapping/raw_rgb_concatenation_example.yaml`. It has fusion OFF and
+sampling OFF, exposing dense `/clouds/concatenated` for calibration overlap/debugging.
+
+## 16. Dense RGB fusion
+
+`configs/mapping/dense_rgb_reconstruction_example.yaml` is the recommended profile:
+fusion ON at 2.5 mm and sampling OFF. Voxel keys use XYZ only; output XYZ is the voxel
+centroid and output RGB is the arithmetic mean. `/clouds/fused` is variable-length
+dense XYZRGB. The 2.5 mm default was selected by same-input 2.5/5/10 mm benchmarking:
+it materially restored detail without a meaningful fusion-p95 penalty.
+
+Voxel fusion and sampling are different operations:
+
+- Voxel fusion merges overlapping multi-camera observations into voxel centroids.
+- Sampling optionally reduces output size.
+
+Recommended dense reconstruction is fusion ON, sampling OFF.
+
+## 17. Crop
+
+The production order is optional camera-frame local crop, workspace transform, one
+workspace crop per camera, canonical concatenate, voxel fusion, then optional global
+sampling. Crop uses XYZ and preserves RGB columns.
+
+## 18. Optional sampling
+
+`configs/mapping/compact_rgb_reconstruction_example.yaml` applies one global
+30,000-point FPS after fusion. It preserves each selected point's RGB. `voxel_fps` and
+`voxel_random` remain explicit advanced compatibility modes, but are not defaults for
+an already voxel-fused cloud.
+
+## 19. Rerun live visualization
+
+Rerun shows camera RGB/frustums, per-camera workspace clouds, concatenated/fused/
+sampled clouds, TSDF entities and scalar metrics. Nx6 uses real RGB; Nx3 uses the
+default visualization color. `viewer_point_budget` limits only the packet sent to
+Rerun and never modifies the reconstruction tensor.
+
+## 20. Interactive infinite mode
+
+Daily operator command:
+
+```bash
+python tools/mapping/run_live_tsdf_mapping.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --tsdf-config .local/configs/tsdf_frozen_ffs.yaml \
+  --initial-map .local/maps/static_ffs \
+  --interactive
 ```
 
-The production persistent-map route is `ffs_stereo` with the TensorRT plugin backend.
-It fails closed if its engine/plugin/manifest is unavailable and never falls back to
-native depth. Native TSDF is an optional diagnostic baseline; degraded native geometry
-does not fail FFS production acceptance. The currently validated legacy ChArUco target
-remains the deployment target for camera A/B. The 500 x 700 mm board is a future preset
-with status `DEFERRED`; it requires neither real-camera evidence nor reprovisioning for
-the current M9 closure.
+It spawns Rerun, requires no `--report`, has no matched-set limit, keeps bounded rolling
+statistics, and exits 0 after Ctrl+C/SIGTERM cleanup. Override with `--rerun-connect`,
+`--rerun-record`, or `--viewer-point-budget 200000`. Interactive mode is not formal
+acceptance. Finite mode remains available with `--matched-sets 300 --report ...`.
 
-The first path remains the low-latency policy/dynamic observation. The second is
-static workspace history. A frozen TSDF plus the current fused cloud is the default
-production composition; `guarded_continuous` is opt-in and masks transient pixels
-until a fixed surface persists for the configured frame count.
-After a frozen map is loaded and extracted, no live depth packets are sent to it;
-only the separate current-snapshot overlay continues to change.
-
-Record native or FFS depth without re-running inference, then reconstruct offline:
+## 21. Depth recording
 
 ```bash
 python tools/mapping/record_live_rig_depth.py \
-  --config .local/configs/live_rig.yaml \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
   --matched-sets 300 --depth-source ffs_stereo \
-  --output .local/recordings/rig_depth
+  --output .local/recordings/rig-depth
+```
 
+The recording contains matched per-camera depth, intrinsics, transforms and backend
+provenance from the same pass; it does not rerun FFS.
+
+## 22. Offline TSDF
+
+```bash
 python tools/mapping/build_tsdf_offline.py \
-  --recording .local/recordings/rig_depth \
+  --recording .local/recordings/rig-depth \
   --config configs/mapping/tsdf_example.yaml \
-  --output .local/maps/static_tsdf
+  --output .local/maps/static-ffs
+python tools/mapping/extract_tsdf_geometry.py \
+  --map .local/maps/static-ffs --output .local/evidence/static-ffs
 ```
 
-FFS recording manifests checksummed per-camera backend, precision, artifact ID, and
-pipeline-config SHA. Production acceptance verifies this lineage through the map's
-source-recording receipt and requires `tensorrt_plugin`; native map input is optional.
+Extraction supports raw point cloud, optional crop/sampling, and mesh.
 
-The persistent map exports the full mesh plus raw, workspace-cropped, and sampled
-point clouds. `configs/mapping/tsdf_example.yaml` shows the optional `postprocess`
-contract. Omitting it disables both point-cloud stages for backward compatibility;
-mesh geometry is never presented as cropped.
+## 23. Live TSDF
 
-Benchmark the same frozen replay frames with reconstruction only, crop, and
-crop-plus-sampling scenarios:
+Formal finite mapping supplies a same-rig/same-count passing snapshot baseline and a
+private report. `build_static` and `guarded_continuous` integrate per-camera depth;
+mapper child failure, queue violations, performance regression, or RSS growth blocks
+publication.
+
+## 24. Frozen static plus dynamic overlay
+
+`frozen_static` requires `--initial-map`. The TSDF receives no live depth after load;
+the current fused RGB overlay continues updating independently. This is the recommended
+static-workspace operator composition.
+
+## 25. Map save/load
 
 ```bash
+python tools/mapping/validate_tsdf_map.py --map .local/maps/static-ffs
+python tools/mapping/extract_tsdf_geometry.py \
+  --map .local/maps/static-ffs --output .local/evidence/reloaded-map
+```
+
+Artifacts include checksums, resolved config, volume, metrics and extracted geometry.
+
+## 26. Benchmarks
+
+```bash
+python tools/mapping/benchmark_fusion_voxels.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --mapping-config .local/configs/mapping.yaml --frames 30 \
+  --report .local/reports/fusion-voxel-sweep.json
 python tools/mapping/benchmark_world_reconstruction.py \
-  --rig-config .local/configs/replay_rig.yaml \
-  --start-frame 0 --frames 100 --warmup 10 --device cuda \
-  --report .local/reports/world_reconstruction_benchmark.json
+  --rig-config .local/configs/replay_rig.yaml --frames 100 --warmup 10 \
+  --report .local/reports/reconstruction.json
 ```
 
-The stable timing schema separates processing-only and capture-inclusive values. Key
-fields are `raw_to_world_fused_ms`, `workspace_crop_ms`, `global_sampling_ms`,
-`combined_per_camera_sequential_ms`,
-`raw_to_world_sampled_ms`, `raw_to_tsdf_update_ms`, `extract_point_cloud_ms`,
-`extract_mesh_ms`, `post_crop_ms`, and `post_sampling_ms`; reports aggregate p50, p95,
-mean, and max. TSDF update and map extraction remain distinct rates and metrics.
-Cold live-map acceptance may use `--build-warmup-sets` to prebuild the map before
-opening the fixed performance/RSS window; warmup and measured sets are both recorded.
+Timing separates depth inference, RGB mapping, deprojection, local/workspace crop,
+transform, concatenate, voxel fusion, optional sampling, `raw_to_world_fused`, TSDF
+update and TSDF extraction.
 
-Run the independent Rerun viewer on the existing snapshot acceptance command:
+## 27. Validation
 
 ```bash
-python tools/mapping/run_live_rig_fusion.py \
-  --rig-config .local/configs/live_rig.yaml \
-  --mapping-config .local/configs/mapping_acceptance.yaml \
-  --matched-sets 300 --output .local/evidence/fusion \
-  --report .local/reports/fusion.json \
-  --viewer rerun --rerun-spawn \
-  --rerun-record .local/rerun/fusion.rrd \
-  --viewer-point-budget 30000
-```
-
-For persistent live mapping use `tools/mapping/run_live_tsdf_mapping.py`. Rerun and
-TSDF each run in their own spawned process with a size-1/2 latest-only queue; viewer
-or mapper lag drops packets instead of building backlog. All real configs, captures,
-depth recordings, maps, screenshots, reports, and `.rrd` files belong under ignored
-`.local/`. Never commit serial numbers, real extrinsics, images, depth, maps, or RRDs.
-
-Live map publication additionally requires a passing, same-rig/same-count
-snapshot-only report via `--snapshot-baseline-report`. The CLI compares processed FPS
-and end-to-end p95, blocks publication above 10% FPS loss or 5 ms p95 increase, and
-records accepted/rejected submissions plus mapper queue/RSS telemetry. Publication
-also requires at least 32 child-RSS samples and, after a 20% warmup, no more than
-256 MiB quartile-median growth or 5 MiB per 100 frames fitted growth.
-Reports also split end-to-end latency into frame-match wait and snapshot processing
-diagnostics without changing the gate.
-
-Coordinate transforms always mean `T_target_from_source`, with column vectors. PCB
-stores `T_workspace_from_camera`; Open3D receives its tested inverse
-`T_camera_from_workspace`. Native TSDF uses raw `uint16` plus the device scale; FFS
-uses rectified metric float depth with invalid pixels equal to zero and scale 1.
-
-Deployment and architecture details:
-
-- [Architecture](docs/architecture.md)
-- [Calibration deployment](docs/deployment-calibration.md)
-- [Rerun visualization](docs/rerun-visualization.md)
-- [Snapshot versus persistent map](docs/current-snapshot-vs-persistent-map.md)
-- [TSDF mapping](docs/tsdf-mapping.md)
-- [TSDF dynamic handling](docs/tsdf-dynamic-handling.md)
-
-Known environment debt: `sapien 2.2.1` declares `opencv-python`, while this environment
-uses the headless OpenCV distribution. This pre-existing `pip check` warning is not
-resolved by adding Rerun or TSDF, and no Torch/CUDA/TensorRT/OpenCV upgrade is required.
-
-## Quick Start
-
-```python
-import torch
-
-from pointcloud_builder import PointCloudBuilder
-
-builder = PointCloudBuilder.from_yaml("configs/example_head_aligned.yaml")
-
-depth = torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32)
-rgb = torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32)
-frame = {"depth": depth, "rgb": rgb, "timestamp": 1.23, "global_frame_index": 42}
-
-pc, meta = builder.from_live_frame(frame)
-print(pc.shape)
-print(meta["sampling_mode"], meta["num_sampled_points"])
-```
-
-Stable public API:
-
-```python
-from pointcloud_builder import PointCloudBuilder
-
-builder = PointCloudBuilder.from_yaml(config_path)
-
-pc, meta = builder.from_recorded_frame(frame)
-pc, meta = builder.from_live_frame(frame)
-```
-
-`from_recorded_frame` and `from_live_frame` share the same internal pipeline. All point cloud outputs are `torch.Tensor` objects.
-
-## YAML Config Example
-
-The repository includes:
-
-- `configs/example_head_aligned.yaml`
-- `configs/example_head_depth_raw.yaml`
-- `configs/example_train_voxel_random.yaml`
-- `configs/example_deploy_voxel_fps.yaml`
-
-Example:
-
-```yaml
-device: "cuda"
-
-camera:
-  name: "head"
-  aligned_depth_to_color: true
-  depth_scale: 0.001
-
-  color_intrinsics:
-    width: 640
-    height: 480
-    fx: 600.0
-    fy: 600.0
-    cx: 320.0
-    cy: 240.0
-
-  depth_intrinsics:
-    width: 640
-    height: 480
-    fx: 600.0
-    fy: 600.0
-    cx: 320.0
-    cy: 240.0
-
-pointcloud:
-  use_rgb: true
-  output_format: "xyzrgb"
-
-crop:
-  enabled: true
-  frame: "camera"
-  x: [-0.5, 0.5]
-  y: [-0.5, 0.5]
-  z: [0.05, 1.5]
-
-sampling:
-  enabled: true
-  mode: "voxel_random"
-  num_points: 1024
-  stride: 2
-  voxel_size: 0.005
-  seed: 42
-  deterministic: false
-  pad_mode: "repeat"
-```
-
-`device: "cuda"` gracefully falls back to CPU when CUDA is unavailable.
-
-## Offline Zarr Conversion Example
-
-Use the recorded-frame API inside the dataset conversion loop. The builder call is independent of the storage backend:
-
-```python
-from pointcloud_builder import PointCloudBuilder
-
-builder = PointCloudBuilder.from_yaml("configs/example_train_voxel_random.yaml")
-
-def convert_recorded_frame(frame: dict[str, object]) -> tuple[object, dict[str, object]]:
-    pc, meta = builder.from_recorded_frame(frame)
-    return pc, meta
-```
-
-`examples/export_zarr_example.py` contains the same minimal conversion helper.
-
-## Realtime Inference Example
-
-```python
-import torch
-
-from pointcloud_builder import PointCloudBuilder
-
-builder = PointCloudBuilder.from_yaml("configs/example_deploy_voxel_fps.yaml")
-
-frame = {
-    "depth": torch.ones((builder.camera.height, builder.camera.width), dtype=torch.float32),
-    "rgb": torch.ones((builder.camera.height, builder.camera.width, 3), dtype=torch.float32),
-}
-pc, meta = builder.from_live_frame(frame)
-```
-
-Realtime control code should only depend on `pointcloud_builder.PointCloudBuilder`, not visualization scripts.
-
-## Sampling Modes Explanation
-
-- `fps`: farthest point sampling over XYZ.
-- `stride`: select points at a fixed interval, then pad or trim.
-- `random`: random sample without replacement when enough points exist.
-- `voxel`: voxel downsample by XYZ, keep one representative per voxel, then pad or trim.
-- `voxel_random`: voxel downsample first, then random sample to fixed size.
-- `voxel_fps`: voxel downsample first, then FPS to fixed size.
-
-Training default: `voxel_random` or `fps`.
-
-Deployment default: `voxel_random` or `voxel_fps`.
-
-## Aligned Depth To Color Explanation
-
-When `camera.aligned_depth_to_color: true`, depth is interpreted on the color pixel grid and deprojected with `color_intrinsics`. RGB columns are attached only when all of these are true:
-
-- `camera.aligned_depth_to_color: true`
-- `pointcloud.use_rgb: true`
-- the frame contains `rgb` or `color`
-
-When `camera.aligned_depth_to_color: false`, depth is deprojected with `depth_intrinsics` and the output remains XYZ even if the frame also contains RGB.
-
-## Fixed-Size Output Explanation
-
-The public builder output is the sampled point cloud. With the provided configs, output shape is always:
-
-- `sampling.num_points x 3` for XYZ;
-- `sampling.num_points x 6` for XYZRGB.
-
-If the sampler receives fewer than `sampling.num_points`, it pads with repeated points or zeros according to `sampling.pad_mode`.
-
-## Empty Crop No-Crash Behavior Explanation
-
-If cropping removes every point, the crop stage returns an empty `0 x C` tensor and sampling returns a fixed-size zero tensor. The builder does not crash; metadata marks `crop_empty`, `input_empty`, and `padded`.
-
-## Offline Visualization Commands
-
-Visualization is offline only.
-
-```bash
-python scripts/visualize_raw_pointcloud.py \
-  --config configs/example_head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --output captures/head_raw.ply \
-  --no-show
-
-python scripts/visualize_cropped_pointcloud.py \
-  --config configs/example_head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --output captures/head_cropped.ply \
-  --no-show
-
-python scripts/visualize_sampled_pointcloud.py \
-  --config configs/example_train_voxel_random.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --cropped-output captures/head_cropped.ply \
-  --output captures/head_sampled.ply \
-  --no-show
-```
-
-Required offline script names:
-
-- `visualize_raw_pointcloud.py`
-- `visualize_cropped_pointcloud.py`
-- `visualize_sampled_pointcloud.py`
-
-## Benchmark Commands
-
-CUDA is used when available. CPU fallback is allowed and must not crash.
-
-```bash
-python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 20 --warmup 5
-python scripts/benchmark_crop.py --config configs/example_head_aligned.yaml --num-points 307200 --iters 20 --warmup 5
-python scripts/benchmark_sampling.py --num-points 50000 --target-num-points 1024 --iters 20 --warmup 5
-python scripts/benchmark_full_pipeline.py --config configs/example_train_voxel_random.yaml --iters 20 --warmup 5
-```
-
-Required benchmark script names:
-
-- `benchmark_deprojection.py`
-- `benchmark_crop.py`
-- `benchmark_sampling.py`
-- `benchmark_full_pipeline.py`
-
-## Real D435i One-Frame Capture
-
-`pyrealsense2` is intentionally not a package dependency. Run the camera tools in an environment that already has the RealSense Python wrapper:
-
-```bash
-python tools/camera/detect_realsense.py
-
-python tools/camera/capture_d435i_aligned_rgbd.py \
-  --serial YOUR_DEVICE_SERIAL \
-  --width 424 \
-  --height 240 \
-  --fps 30 \
-  --out captures/head_frame_000000.npz \
-  --config-out configs/captures/head_aligned.yaml
-```
-
-The `.npz` contains `rgb`, `depth`, timestamps, depth scale, and camera intrinsics. The generated YAML uses color intrinsics because `camera.aligned_depth_to_color: true`.
-
-## Tests
-
-```bash
-pip install -e .
 pytest -q
+python -m build
+python scripts/check_documented_commands.py
+python scripts/doctor_reconstruction_env.py --no-hardware
 ```
 
-## Fast-FoundationStereo depth source
+Hardware acceptance additionally covers CameraRig provision, all four FFS backends,
+dual-camera RGB, Rerun, offline/live TSDF, save/load, resource plateau and camera reopen.
 
-FFS is optional. The default `depth_source.mode=frame` keeps the existing
-native RGB-D path and public Builder API unchanged. `mode=ffs_stereo` consumes
-a rectified `480x640` IR1/IR2 pair, estimates metric depth, and then reuses the
-same deprojection, crop, and sampling implementation.
+## 28. Troubleshooting
 
-Available routes are `pytorch`, `tensorrt_single`, `tensorrt_two_stage`, and
-`tensorrt_plugin`. There is no silent backend or precision fallback. The
-copied FFS code remains under NVIDIA's non-commercial research license.
+If `/clouds/fused` looks sparse, check in order:
 
-The verified optional environment is the existing `dp3` environment with
-Python 3.10, PyTorch 2.11/CUDA 13, and TensorRT 10.16.1.11:
+1. `actual_fused_points`;
+2. `fusion.voxel_size_m`;
+3. `viewer_point_budget`;
+4. whether you selected `/clouds/fused` or `/clouds/sampled`.
 
-```bash
-cd ~/workspace/3D-Diffusion-Policy/PointCloudBuilder
-export PY=~/miniconda3/envs/dp3/bin/python
+The viewer budget never modifies the reconstruction tensor. Black points may be valid
+depth outside the color FOV. A worker/FFS/mapper/viewer child error is fatal. Never
+relax calibration or geometry thresholds to make a run pass.
 
-PYTHONNOUSERSITE=1 "$PY" -m pip install -e '.[dev,viz]'
-PYTHONNOUSERSITE=1 "$PY" -m pip install \
-  timm==1.0.28 onnx==1.18.0 onnxscript==0.5.6 \
-  imageio opencv-python-headless pyarrow av
-```
+## 29. Private local artifacts
 
-The checkpoint, ONNX, Engines, plugin library, and build outputs are
-gitignored. The official checkpoint can be downloaded again; ONNX, manifests,
-Engines, and the plugin can be regenerated in `dp3`. TensorRT Engines must be
-rebuilt on the target TensorRT/GPU stack.
+All serials, runtime YAML, provision bundles, physical captures, checkpoints, engines,
+plugins, reports, maps, screenshots and RRD files belong under ignored `.local/`.
+Public examples use placeholders. Do not use `PYTHONPATH` or symlinks into an older
+clone during reproduction.
 
-After restoring the checkpoint, a PyTorch smoke requires no TensorRT build:
+## 30. Future 500x700 deployment board
 
-```bash
-PYTHONNOUSERSITE=1 "$PY" scripts/run_v05_ffs_frame.py \
-  --dataset-root ~/.cache/huggingface/lerobot/flexiv_dual_arm_3d/pick_place_20260713_v05 \
-  --camera head --global-frame-index 0 --backend pytorch \
-  --builder-config ffs_reproduction/configs/v05_ffs.yaml \
-  --artifact-id fp16_o3 --precision fp16 \
-  --builder-optimization-level 3 --workspace-gib 8 \
-  --output-dir ffs_reproduction/outputs/v05_verify --no-show
-```
-
-Download instructions, fresh-clone recovery, all TensorRT build commands,
-four-route smoke/parity checks, and simultaneous raw/cropped/sampled Open3D
-visualization are documented in the dedicated guides:
-
-- [English FFS reproduction and deployment guide](ffs_reproduction/README.md)
-- [中文 FFS 复现、构建与可视化指南](ffs_reproduction/README_zh-CN.md)
+The 500x700 mm board is `DEFERRED` and is not a clean-room gate. Do not infer its ArUco
+dictionary or `legacy_pattern` from dimensions or successful corner detection. Future
+deployment must use authoritative generator metadata/creator confirmation, or print a
+new board with a known specification and reprovision both cameras.

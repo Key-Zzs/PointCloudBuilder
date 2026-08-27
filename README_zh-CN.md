@@ -1,477 +1,363 @@
 # PointCloudBuilder
 
-PointCloudBuilder 是面向机器人学习部署的 RGB-D 几何流水线。它支持单相机点云构建、
-CameraRig 固定相机集成、native depth 与 FFS stereo、真实固定多相机并发采集、host-time
-匹配、workspace 变换、确定性的 current-snapshot fusion、独立 Rerun 可视化，以及可选的
-persistent TSDF mapping。实时策略输入与可视化、地图维护保持解耦。
+PointCloudBuilder 是固定多相机 RGB-D 三维重建系统，支持 CameraRig 标定、FFS 双目深度、
+米制 XYZ/XYZRGB、workspace fusion、可选 crop/sampling、Rerun 可视化和持久 TSDF mapping。
 
-## CameraRig、workspace 与 rig fusion
+[English manual](README.md)
 
-仓库在 `third_party/CameraRig` 固定已复核的 `develop` 部署就绪提交。CameraRig 负责单相机
-frame、calibration 与 fixed-mount bundle；PointCloudBuilder 只消费稳定的
-`camera_rig.api`，并负责 workspace 变换、版本化多相机列表、host timestamp
-匹配、当前 snapshot 的确定性 voxel fusion，以及 fusion 后唯一一次全局采样。
+## 1. 概览
 
-Native depth XYZ 的源坐标系是 depth optical frame；FFS XYZ 的源坐标系是
-left-IR optical frame。rig pipeline 暴露每相机 camera/workspace、concatenated、
-workspace-cropped、fused 与 sampled 阶段及独立 provenance sidecar。面向策略的
-current-snapshot 路径不跨时间累计；独立的可选 Open3D 进程从同一次推理得到的逐相机
-depth ray 维护 persistent map，绝不把 4096 点策略输入反推成 TSDF。详见
-`docs/camera-rig-integration.md`、`docs/offline-rig-orchestration.md` 与
-`docs/workspace-fusion.md`。
+生产路线为两台固定 Intel RealSense D435i、同一标定 workspace、Fast-FoundationStereo
+（FFS）TensorRT-plugin FP16 深度、dense XYZRGB voxel fusion，以及独立 Open3D TSDF
+mapper。重建 tensor、可视化与持久地图是三种独立输出。
 
-## 第三阶段范围
+## 2. 架构
 
-- 从 YAML 读取相机内参。
-- 使用 PyTorch tensor 进行 depth 反投影。
-- 请求 CUDA 且 CUDA 可用时使用 CUDA；CUDA 不可用时自动回退到 CPU。
-- `camera.aligned_depth_to_color: true` 时使用 `color_intrinsics`。
-- `camera.aligned_depth_to_color: false` 时使用 `depth_intrinsics`。
-- 只有在 depth 已对齐到 color、`pointcloud.use_rgb: true`、`pointcloud.output_format: "xyzrgb"` 且输入 frame 有 `rgb` 时才输出 XYZRGB。
-- 过滤 `depth <= 0` 的无效点。
-- 从 YAML 读取 workspace crop 范围。
-- 对 `N x 3` XYZ 和 `N x 6` XYZRGB 点云按前三列 XYZ 裁剪，并保留 RGB 列。
-- 裁剪为空时返回 `0 x C` tensor，不崩溃。
-- 对裁剪后的点云采样到固定点数。
-- 支持 `fps`、`stride`、`random`、`voxel`、`voxel_random`、`voxel_fps`。
-- `N x 6` XYZRGB 点云采样后保留 RGB 列。
-- 输入点不足或为空时，根据 `sampling.pad_mode` 重复补齐或补零。
-- 通过 `build_stages()` 暴露 raw、cropped、sampled 三个阶段，供离线调试。
-- 实时 builder 路径不调用 Open3D、matplotlib 或 GUI 可视化。
-- 支持把单帧 RealSense D435i aligned RGB-D 保存为本地 `.npz` 调试样本，并
-  根据相机内参自动写出匹配的 YAML 配置。
-当 `sampling.enabled: true` 时，高层 `PointCloudBuilder` 输出固定点数的 sampled 点云。
-训练默认建议使用 `voxel_random` 或 `fps`；部署默认建议使用 `voxel_random` 或 `voxel_fps`。
+```text
+CameraRig frames -> FFS depth -> camera-frame XYZRGB -> local crop
+-> T_workspace_from_camera -> workspace crop -> canonical concatenate
+-> voxel centroid fusion -> optional global FPS -> current snapshot
 
-## 安装
-
-```bash
-conda create -n pointcloud-builder python=3.10 -y
-conda run -n pointcloud-builder python -m pip install -e ".[dev]"
+same-pass per-camera depth + K + T_workspace_from_camera
+-> independent TSDF process -> extract/crop/sample/mesh -> persistent map
 ```
 
-离线可视化可选依赖：
+TSDF 绝不消费 fused/sampled 点云。Rerun 使用有界 latest-only 子进程队列，不能改变重建
+tensor。
+
+## 3. 支持硬件
+
+- 两台通过 USB 3 连接的固定 RealSense D435i。
+- 与所选 PyTorch、CUDA、TensorRT 包兼容的 NVIDIA GPU。
+- 两台相机共用的一个已知 ChArUco target。
+- 已验证部署平台为 Linux。
+
+## 4. 坐标约定
+
+变换命名为 `T_target_from_source`，作用于列向量。Native XYZ 起于
+`<camera>/depth_optical`，FFS XYZ 起于 `<camera>/ir_left_optical`。PCB 保存
+`T_workspace_from_camera`；Open3D 接收已测试的逆变换 `T_camera_from_workspace`。
+XYZ 是以米为单位的 `float32`；RGB 是 `[0,1]` 内的 float RGB。
+
+## 5. Clone
 
 ```bash
-conda run -n pointcloud-builder python -m pip install -e ".[viz]"
-```
-
-Python 3.10 上已验证并固定的独立 Rerun 与 TSDF 可选依赖：
-
-```bash
-python -m pip install -e ".[rerun]"  # rerun-sdk==0.36.3
-python -m pip install -e ".[tsdf]"   # open3d==0.19.0
-```
-
-## 部署就绪的多相机映射
-
-安装前初始化已复核的 CameraRig pin：
-
-```bash
+git clone --branch develop/mapping --recurse-submodules \
+  https://github.com/Key-Zzs/PointCloudBuilder.git PointCloudBuilder
+cd PointCloudBuilder
 git submodule update --init --recursive
-python -m pip install -e third_party/CameraRig
 ```
 
-运行 YAML、provision bundle 和报告必须保持私有。双机运行前，先检查 USB 链路/stream
-profile，执行不求外参的 target preflight，再让每台固定相机使用同一个 resolved target
-完成 provision 并分别验证：
+## 6. 全新环境
+
+标准环境名是 `pcb-reconstruction`；公开安装合同不再依赖 `dp3`。声明式规格文件是
+`environment.reconstruction.yml`。
 
 ```bash
-camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
-camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
-  --target .local/target/target_spec.json --frames 60 \
-  --policy pose_validated --report .local/reports/camera_a_preflight.json \
-  --overlays .local/overlays/camera_a
-camera-rig provision fixed ...
-camera-rig provision validate ...
+./scripts/bootstrap_reconstruction_env.sh
+conda activate pcb-reconstruction
 ```
 
-对 camera B 重复 preflight/provision，然后先运行有界并发采集和 host-time matching，
-再启用 fusion：
+可通过 `PCB_ENV_NAME=my-env` 使用另一个隔离名称。环境固定关键
+Python/PyTorch/CUDA/TensorRT/OpenCV ABI，并只安装一个 `cv2` provider：
+`opencv-contrib-python-headless==4.14.0.94`。
+
+## 7. Doctor
+
+```bash
+python scripts/doctor_reconstruction_env.py --no-hardware
+python scripts/doctor_reconstruction_env.py --asset-root .local/ffs
+```
+
+完整 doctor 检查 Python、Conda、Torch/CUDA/GPU、TensorRT、OpenCV/ArUco、
+pyrealsense2、Open3D、Rerun、CameraRig、两台 D435i、USB 3 descriptor 和私有 FFS
+bundle，且绝不输出相机序列号。
+
+## 8. 相机发现
+
+```bash
+camera-rig device list
+camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+python tools/mapping/check_usb_topology.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --report .local/reports/usb-topology.json
+```
+
+交互确认 identity 后，只把序列号写进已忽略的 `.local/` YAML。
+
+## 9. 标定 target
+
+两台相机使用同一份 target spec。已验证标准 target 为 `charuco_a4_v1`：
+`DICT_5X5_100`、7x5 squares、30 mm square、22 mm marker、
+`legacy_pattern=false`。使用 CameraRig 生成/检查，按 100% 比例打印，并让
+`target_spec.json` 始终跟随实体板。target frame 的 +X 向右、+Y 向上、+Z 向板外。
+
+```bash
+mkdir -p .local/target
+camera-rig target generate \
+  --config third_party/CameraRig/configs/targets/charuco_a4_v1.yaml \
+  --output .local/target/charuco_a4_v1
+camera-rig target inspect \
+  --target .local/target/charuco_a4_v1/target_spec.json
+```
+
+若已打印实体板未改变，只需重新生成 artifact；preflight 前须核对 resolved spec 与打印
+比例尺。
+
+## 10. 固定相机标定
+
+每台相机 provision 前先执行仅验证姿态的 preflight；camera A/B 必须使用同一
+workspace 和 target。
+
+```bash
+camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
+  --target .local/target/charuco_a4_v1/target_spec.json \
+  --frames 60 --policy pose_validated \
+  --report .local/reports/camera_a-preflight.json \
+  --overlays .local/overlays/camera_a
+camera-rig provision fixed \
+  --config .local/camera_a/fixed_provision.yaml \
+  --output .local/camera_a/provision
+camera-rig provision validate --artifact .local/camera_a/provision
+```
+
+camera B 执行同样命令。私有 runtime YAML 从
+`third_party/CameraRig/configs/examples/single_camera_contract.yaml` 开始，provision YAML
+从 `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml` 开始；只在
+`.local/` 写入发现的序列号，并让两份 provision 配置指向同一个 target。
+
+实体 coverage gate 失败后禁止复用旧 extrinsics。
+
+## 11. FFS 设置
+
+FFS 资产是外部私有文件。把官方 `20-30-48` checkpoint 与 `cfg.yaml` 放到
+`.local/ffs/artifacts/`。预期 SHA-256：
+
+```text
+model_best_bp2_serialize.pth  98b5a9acf39fbfa795025de8cea95ce123daa40f6b6234d719167751024cf692
+cfg.yaml                       d45afe99b176454d5aff416edf16c8da6a99579f8f374b927f37907442a7d6bc
+```
+
+来源是 [NVlabs 官方仓库](https://github.com/NVlabs/Fast-FoundationStereo)及其
+[官方 weights 目录](https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link)。
+用浏览器下载 `20-30-48`，再把上述两个命名文件手工复制到目标目录。TensorRT C++
+header 可在不依赖旧 clone 的前提下获取：
+
+```bash
+git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
+  https://github.com/NVIDIA/TensorRT.git .local/third_party/TensorRT
+git -C .local/third_party/TensorRT sparse-checkout set include
+```
+
+使用以下入口检查或构建全部 route：
+
+```bash
+python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
+python scripts/prepare_ffs_assets.py --build-tensorrt \
+  --asset-root .local/ffs \
+  --checkpoint path/to/20-30-48/model_best_bp2_serialize.pth \
+  --model-config path/to/20-30-48/cfg.yaml \
+  --tensorrt-root .local/third_party/TensorRT
+```
+
+依次 smoke `pytorch`、`tensorrt_single`、`tensorrt_two_stage`、
+`tensorrt_plugin`；生产只使用 FP16 `tensorrt_plugin`。Smoke CLI 支持
+`--artifact-dir .local/ffs/artifacts` 和
+`--plugin-library .local/ffs/build/libffs_gwc_plugin.so`。每个 backend 从
+`configs/mapping/ffs_workspace_example.yaml` 创建私有 pipeline YAML，写入该 backend
+及已检查的资产路径，并对同一个全新 CameraRig NPZ frame 运行：
+
+```bash
+for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
+  python scripts/run_ffs_stereo_frame.py \
+    --config ".local/configs/ffs_${backend}.yaml" \
+    --input .local/captures/camera_a/frames/frame_000000.npz \
+    --output-dir ".local/evidence/ffs-${backend}" --no-show
+done
+```
+
+## 12. 单相机 XYZ/XYZRGB
+
+```bash
+python tools/mapping/run_live_single_camera.py \
+  --camera-config .local/camera_a/runtime.yaml \
+  --provision .local/camera_a/provision \
+  --mapping-config .local/configs/mapping.yaml \
+  --ffs-config .local/configs/ffs_tensorrt_plugin.yaml \
+  --depth-source ffs_stereo --frames 300 \
+  --output .local/evidence/camera_a \
+  --report .local/reports/camera_a.json
+```
+
+`pointcloud.use_rgb: true` 输出 Nx6。落在 color imager 视场外的 depth 点使用显式黑色，
+不会伪造颜色。
+
+## 13. 多相机采集
 
 ```bash
 python tools/mapping/run_live_rig.py \
-  --rig-config .local/configs/live_rig.yaml \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --mapping-config .local/configs/mapping.yaml \
   --frames 1000 --reopen-frames 60 \
-  --output .local/evidence/live_rig \
-  --report .local/reports/live_rig.json
+  --output .local/evidence/live-rig \
+  --report .local/reports/live-rig.json
 ```
 
-运行时严格保留两条不同输出路径：
+Camera session 由 worker 独占，open/capture/close 始终在同一 worker thread。
 
-```text
-matched cameras -> 逐相机点云 -> snapshot voxel fusion -> 全局采样
-matched cameras -> 逐相机 depth + K + T_workspace_from_camera -> 异步 TSDF map
+## 14. 帧匹配
+
+Live rig 只使用 `host_receive_timestamp_ns` 和配置的最大 skew 匹配。设备 timestamp 与
+frame number 仅用于诊断。Buffer 有界且偏向最新帧；同一帧不会被复用于多个 matched set。
+
+## 15. Raw concatenation
+
+从 `configs/mapping/raw_rgb_concatenation_example.yaml` 开始。它关闭 fusion 与 sampling，
+通过 dense `/clouds/concatenated` 检查标定重合和调试问题。
+
+## 16. Dense RGB fusion
+
+推荐 profile 是 `configs/mapping/dense_rgb_reconstruction_example.yaml`：2.5 mm fusion
+开启、sampling 关闭。Voxel key 只使用 XYZ；输出 XYZ 是 voxel centroid，输出 RGB 是
+算术均值。`/clouds/fused` 是变长 dense XYZRGB。2.5 mm 来自同输入 2.5/5/10 mm benchmark：
+它明显恢复细节，同时没有有意义的 fusion p95 代价。
+
+Voxel fusion 与 sampling 不是同一个操作：
+
+- Voxel fusion 把多相机重叠 observation 合并成 voxel centroid。
+- Sampling 只用于可选的输出尺寸缩减。
+
+推荐 dense reconstruction 为 fusion ON、sampling OFF。
+
+## 17. Crop
+
+生产顺序是：可选 camera-frame local crop、workspace transform、逐相机唯一一次 workspace
+crop、canonical concatenate、voxel fusion、可选全局 sampling。Crop 仅按 XYZ 判断并保留
+RGB 列。
+
+## 18. 可选 sampling
+
+`configs/mapping/compact_rgb_reconstruction_example.yaml` 在 fusion 后执行一次全局
+30,000 点 FPS，并保留所选点的 RGB。`voxel_fps` 与 `voxel_random` 作为显式高级兼容模式
+保留，但不是已 voxel-fused cloud 的默认值。
+
+## 19. Rerun 实时可视化
+
+Rerun 展示相机 RGB/frustum、逐相机 workspace、concatenated/fused/sampled cloud、TSDF
+entity 和 scalar metric。Nx6 使用真实 RGB；Nx3 使用默认颜色。`viewer_point_budget` 只限制
+发给 Rerun 的 packet，绝不修改重建 tensor。
+
+## 20. Interactive 无限模式
+
+日常 operator 命令：
+
+```bash
+python tools/mapping/run_live_tsdf_mapping.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --tsdf-config .local/configs/tsdf_frozen_ffs.yaml \
+  --initial-map .local/maps/static_ffs \
+  --interactive
 ```
 
-生产 persistent-map 路径固定为 `ffs_stereo` 加 TensorRT plugin backend。engine、plugin
-或 manifest 不可用时 fail-closed，绝不自动回退到 native depth。Native TSDF 只是可选
-诊断 baseline；native 几何退化不会使 FFS 生产验收失败。camera A/B 当前继续使用已经验证
-的 legacy ChArUco target。500 x 700 mm 大板只是一项未来部署 preset，状态为
-`DEFERRED`；当前 M9 closure 不要求其实机证据，也不要求重新 provision。
+它自动启动 Rerun，不要求 `--report`，没有 matched-set 上限，统计窗口有界，并在
+Ctrl+C/SIGTERM 清理后以 0 退出。可用 `--rerun-connect`、`--rerun-record` 或
+`--viewer-point-budget 200000` 覆盖默认。Interactive 不是正式 acceptance；finite mode
+继续支持 `--matched-sets 300 --report ...`。
 
-第一条是低延迟策略/动态观测；第二条是静态 workspace 历史。生产默认组合为冻结的
-TSDF 加当前 fused cloud。`guarded_continuous` 必须显式启用，并在新表面达到配置的
-连续固定帧数前屏蔽瞬时像素。
-冻结地图完成加载和提取后不再接收 live depth packet；只有独立的 current-snapshot
-overlay 继续更新。
-
-不重复执行 FFS 推理，直接记录 native 或 FFS depth，再离线重建：
+## 21. Depth recording
 
 ```bash
 python tools/mapping/record_live_rig_depth.py \
-  --config .local/configs/live_rig.yaml \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
   --matched-sets 300 --depth-source ffs_stereo \
-  --output .local/recordings/rig_depth
+  --output .local/recordings/rig-depth
+```
 
+Recording 保存 same-pass matched 逐相机 depth、intrinsics、transform 与 backend
+provenance，不会再次运行 FFS。
+
+## 22. Offline TSDF
+
+```bash
 python tools/mapping/build_tsdf_offline.py \
-  --recording .local/recordings/rig_depth \
+  --recording .local/recordings/rig-depth \
   --config configs/mapping/tsdf_example.yaml \
-  --output .local/maps/static_tsdf
+  --output .local/maps/static-ffs
+python tools/mapping/extract_tsdf_geometry.py \
+  --map .local/maps/static-ffs --output .local/evidence/static-ffs
 ```
 
-FFS recording manifest 会校验并记录逐相机 backend、precision、artifact ID 和
-pipeline-config SHA。生产验收沿 map 的 source-recording receipt 核验该 lineage，且必须
-为 `tensorrt_plugin`；native map 输入是可选项。
+Extraction 支持 raw point cloud、可选 crop/sampling 与 mesh。
 
-persistent map 输出完整 mesh，以及 raw、workspace-cropped、sampled 三路点云。
-`configs/mapping/tsdf_example.yaml` 展示可选 `postprocess` 合同；旧配置省略该段时，
-两个点云后处理阶段都关闭。mesh 始终是完整 TSDF mesh，不伪装成已裁剪 mesh。
+## 23. Live TSDF
 
-使用同一批冻结 replay frames 比较仅重建、重建加 crop、重建加 crop 与 sampling：
+正式 finite mapping 必须提供相同 rig、相同帧数且 PASS 的 snapshot baseline，并写私有
+report。`build_static` 和 `guarded_continuous` 集成逐相机 depth；mapper child 错误、队列
+违规、性能回归或 RSS 增长都会阻断发布。
+
+## 24. Frozen static + dynamic overlay
+
+`frozen_static` 必须提供 `--initial-map`。TSDF load 后不接收 live depth；当前 fused RGB
+overlay 继续独立更新。这是静态 workspace 的推荐 operator 组合。
+
+## 25. Map save/load
 
 ```bash
+python tools/mapping/validate_tsdf_map.py --map .local/maps/static-ffs
+python tools/mapping/extract_tsdf_geometry.py \
+  --map .local/maps/static-ffs --output .local/evidence/reloaded-map
+```
+
+Artifact 包含 checksum、resolved config、volume、metric 和提取 geometry。
+
+## 26. Benchmark
+
+```bash
+python tools/mapping/benchmark_fusion_voxels.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --mapping-config .local/configs/mapping.yaml --frames 30 \
+  --report .local/reports/fusion-voxel-sweep.json
 python tools/mapping/benchmark_world_reconstruction.py \
-  --rig-config .local/configs/replay_rig.yaml \
-  --start-frame 0 --frames 100 --warmup 10 --device cuda \
-  --report .local/reports/world_reconstruction_benchmark.json
+  --rig-config .local/configs/replay_rig.yaml --frames 100 --warmup 10 \
+  --report .local/reports/reconstruction.json
 ```
 
-稳定 timing schema 区分 processing-only 与 capture-inclusive。关键字段包括
-`raw_to_world_fused_ms`、`workspace_crop_ms`、`global_sampling_ms`、
-`raw_to_world_sampled_ms`、`raw_to_tsdf_update_ms`、`extract_point_cloud_ms`、
-`combined_per_camera_sequential_ms`、
-`extract_mesh_ms`、`post_crop_ms` 和 `post_sampling_ms`；报告聚合 p50、p95、mean、max。
-TSDF update 与 map extraction 始终作为不同速率、不同性能指标报告。
-冷启动 live-map 验收可用 `--build-warmup-sets` 先完成显式预建，再开启固定的性能/RSS
-窗口；warmup 与正式测量帧都会写进同一个 recording。
+Timing 分开记录 depth inference、RGB mapping、deprojection、local/workspace crop、
+transform、concatenate、voxel fusion、可选 sampling、`raw_to_world_fused`、TSDF update
+与 TSDF extraction。
 
-在现有 snapshot 验收命令上启用独立 Rerun：
-
-```bash
-python tools/mapping/run_live_rig_fusion.py \
-  --rig-config .local/configs/live_rig.yaml \
-  --mapping-config .local/configs/mapping_acceptance.yaml \
-  --matched-sets 300 --output .local/evidence/fusion \
-  --report .local/reports/fusion.json \
-  --viewer rerun --rerun-spawn \
-  --rerun-record .local/rerun/fusion.rrd \
-  --viewer-point-budget 30000
-```
-
-持续映射使用 `tools/mapping/run_live_tsdf_mapping.py`。Rerun 与 TSDF 分别运行在
-spawn 子进程，IPC queue 大小为 1 或 2 并采用 latest-only；消费者落后时丢可视化/
-地图更新包，不积压、不阻塞 snapshot 主路径。所有真实配置、采集、depth recording、
-map、截图、报告和 `.rrd` 必须留在已忽略的 `.local/`；禁止提交真实 SN、外参、图像、
-深度、地图或 RRD。
-
-live map 发布还必须通过 `--snapshot-baseline-report` 提供相同 rig、相同帧数且已经
-PASS 的 snapshot-only 报告。CLI 会比较 processed FPS 与端到端 p95；FPS 下降超过
-10% 或 p95 增加超过 5 ms 时拒绝发布，并记录 mapper 提交接受/拒绝数、队列与 RSS。
-发布还要求至少 32 个子进程 RSS 样本；去掉前 20% warmup 后，首尾四分位中位数增长
-不得超过 256 MiB，拟合增长斜率不得超过每 100 帧 5 MiB。
-报告还会分别记录帧匹配等待与 snapshot 处理延迟，用于诊断，但不改变端到端门限。
-
-变换统一表示 `T_target_from_source` 并作用于列向量。PCB 保存
-`T_workspace_from_camera`；Open3D 接收 synthetic parity 已验证的逆矩阵
-`T_camera_from_workspace`。Native TSDF 输入为原始 `uint16` 加设备 scale；FFS 输入为
-rectified metric float depth，无效像素严格为 0，scale 为 1。
-
-详细文档：
-
-- [架构](docs/architecture.md)
-- [标定部署](docs/deployment-calibration.md)
-- [Rerun 可视化](docs/rerun-visualization.md)
-- [当前 snapshot 与 persistent map](docs/current-snapshot-vs-persistent-map.md)
-- [TSDF 映射](docs/tsdf-mapping.md)
-- [TSDF 动态处理](docs/tsdf-dynamic-handling.md)
-
-已知环境债务：`sapien 2.2.1` 声明依赖 `opencv-python`，而当前环境使用 headless OpenCV。
-这是加入 Rerun/TSDF 前已有的 `pip check` 警告；本目标不升级 Torch、CUDA、TensorRT
-或 OpenCV。
-
-## 核心接口
-
-```python
-from pointcloud_builder import PointCloudBuilder
-
-builder = PointCloudBuilder.from_yaml("configs/example_head_aligned.yaml")
-
-# 离线 zarr 转换
-pc, meta = builder.from_recorded_frame(frame)
-
-# 实时推理
-pc, meta = builder.from_live_frame(frame)
-```
-
-`frame` 是一个 mapping，必须包含 `depth`，可选包含 `rgb`：
-
-```python
-frame = {
-    "depth": depth_image,  # H x W numpy array 或 torch tensor
-    "rgb": rgb_image,      # H x W x 3 可选 numpy array 或 torch tensor
-    "timestamp": 1.23,
-    "global_frame_index": 42,
-}
-```
-
-`pc` 是固定点数的 `torch.Tensor`，XYZ 时形状为 `num_points x 3`，XYZRGB 时形状为 `num_points x 6`。`meta` 至少包含 `stage`、`aligned_depth_to_color`、`use_rgb`、`num_raw_points`、`num_cropped_points`、`num_sampled_points`、`crop_enabled`、`crop_range`、`crop_empty`、`sampling_enabled`、`sampling_mode`、`target_num_points`、`input_empty`、`padded`、`pad_mode`、`voxel_size`、`device`、`timestamp` 和 `global_frame_index`。
-
-`N` 是过滤 `depth <= 0` 后的有效 depth 像素数量。XYZ 会乘
-`camera.depth_scale` 转成米；启用 `pointcloud.output_format: "xyzrgb"` 时，
-RGB 会归一化到 `[0, 1]`。
-如果裁剪后没有任何点，采样仍会返回固定大小的全零 tensor，不会崩溃。
-
-## 采样模式
-
-- `stride`：按固定间隔选择点，再补齐或截断到 `num_points`。
-- `random`：点数足够时无放回随机选择。
-- `fps`：基于 XYZ 的 PyTorch farthest point sampling。
-- `voxel`：按 XYZ 做 voxel downsample，每个 voxel 保留输入中的第一个点，再补齐或截断到 `num_points`。
-- `voxel_random`：先 voxel，再 random 到固定点数。
-- `voxel_fps`：先 voxel，再 FPS 到固定点数。
-
-## YAML
-
-```yaml
-device: "cuda"
-
-camera:
-  name: "head"
-  aligned_depth_to_color: true
-  depth_scale: 0.001
-
-  color_intrinsics:
-    width: 640
-    height: 480
-    fx: 600.0
-    fy: 600.0
-    cx: 320.0
-    cy: 240.0
-
-  depth_intrinsics:
-    width: 640
-    height: 480
-    fx: 600.0
-    fy: 600.0
-    cx: 320.0
-    cy: 240.0
-
-pointcloud:
-  use_rgb: true
-  output_format: "xyzrgb"
-
-crop:
-  enabled: true
-  frame: "camera"
-  x: [-0.5, 0.5]
-  y: [-0.5, 0.5]
-  z: [0.05, 1.5]
-
-sampling:
-  enabled: true
-  mode: "voxel_random"
-  num_points: 1024
-  voxel_size: 0.005
-  seed: 42
-  deterministic: false
-  pad_mode: "repeat"   # repeat | zero
-```
-
-## 真实 D435i 单帧采集
-
-这条路径用于验证本机 RealSense 采到的 RGB-D 是否和后续 LeRobot + RGB-D
-sidecar 数据形态一致。
-
-`pyrealsense2` 不是本包依赖。相机工具需要在已有 RealSense Python wrapper 的
-环境里运行，例如 Flexiv 工作站上的 `dual_arm_teleop` 环境：
-
-```bash
-cd PointCloudBuilder
-conda run -n dual_arm_teleop python -m pip install -e ".[viz]"
-```
-
-先做相机检测：
-
-```bash
-conda run -n dual_arm_teleop python \
-  tools/camera/detect_realsense.py
-```
-
-用 `rs-enumerate-devices` 确认相机 serial，然后采集一帧 depth-to-color aligned
-RGB-D：
-
-```bash
-conda run -n dual_arm_teleop python \
-  tools/camera/capture_d435i_aligned_rgbd.py \
-  --serial YOUR_DEVICE_SERIAL \
-  --width 424 \
-  --height 240 \
-  --fps 30 \
-  --out captures/head_frame_000000.npz \
-  --config-out configs/captures/head_aligned.yaml
-```
-
-生成的 `.npz` 包含：
-
-```text
-rgb: uint8 [H, W, 3]，和 depth 对齐的 RGB
-depth: uint16 [H, W]，对齐到 color 像素网格的 depth
-rgb_timestamp, depth_timestamp
-depth_scale
-width, height, fx, fy, cx, cy
-```
-
-生成的 YAML 会使用 color intrinsics，因为
-`camera.aligned_depth_to_color: true`。`captures/` 下的大文件会被 `.gitignore`
-忽略；`configs/captures/` 下的 YAML 可以保留，用于复现实机测试配置。
-
-## 离线可视化
-
-可视化脚本和实时 builder 解耦：
-
-```bash
-python scripts/visualize_raw_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --output captures/head_raw.ply
-```
-
-无图形界面或只想导出 PLY 时：
-
-```bash
-python scripts/visualize_raw_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --output captures/head_raw.ply \
-  --no-show
-```
-
-同时可视化 raw 和 cropped 阶段：
-
-```bash
-python scripts/visualize_cropped_pointcloud.py \
-  --config configs/captures/head_aligned.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --output captures/head_cropped.ply
-```
-
-同时可视化 raw、cropped、sampled 三个阶段：
-
-```bash
-python scripts/visualize_sampled_pointcloud.py \
-  --config configs/example_train_voxel_random.yaml \
-  --input captures/head_frame_000000.npz \
-  --raw-output captures/head_raw.ply \
-  --cropped-output captures/head_cropped.ply \
-  --output captures/head_sampled.ply
-```
-
-## Benchmark
-
-使用真实采集配置中的分辨率和内参 benchmark raw deprojection：
-
-```bash
-python scripts/benchmark_deprojection.py \
-  --config configs/captures/head_aligned.yaml \
-  --iters 1000 \
-  --warmup 100
-```
-
-benchmark 会输出 p50、p95、mean latency ms、点数、device 和分辨率。
-
-裁剪和采样工具可以单独 benchmark：
-
-```bash
-python scripts/benchmark_crop.py \
-  --config configs/example_head_aligned.yaml \
-  --num-points 307200 \
-  --iters 1000 \
-  --warmup 100
-
-python scripts/benchmark_sampling.py \
-  --num-points 50000 \
-  --target-num-points 1024 \
-  --iters 100 \
-  --warmup 10
-
-python scripts/benchmark_full_pipeline.py \
-  --config configs/example_train_voxel_random.yaml \
-  --iters 100 \
-  --warmup 10
-```
-
-## 数据边界
-
-`.npz` 只是一帧调试和可视化格式，不是计划中的 LeRobot 数据集格式。后续集成时，
-RGB 应继续保存在 LeRobot video 字段中，depth/IR 建议保存在 zarr 等 sidecar
-数组存储里，并通过 `episode_index`、`frame_index` 和 `camera_name` 与 RGB 对齐。
-离线转换和实时部署都应复用同一个 PointCloudBuilder 配置和实现，避免训练/推理的
-反投影配置不一致。
-
-## 测试
+## 27. Validation
 
 ```bash
 pytest -q
-python scripts/benchmark_deprojection.py --config configs/example_head_aligned.yaml --iters 100 --warmup 10
-python scripts/benchmark_crop.py --config configs/example_head_aligned.yaml --num-points 307200 --iters 100 --warmup 10
-python scripts/benchmark_sampling.py --num-points 50000 --target-num-points 1024 --iters 20 --warmup 5
-python scripts/benchmark_full_pipeline.py --config configs/example_train_voxel_random.yaml --iters 20 --warmup 5
+python -m build
+python scripts/check_documented_commands.py
+python scripts/doctor_reconstruction_env.py --no-hardware
 ```
 
-## Fast-FoundationStereo 深度源
+硬件验收还覆盖 CameraRig provision、四个 FFS backend、双机 RGB、Rerun、offline/live
+TSDF、save/load、资源 plateau 与 camera reopen。
 
-FFS 是可选能力。默认 `depth_source.mode=frame`，原生 RGB-D 路径和 Builder
-公共 API 不变。`mode=ffs_stereo` 接收已矫正的 `480x640` IR1/IR2，生成米制
-深度后继续复用同一套反投影、crop 和 sampling 实现。
+## 28. Troubleshooting
 
-可选路线包括 `pytorch`、`tensorrt_single`、`tensorrt_two_stage` 和
-`tensorrt_plugin`，不存在静默后端或精度 fallback。复制的 FFS 代码继续受
-NVIDIA 非商业研究许可约束。
+如果 `/clouds/fused` 看起来稀疏，按顺序检查：
 
-已验证的可选环境是现有 `dp3`：Python 3.10、PyTorch 2.11/CUDA 13、
-TensorRT 10.16.1.11：
+1. `actual_fused_points`；
+2. `fusion.voxel_size_m`；
+3. `viewer_point_budget`；
+4. 当前选择的是 `/clouds/fused` 还是 `/clouds/sampled`。
 
-```bash
-cd ~/workspace/3D-Diffusion-Policy/PointCloudBuilder
-export PY=~/miniconda3/envs/dp3/bin/python
+Viewer budget 不修改重建 tensor。黑点可能是 color FOV 外的有效 depth。Worker、FFS、
+mapper 或 viewer child 错误都是 fatal。禁止放松标定/几何阈值来制造 PASS。
 
-PYTHONNOUSERSITE=1 "$PY" -m pip install -e '.[dev,viz]'
-PYTHONNOUSERSITE=1 "$PY" -m pip install \
-  timm==1.0.28 onnx==1.18.0 onnxscript==0.5.6 \
-  imageio opencv-python-headless pyarrow av
-```
+## 29. Private local artifacts
 
-checkpoint、ONNX、Engine、plugin 动态库和构建输出均不会进入 Git。官方
-checkpoint 可以重新下载；ONNX、manifest、Engine 和 plugin 可以在 dp3 中
-重新生成。TensorRT Engine 必须在目标 TensorRT/GPU 组合上重新构建。
+全部序列号、runtime YAML、provision bundle、实体 capture、checkpoint、engine、plugin、
+report、map、截图与 RRD 必须位于已忽略的 `.local/`。Public example 使用 placeholder。
+复现时禁止用 `PYTHONPATH` 或 symlink 指向旧 clone。
 
-恢复 checkpoint 后，PyTorch smoke 不需要 TensorRT 构建：
+## 30. Future 500x700 deployment board
 
-```bash
-PYTHONNOUSERSITE=1 "$PY" scripts/run_v05_ffs_frame.py \
-  --dataset-root ~/.cache/huggingface/lerobot/flexiv_dual_arm_3d/pick_place_20260713_v05 \
-  --camera head --global-frame-index 0 --backend pytorch \
-  --builder-config ffs_reproduction/configs/v05_ffs.yaml \
-  --artifact-id fp16_o3 --precision fp16 \
-  --builder-optimization-level 3 --workspace-gib 8 \
-  --output-dir ffs_reproduction/outputs/v05_verify --no-show
-```
-
-权重下载、全新 clone 恢复、全部 TensorRT 构建、四路线 smoke/parity，以及同时
-显示 raw/cropped/sampled 的三个 Open3D 窗口命令，统一放在以下专门文档：
-
-- [中文 FFS 复现、构建与可视化指南](ffs_reproduction/README_zh-CN.md)
-- [English FFS reproduction and deployment guide](ffs_reproduction/README.md)
+500x700 mm board 状态为 `DEFERRED`，不是 clean-room gate。禁止根据尺寸或成功 corner
+detection 推断 ArUco dictionary/`legacy_pattern`。未来部署必须获得权威 generator metadata/
+制作者确认，或者打印已知 spec 的新板并重新 provision 两台相机。

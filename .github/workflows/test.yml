@@ -28,6 +28,12 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      - name: Validate documented commands
+        run: python scripts/check_documented_commands.py
+
+      - name: Build distributions
+        run: python -m build
+
   rerun-optional:
     runs-on: ubuntu-latest
     steps:
