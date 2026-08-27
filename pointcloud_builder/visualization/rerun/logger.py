@@ -130,7 +130,14 @@ class RerunPacketLogger:
         map_packet = packet.map
         assert map_packet is not None
         if map_packet.reset:
-            for path in ("/map/tsdf_mesh", "/map/tsdf_points", "/map/dynamic_overlay"):
+            for path in (
+                "/map/tsdf_mesh",
+                "/map/tsdf_points",
+                "/map/tsdf_points_raw",
+                "/map/tsdf_points_cropped",
+                "/map/tsdf_points_sampled",
+                "/map/dynamic_overlay",
+            ):
                 self.recording.log(path, rr.Clear(recursive=True))
             self._last_static_revision = None
         log_static = (
@@ -139,6 +146,16 @@ class RerunPacketLogger:
         )
         if log_static and map_packet.tsdf_points is not None:
             self._log_cloud("/map/tsdf_points", map_packet.tsdf_points)
+        if log_static and map_packet.tsdf_points_raw is not None:
+            self._log_cloud("/map/tsdf_points_raw", map_packet.tsdf_points_raw)
+        if log_static and map_packet.tsdf_points_cropped is not None:
+            self._log_cloud(
+                "/map/tsdf_points_cropped", map_packet.tsdf_points_cropped
+            )
+        if log_static and map_packet.tsdf_points_sampled is not None:
+            self._log_cloud(
+                "/map/tsdf_points_sampled", map_packet.tsdf_points_sampled
+            )
         if log_static and map_packet.tsdf_mesh is not None:
             mesh = map_packet.tsdf_mesh
             self.recording.log(
@@ -150,7 +167,11 @@ class RerunPacketLogger:
                 ),
             )
         if log_static and (
-            map_packet.tsdf_points is not None or map_packet.tsdf_mesh is not None
+            map_packet.tsdf_points is not None
+            or map_packet.tsdf_points_raw is not None
+            or map_packet.tsdf_points_cropped is not None
+            or map_packet.tsdf_points_sampled is not None
+            or map_packet.tsdf_mesh is not None
         ):
             self._last_static_revision = map_packet.static_revision
         if map_packet.dynamic_overlay is not None:

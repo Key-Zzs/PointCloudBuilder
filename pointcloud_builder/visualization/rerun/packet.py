@@ -127,6 +127,9 @@ class TriangleMeshVisualization:
 @dataclass(frozen=True)
 class MapVisualization:
     tsdf_points: np.ndarray | None = None
+    tsdf_points_raw: np.ndarray | None = None
+    tsdf_points_cropped: np.ndarray | None = None
+    tsdf_points_sampled: np.ndarray | None = None
     tsdf_mesh: TriangleMeshVisualization | None = None
     dynamic_overlay: np.ndarray | None = None
     raycast_depth: np.ndarray | None = None
@@ -143,7 +146,11 @@ class MapVisualization:
         ):
             raise ValueError("static_revision must be a non-negative integer")
         if (
-            self.tsdf_points is not None or self.tsdf_mesh is not None
+            self.tsdf_points is not None
+            or self.tsdf_points_raw is not None
+            or self.tsdf_points_cropped is not None
+            or self.tsdf_points_sampled is not None
+            or self.tsdf_mesh is not None
         ) and self.static_revision is None:
             raise ValueError("static TSDF geometry requires a map revision")
         if self.tsdf_points is not None:
@@ -152,6 +159,18 @@ class MapVisualization:
                 "tsdf_points",
                 _array(self.tsdf_points, "tsdf_points", ndim=2, last_dimensions=(3, 6)),
             )
+        for name in (
+            "tsdf_points_raw",
+            "tsdf_points_cropped",
+            "tsdf_points_sampled",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    name,
+                    _array(value, name, ndim=2, last_dimensions=(3, 6)),
+                )
         if self.dynamic_overlay is not None:
             object.__setattr__(
                 self,

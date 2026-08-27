@@ -52,6 +52,9 @@ class MapperSnapshot:
     raycast_depths: tuple[tuple[str, np.ndarray], ...]
     integration_ms: float
     active_voxel_count: int
+    block_activation_ms: float = 0.0
+    volume_integrate_ms: float = 0.0
+    map_update_total_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ class MapperTelemetry:
     child_error: str | None
     child_rss_mb: float | None
     child_rss_samples_mb: tuple[tuple[int, float], ...]
+    child_timing_samples_ms: tuple[dict[str, float], ...]
     running: bool
 
 
@@ -151,6 +155,8 @@ def _mapper_main(
                     state = mapper.reset()
                     if guarded is not None:
                         guarded.reset()
+                elif name == "barrier":
+                    state = mapper.state
                 elif name == "save":
                     mapper.save(payload)
                     state = mapper.state
@@ -169,6 +175,7 @@ def _mapper_main(
                 frame_set = frame_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
+            extraction = None
             if (
                 isinstance(frame_set, tuple)
                 and len(frame_set) == 2
@@ -180,6 +187,28 @@ def _mapper_main(
                 raise TypeError("mapper child received an invalid depth frame set")
             received += 1
             now = time.monotonic()
+            # Apply the deterministic frame-stride contract before the
+            # wall-clock update limiter.  Rate-limiting arbitrary arrivals
+            # first would multiply the two filters and starve eligible frames.
+            if (
+                frame_set.matched_set_index
+                % config.tsdf.integration.frame_stride
+            ):
+                rate_limited += 1
+                _offer_latest(
+                    status_queue,
+                    (
+                        "counts",
+                        (
+                            received,
+                            rate_limited,
+                            control_discarded,
+                            integrated,
+                            snapshots,
+                        ),
+                    ),
+                )
+                continue
             if now - last_update < 1.0 / config.tsdf.integration.maximum_update_hz:
                 rate_limited += 1
                 _offer_latest(
@@ -236,10 +265,11 @@ def _mapper_main(
                 >= 1.0 / config.tsdf.integration.maximum_mesh_hz
             ):
                 last_extraction = now
+                extraction = mapper.extract()
                 snapshot = MapperSnapshot(
                     matched_set_index=frame_set.matched_set_index,
                     map_state=mapper.state,
-                    extraction=mapper.extract(),
+                    extraction=extraction,
                     dynamic_reports=reports,
                     dynamic_masks=masks,
                     raycast_depths=raycast_depths,
@@ -249,9 +279,33 @@ def _mapper_main(
                             "nonzero_count", 0
                         )
                     ),
+                    block_activation_ms=result.block_activation_ms,
+                    volume_integrate_ms=result.volume_integrate_ms,
+                    map_update_total_ms=result.map_update_total_ms,
                 )
                 _offer_latest(output_queue, snapshot)
                 snapshots += 1
+            timing_sample = {
+                "block_activation_plus_coordinate_generation_ms": result.block_activation_ms,
+                "volume_integrate_ms": result.volume_integrate_ms,
+                "map_update_total_ms": result.map_update_total_ms,
+                "raw_to_tsdf_update_ms": (
+                    frame_set.raw_to_depth_frame_set_ms + result.map_update_total_ms
+                ),
+            }
+            if extraction is not None:
+                timing_sample.update(
+                    {
+                        "extract_point_cloud_ms": extraction.extract_point_cloud_ms,
+                        "extract_mesh_ms": extraction.extract_mesh_ms,
+                        "post_crop_ms": extraction.post_crop_ms,
+                        "post_sampling_ms": extraction.post_sampling_ms,
+                        "map_to_raw_cloud_ms": extraction.extract_raw_world_cloud_ms,
+                        "map_to_cropped_cloud_ms": extraction.extract_cropped_world_cloud_ms,
+                        "map_to_sampled_cloud_ms": extraction.extract_sampled_world_cloud_ms,
+                    }
+                )
+            _offer_latest(status_queue, ("timing", timing_sample))
             _offer_latest(
                 status_queue,
                 (
@@ -334,6 +388,7 @@ class AsyncTsdfMapper:
         self._acks: dict[int, TsdfMapState] = {}
         self._peak_rss_mb: float | None = None
         self._rss_samples_mb: list[tuple[int, float]] = []
+        self._timing_samples_ms: list[dict[str, float]] = []
         self._operation_lock = threading.Lock()
 
     @property
@@ -460,6 +515,18 @@ class AsyncTsdfMapper:
     def reset(self, *, timeout_s: float = 30.0) -> TsdfMapState:
         return self._command("reset", timeout_s=timeout_s)
 
+    def flush(self, *, timeout_s: float = 30.0) -> TsdfMapState:
+        """Wait until all frame submissions preceding this barrier are handled."""
+
+        return self._command("barrier", timeout_s=timeout_s)
+
+    def reset_acceptance_window(self) -> None:
+        """Start a new RSS/timing observation window without mutating the map."""
+
+        self._drain_status()
+        self._rss_samples_mb.clear()
+        self._timing_samples_ms.clear()
+
     def save_volume(self, path: str | Path, *, timeout_s: float = 30.0) -> TsdfMapState:
         output = Path(path)
         if output.suffix.lower() != ".npz":
@@ -483,6 +550,7 @@ class AsyncTsdfMapper:
             child_error=self._error,
             child_rss_mb=self._peak_rss_mb,
             child_rss_samples_mb=tuple(self._rss_samples_mb),
+            child_timing_samples_ms=tuple(self._timing_samples_ms),
             running=self.running,
         )
 
@@ -520,7 +588,11 @@ class AsyncTsdfMapper:
         try:
             self._command_id += 1
             command_id = self._command_id
-            barrier_id = command_id if name in {"freeze", "unfreeze", "reset"} else None
+            barrier_id = (
+                command_id
+                if name in {"freeze", "unfreeze", "reset", "barrier"}
+                else None
+            )
             if barrier_id is not None:
                 assert self._frame_queue is not None
                 self._frame_queue.put(
@@ -565,6 +637,14 @@ class AsyncTsdfMapper:
                 self._acks[int(command_id)] = state
             elif kind == "error":
                 self._error = str(value)
+            elif kind == "timing":
+                self._timing_samples_ms.append(
+                    {str(name): float(timing) for name, timing in value.items()}
+                )
+                if len(self._timing_samples_ms) > 4096:
+                    del self._timing_samples_ms[
+                        : len(self._timing_samples_ms) - 4096
+                    ]
 
     def _sample_rss(self, sample_index: int | None = None) -> None:
         process = self._process

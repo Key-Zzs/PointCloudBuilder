@@ -42,6 +42,7 @@ class SingleCameraWorkspacePipeline:
         *,
         workspace_crop: CropConfig,
         provision_sha256: str | None = None,
+        timing_enabled: bool = True,
     ) -> None:
         if workspace_crop.frame != context.workspace_frame:
             raise ValueError("workspace crop frame must match the CameraRig bundle parent frame")
@@ -50,16 +51,23 @@ class SingleCameraWorkspacePipeline:
         self.provision_sha256 = provision_sha256 or canonical_bundle_sha256(
             context.calibration.bundle
         )
+        self.timing_enabled = timing_enabled
 
     def process(self, camera_frame: Any) -> SingleCameraWorkspaceStages:
         """Adapt, deproject once, and expose camera/workspace stages."""
 
-        pipeline_start = time.perf_counter()
+        pipeline_start = time.perf_counter() if self.timing_enabled else 0.0
         adapter_start = pipeline_start
         mapping = self.context.frame_adapter.adapt(camera_frame)
-        adapter_ms = (time.perf_counter() - adapter_start) * 1000.0
+        adapter_ms = (
+            (time.perf_counter() - adapter_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
         stages, builder_meta, resolved_depth = (
-            self.context.builder.build_stages_with_resolved_depth(mapping)
+            self.context.builder.build_stages_with_resolved_depth(
+                mapping, timing_enabled=self.timing_enabled
+            )
         )
         camera_clouds = {
             name: FramedPointCloud(
@@ -69,17 +77,29 @@ class SingleCameraWorkspacePipeline:
             )
             for name, points in stages.items()
         }
-        transform_start = time.perf_counter()
+        transform_start = time.perf_counter() if self.timing_enabled else 0.0
         workspace_raw = transform_point_cloud(
             camera_clouds["cropped"], self.context.T_workspace_from_source
         )
-        _sync_if_cuda(workspace_raw.points)
-        transform_ms = (time.perf_counter() - transform_start) * 1000.0
-        workspace_crop_start = time.perf_counter()
+        if self.timing_enabled:
+            _sync_if_cuda(workspace_raw.points)
+        transform_ms = (
+            (time.perf_counter() - transform_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        workspace_crop_start = time.perf_counter() if self.timing_enabled else 0.0
         workspace_cropped = crop_workspace_cloud(workspace_raw, self.workspace_crop)
-        _sync_if_cuda(workspace_cropped.points)
-        workspace_crop_ms = (time.perf_counter() - workspace_crop_start) * 1000.0
-        workspace_sampling_start = time.perf_counter()
+        if self.timing_enabled:
+            _sync_if_cuda(workspace_cropped.points)
+        workspace_crop_ms = (
+            (time.perf_counter() - workspace_crop_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        workspace_sampling_start = (
+            time.perf_counter() if self.timing_enabled else 0.0
+        )
         sampled, sampling_meta = sample_point_cloud(
             workspace_cropped.points,
             self.context.builder.config.sampling,
@@ -89,12 +109,20 @@ class SingleCameraWorkspacePipeline:
             frame=self.context.workspace_frame,
             metadata={**workspace_cropped.metadata, "sampling": sampling_meta},
         )
-        _sync_if_cuda(workspace_sampled.points)
-        workspace_sampling_ms = (time.perf_counter() - workspace_sampling_start) * 1000.0
+        if self.timing_enabled:
+            _sync_if_cuda(workspace_sampled.points)
+        workspace_sampling_ms = (
+            (time.perf_counter() - workspace_sampling_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
         builder_timing = dict(builder_meta.get("timing_ms", {}))
         ffs_timing = dict(builder_meta.get("ffs", {}).get("timing_ms", {}))
         timing_ms = {
             "frame_adapter": adapter_ms,
+            "depth_resolution": float(
+                builder_timing.get("depth_resolution", 0.0)
+            ),
             "depth_inference": float(ffs_timing.get("inference", 0.0)),
             "deprojection": float(builder_timing.get("deprojection", 0.0)),
             "local_crop": float(builder_timing.get("crop", 0.0)),
@@ -102,7 +130,11 @@ class SingleCameraWorkspacePipeline:
             "workspace_transform": transform_ms,
             "workspace_crop": workspace_crop_ms,
             "sampling": workspace_sampling_ms,
-            "total_workspace_pipeline": (time.perf_counter() - pipeline_start) * 1000.0,
+            "total_workspace_pipeline": (
+                (time.perf_counter() - pipeline_start) * 1000.0
+                if self.timing_enabled
+                else 0.0
+            ),
         }
         return SingleCameraWorkspaceStages(
             camera_raw=camera_clouds["raw"],

@@ -119,6 +119,36 @@ def test_async_mapper_latest_only_queue_is_bounded_and_nonblocking() -> None:
     assert telemetry.child_error is None
 
 
+def test_async_mapper_applies_stride_before_rate_limit() -> None:
+    config = replace(
+        _config(),
+        integration=replace(
+            _config().integration,
+            frame_stride=5,
+            queue_capacity=2,
+            maximum_update_hz=1000.0,
+            maximum_mesh_hz=0.1,
+        ),
+    )
+    mapper = AsyncTsdfMapper(MapperProcessConfig(config, "workspace"))
+    mapper.start()
+    base = _frame_set()
+    for index in range(10):
+        assert mapper.submit(replace(base, matched_set_index=index))
+        deadline = time.monotonic() + 10.0
+        telemetry = mapper.telemetry()
+        while (
+            telemetry.child_received_frame_sets < index + 1
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+            telemetry = mapper.telemetry()
+    telemetry = mapper.close()
+    assert telemetry.child_received_frame_sets == 10
+    assert telemetry.child_integrated_frame_sets == 2
+    assert telemetry.child_error is None
+
+
 def test_reset_ack_is_a_barrier_against_pre_reset_queued_frames() -> None:
     config = replace(
         _config(),

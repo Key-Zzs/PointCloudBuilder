@@ -30,7 +30,11 @@ poses, at least 50% pose coverage, translation p95 at most 10 mm, and mandatory 
 depth-plane PASS. Short frame counts exist only through injected tests. Real serials,
 images, overlays, measurements, and transforms remain under CameraRig/PCB `.local/`.
 
-The current 500 x 700 mm physical board remains unresolved because several ChArUco
-candidate dictionaries/layouts are visually indistinguishable. No target registration,
-reprovision, or physical calibration PASS is claimed until authoritative metadata is
-provided.
+CameraRig now proves render/geometry equivalence before folding candidates that differ
+only in `legacy_pattern`; it still fails closed for non-equivalent candidates, wrong
+authoritative dictionaries, orientation conflicts, or marker-layout mismatch.
+
+For the current M9 closure, camera A/B continue to use their already validated legacy
+ChArUco target and provisions. The 500 x 700 mm `DICT_4X4_100` board definition is a
+future deployment preset with status `DEFERRED`. No current real-camera PASS is claimed
+for that preset, and it is not a reason to reprovision or block current deployment.

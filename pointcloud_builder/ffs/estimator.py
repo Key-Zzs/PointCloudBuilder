@@ -30,6 +30,7 @@ class FFSStereoDepthEstimator:
             raise ValueError("Current FFS estimator accepts only height=480,width=640")
         self.config = config
         self.device = device
+        self.timing_enabled = True
         self.calibration = calibration or calibration_from_builder_config(camera_config, config)
         self.backend = backend or create_backend(config, device=device)
         if self.calibration.left_intrinsics.height != int(config.height) or self.calibration.left_intrinsics.width != int(config.width):
@@ -54,8 +55,8 @@ class FFSStereoDepthEstimator:
             width=int(self.config.width),
             device=self.device,
         )
-        inference_start = time.perf_counter()
-        if self.device.type == "cuda":
+        inference_start = time.perf_counter() if self.timing_enabled else 0.0
+        if self.timing_enabled and self.device.type == "cuda":
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
             start_event.record()
@@ -65,14 +66,18 @@ class FFSStereoDepthEstimator:
             inference_ms = float(start_event.elapsed_time(end_event))
         else:
             disparity = self.backend.infer_disparity(left, right)
-            inference_ms = (time.perf_counter() - inference_start) * 1000.0
+            inference_ms = (
+                (time.perf_counter() - inference_start) * 1000.0
+                if self.timing_enabled
+                else 0.0
+            )
         disparity = normalize_disparity_output(
             disparity,
             height=int(self.config.height),
             width=int(self.config.width),
             device=self.device,
         )
-        conversion_start = time.perf_counter()
+        conversion_start = time.perf_counter() if self.timing_enabled else 0.0
         depth_m, valid_mask, counts = disparity_to_depth(
             disparity,
             fx_px=self.calibration.left_intrinsics.fx,
@@ -82,10 +87,18 @@ class FFSStereoDepthEstimator:
             min_depth_m=float(self.config.min_depth_m),
             max_depth_m=self.config.max_depth_m,
         )
-        if self.device.type == "cuda":
+        if self.timing_enabled and self.device.type == "cuda":
             torch.cuda.current_stream(self.device).synchronize()
-        conversion_ms = (time.perf_counter() - conversion_start) * 1000.0
-        backend_timing = dict(getattr(self.backend, "last_timing_ms", {}))
+        conversion_ms = (
+            (time.perf_counter() - conversion_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        backend_timing = (
+            dict(getattr(self.backend, "last_timing_ms", {}))
+            if self.timing_enabled
+            else {}
+        )
         backend_timing.setdefault("inference_ms", inference_ms)
         metadata: dict[str, Any] = {
             "depth_source": "ffs_stereo",

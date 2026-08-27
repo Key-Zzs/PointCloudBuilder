@@ -18,6 +18,7 @@ from pointcloud_builder.rig.types import (
     WorkspaceCloud,
 )
 from pointcloud_builder.mapping.types import RigDepthFrameSet
+from pointcloud_builder.reconstruction_timing import ReconstructionTiming
 from pointcloud_builder.workspace.crop import crop_workspace_cloud
 from pointcloud_builder.workspace.types import WorkspacePointCloud
 
@@ -25,7 +26,13 @@ from pointcloud_builder.workspace.types import WorkspacePointCloud
 class RigFrameProcessor:
     """Apply the M6 per-camera, crop, fusion, and global-sampling contract."""
 
-    def __init__(self, config: RigConfig, runtimes: Mapping[str, Any]) -> None:
+    def __init__(
+        self,
+        config: RigConfig,
+        runtimes: Mapping[str, Any],
+        *,
+        timing_enabled: bool = True,
+    ) -> None:
         expected = {camera.name for camera in config.enabled_cameras}
         actual = set(runtimes)
         if actual != expected:
@@ -36,17 +43,19 @@ class RigFrameProcessor:
         self.config = config
         self.runtimes = dict(runtimes)
         self.canonical_order = tuple(sorted(self.runtimes))
+        self.timing_enabled = timing_enabled
 
     def process_frame_set(
         self,
         frame_set: RigFrameSet,
         *,
-        frame_match_ms: float = 0.0,
+        frame_match_ms: float | None = 0.0,
         total_start_s: float | None = None,
     ) -> RigBuildResult:
         """Process one complete frame set without retaining tensors in metadata."""
 
-        processing_start = time.perf_counter()
+        processing_start = time.perf_counter() if self.timing_enabled else 0.0
+        capture_included = total_start_s is not None
         total_start = processing_start if total_start_s is None else total_start_s
         if frame_set.unmatched_cameras:
             raise ValueError(
@@ -66,16 +75,37 @@ class RigFrameProcessor:
         per_camera_workspace_raw: list[WorkspacePointCloud] = []
         per_camera_stage_statistics: dict[str, dict[str, Any]] = {}
         timing: dict[str, Any] = {"frame_match": frame_match_ms, "per_camera": {}}
+        unified_per_camera: dict[str, dict[str, float]] = {}
         depth_observations = []
         for name in self.canonical_order:
             runtime = self.runtimes[name]
+            runtime.pipeline.timing_enabled = self.timing_enabled
             envelope = frame_set.envelopes[name]
-            start = time.perf_counter()
+            start = time.perf_counter() if self.timing_enabled else 0.0
             stages = runtime.pipeline.process(envelope.frame)
             depth_observations.append(stages.depth_observation)
             timing["per_camera"][name] = {
                 **stages.metadata["timing_ms"],
-                "rig_camera_total": (time.perf_counter() - start) * 1000.0,
+                "rig_camera_total": (
+                    (time.perf_counter() - start) * 1000.0
+                    if self.timing_enabled
+                    else 0.0
+                ),
+            }
+            legacy_camera_timing = timing["per_camera"][name]
+            unified_per_camera[name] = {
+                "frame_adapter_ms": float(legacy_camera_timing["frame_adapter"]),
+                "depth_resolution_ms": float(
+                    legacy_camera_timing["depth_resolution"]
+                ),
+                "deprojection_ms": float(legacy_camera_timing["deprojection"]),
+                "local_crop_ms": float(legacy_camera_timing["local_crop"]),
+                "workspace_transform_ms": float(
+                    legacy_camera_timing["workspace_transform"]
+                ),
+                "raw_to_workspace_per_camera_ms": float(
+                    legacy_camera_timing["rig_camera_total"]
+                ),
             }
             cloud = stages.workspace_cropped
             per_camera_camera.append(
@@ -102,12 +132,29 @@ class RigFrameProcessor:
                 frame_index=envelope.frame_index,
                 host_receive_timestamp_ns=envelope.host_receive_timestamp_ns,
             )
+        raw_to_depth_frame_set_ms = (
+            (time.perf_counter() - processing_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
 
-        concat_start = time.perf_counter()
+        concat_start = time.perf_counter() if self.timing_enabled else 0.0
         tensors = [cloud.points for cloud in per_camera_workspace_raw]
         if len({int(points.shape[1]) for points in tensors}) != 1:
             raise ValueError("per-camera clouds must have the same channel count")
         concatenated = torch.cat(tensors, dim=0)
+        if self.timing_enabled:
+            _sync_if_cuda(concatenated)
+        concatenate_ms = (
+            (time.perf_counter() - concat_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        concatenated_total_ms = (
+            (time.perf_counter() - processing_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
         pre_sampling_counts = {
             item.camera_name: int(item.cloud.points.shape[0]) for item in per_camera
         }
@@ -120,12 +167,26 @@ class RigFrameProcessor:
                 "timing_mode": self.config.timing.mode,
             },
         )
+        crop_start = time.perf_counter() if self.timing_enabled else 0.0
         workspace_cropped = crop_workspace_cloud(
             concatenated_cloud, self.config.workspace_crop
+        )
+        if self.timing_enabled:
+            _sync_if_cuda(workspace_cropped.points)
+        workspace_crop_ms = (
+            (time.perf_counter() - crop_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        cropped_total_ms = (
+            (time.perf_counter() - processing_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
         )
         fusion_inputs = [
             WorkspaceCloud(item.camera_name, item.cloud) for item in per_camera
         ]
+        fusion_start = time.perf_counter() if self.timing_enabled else 0.0
         if self.config.fusion.enabled:
             fusion_result = voxel_fuse_workspace_clouds(
                 fusion_inputs, self.config.fusion
@@ -135,7 +196,32 @@ class RigFrameProcessor:
         else:
             fused = workspace_cropped
             fusion_provenance = None
+        if self.timing_enabled:
+            _sync_if_cuda(fused.points)
+        voxel_fusion_ms = (
+            (time.perf_counter() - fusion_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        fused_total_ms = (
+            (time.perf_counter() - processing_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        sampling_start = time.perf_counter() if self.timing_enabled else 0.0
         sampled = sample_fused_cloud(fused, self.config.sampling)
+        if self.timing_enabled:
+            _sync_if_cuda(sampled.points)
+        global_sampling_ms = (
+            (time.perf_counter() - sampling_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        sampled_total_ms = (
+            (time.perf_counter() - processing_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
         processing_metadata = {
             "processor": "RigFrameProcessor",
             "camera_count": len(self.canonical_order),
@@ -169,9 +255,40 @@ class RigFrameProcessor:
             frame=sampled.frame,
             metadata={**sampled.metadata, **stable_metadata},
         )
-        concat_ms = (time.perf_counter() - concat_start) * 1000.0
+        concat_ms = (
+            (time.perf_counter() - concat_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
         timing["concatenate_crop_fuse_and_global_sampling"] = concat_ms
-        timing["total"] = (time.perf_counter() - total_start) * 1000.0
+        timing["total"] = (
+            (time.perf_counter() - total_start) * 1000.0
+            if self.timing_enabled
+            else 0.0
+        )
+        if self.timing_enabled:
+            unified = ReconstructionTiming(
+                path="current_snapshot",
+                per_camera_ms=unified_per_camera,
+                stages_ms={
+                    "combined_per_camera_sequential_ms": raw_to_depth_frame_set_ms,
+                    "concatenate_ms": concatenate_ms,
+                    "workspace_crop_ms": workspace_crop_ms,
+                    "voxel_fusion_ms": voxel_fusion_ms,
+                    "global_sampling_ms": global_sampling_ms,
+                    "raw_to_world_concatenated_ms": concatenated_total_ms,
+                    "raw_to_world_fused_ms": fused_total_ms,
+                    "raw_to_world_cropped_ms": cropped_total_ms,
+                    "raw_to_world_sampled_ms": sampled_total_ms,
+                },
+                frame_match_ms=frame_match_ms,
+                capture_inclusive_total_ms=(
+                    (time.perf_counter() - total_start) * 1000.0
+                    if capture_included
+                    else None
+                ),
+            )
+            timing["reconstruction"] = unified.to_dict()
         provenance = {item.camera_name: item.provenance for item in per_camera}
         if frame_set.match_timestamp_ns is None:
             raise ValueError("rig depth output requires a matched-set timestamp")
@@ -183,6 +300,7 @@ class RigFrameProcessor:
             host_timestamp_ns=frame_set.match_timestamp_ns,
             maximum_skew_ms=frame_set.maximum_skew_ms,
             observations=tuple(depth_observations),
+            raw_to_depth_frame_set_ms=raw_to_depth_frame_set_ms,
         )
         return RigBuildResult(
             per_camera_camera_frame=tuple(per_camera_camera),
@@ -200,6 +318,11 @@ class RigFrameProcessor:
             per_camera_stage_statistics=per_camera_stage_statistics,
             processing_metadata=processing_metadata,
         )
+
+
+def _sync_if_cuda(points: torch.Tensor) -> None:
+    if points.is_cuda:
+        torch.cuda.current_stream(points.device).synchronize()
 
 
 def _stage_statistics(

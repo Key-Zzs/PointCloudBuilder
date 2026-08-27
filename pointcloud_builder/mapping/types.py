@@ -157,6 +157,7 @@ class RigDepthFrameSet:
     host_timestamp_ns: int
     maximum_skew_ms: float
     observations: tuple[RigDepthObservation, ...]
+    raw_to_depth_frame_set_ms: float = 0.0
     schema_version: str = "pointcloud-builder.rig-depth-frame-set.v1"
 
     def __post_init__(self) -> None:
@@ -188,6 +189,15 @@ class RigDepthFrameSet:
             )
         if len({item.workspace_frame for item in observations}) != 1:
             raise ValueError("all depth observations must share one workspace frame")
+        if (
+            isinstance(self.raw_to_depth_frame_set_ms, bool)
+            or not isinstance(self.raw_to_depth_frame_set_ms, numbers.Real)
+            or not np.isfinite(self.raw_to_depth_frame_set_ms)
+            or self.raw_to_depth_frame_set_ms < 0
+        ):
+            raise ValueError(
+                "raw_to_depth_frame_set_ms must be finite and non-negative"
+            )
         object.__setattr__(self, "observations", observations)
 
 
@@ -197,6 +207,9 @@ class TsdfIntegrationResult:
     integrated_cameras: tuple[str, ...]
     active_block_count: int
     integration_ms: float
+    block_activation_ms: float = 0.0
+    volume_integrate_ms: float = 0.0
+    map_update_total_ms: float = 0.0
     skipped: bool = False
     reason: str | None = None
 
@@ -210,17 +223,35 @@ class MapExtraction:
     vertex_count: int
     triangle_count: int
     extraction_ms: float
+    raw_point_cloud: np.ndarray | None = None
+    cropped_point_cloud: np.ndarray | None = None
+    sampled_point_cloud: np.ndarray | None = None
+    extract_point_cloud_ms: float = 0.0
+    extract_mesh_ms: float = 0.0
+    post_crop_ms: float = 0.0
+    post_sampling_ms: float = 0.0
 
     def __post_init__(self) -> None:
         points = _array(self.points, "map points", ndim=2)
         vertices = _array(self.vertices, "mesh vertices", ndim=2)
         triangles = _array(self.triangles, "mesh triangles", ndim=2)
+        raw = points if self.raw_point_cloud is None else _array(
+            self.raw_point_cloud, "raw map points", ndim=2
+        )
+        cropped = raw if self.cropped_point_cloud is None else _array(
+            self.cropped_point_cloud, "cropped map points", ndim=2
+        )
+        sampled = cropped if self.sampled_point_cloud is None else _array(
+            self.sampled_point_cloud, "sampled map points", ndim=2
+        )
         if (
             points.shape[1:] != (3,)
             or vertices.shape[1:] != (3,)
             or triangles.shape[1:] != (3,)
         ):
             raise ValueError("map extraction arrays must be Nx3")
+        if raw.shape[1:] != (3,) or cropped.shape[1:] != (3,) or sampled.shape[1:] != (3,):
+            raise ValueError("map postprocess arrays must be Nx3")
         if not np.issubdtype(triangles.dtype, np.integer):
             raise ValueError("mesh triangles must contain integer indices")
         if (self.point_count, self.vertex_count, self.triangle_count) != (
@@ -232,6 +263,48 @@ class MapExtraction:
         object.__setattr__(self, "points", points)
         object.__setattr__(self, "vertices", vertices)
         object.__setattr__(self, "triangles", triangles)
+        object.__setattr__(self, "raw_point_cloud", raw)
+        object.__setattr__(self, "cropped_point_cloud", cropped)
+        object.__setattr__(self, "sampled_point_cloud", sampled)
+
+    @property
+    def raw_point_count(self) -> int:
+        return len(self.raw_points)
+
+    @property
+    def cropped_point_count(self) -> int:
+        return len(self.cropped_points)
+
+    @property
+    def sampled_point_count(self) -> int:
+        return len(self.sampled_points)
+
+    @property
+    def raw_points(self) -> np.ndarray:
+        assert self.raw_point_cloud is not None
+        return self.raw_point_cloud
+
+    @property
+    def cropped_points(self) -> np.ndarray:
+        assert self.cropped_point_cloud is not None
+        return self.cropped_point_cloud
+
+    @property
+    def sampled_points(self) -> np.ndarray:
+        assert self.sampled_point_cloud is not None
+        return self.sampled_point_cloud
+
+    @property
+    def extract_raw_world_cloud_ms(self) -> float:
+        return self.extract_point_cloud_ms
+
+    @property
+    def extract_cropped_world_cloud_ms(self) -> float:
+        return self.extract_point_cloud_ms + self.post_crop_ms
+
+    @property
+    def extract_sampled_world_cloud_ms(self) -> float:
+        return self.extract_cropped_world_cloud_ms + self.post_sampling_ms
 
 
 @dataclass(frozen=True)

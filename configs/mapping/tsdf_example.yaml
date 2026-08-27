@@ -20,12 +20,29 @@ integration:
   maximum_weight: null
   queue_capacity: 2
   maximum_update_hz: 5.0
-  maximum_mesh_hz: 1.0
+  # Full mesh plus deterministic FPS is deliberately slower than map updates.
+  maximum_mesh_hz: 0.2
 
 extraction:
   weight_threshold: 3.0
   point_cloud: true
   triangle_mesh: true
+
+postprocess:
+  crop:
+    enabled: true
+    frame: workspace
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.05, 1.0]
+  sampling:
+    enabled: true
+    mode: voxel_fps
+    num_points: 4096
+    voxel_size: 0.005
+    seed: 42
+    deterministic: true
+    pad_mode: repeat
 
 dynamic:
   mode: frozen_static

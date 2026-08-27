@@ -101,6 +101,14 @@ matched cameras -> per-camera cloud -> snapshot voxel fusion -> global sampling
 matched cameras -> per-camera depth + K + T_workspace_from_camera -> async TSDF map
 ```
 
+The production persistent-map route is `ffs_stereo` with the TensorRT plugin backend.
+It fails closed if its engine/plugin/manifest is unavailable and never falls back to
+native depth. Native TSDF is an optional diagnostic baseline; degraded native geometry
+does not fail FFS production acceptance. The currently validated legacy ChArUco target
+remains the deployment target for camera A/B. The 500 x 700 mm board is a future preset
+with status `DEFERRED`; it requires neither real-camera evidence nor reprovisioning for
+the current M9 closure.
+
 The first path remains the low-latency policy/dynamic observation. The second is
 static workspace history. A frozen TSDF plus the current fused cloud is the default
 production composition; `guarded_continuous` is opt-in and masks transient pixels
@@ -121,6 +129,34 @@ python tools/mapping/build_tsdf_offline.py \
   --config configs/mapping/tsdf_example.yaml \
   --output .local/maps/static_tsdf
 ```
+
+FFS recording manifests checksummed per-camera backend, precision, artifact ID, and
+pipeline-config SHA. Production acceptance verifies this lineage through the map's
+source-recording receipt and requires `tensorrt_plugin`; native map input is optional.
+
+The persistent map exports the full mesh plus raw, workspace-cropped, and sampled
+point clouds. `configs/mapping/tsdf_example.yaml` shows the optional `postprocess`
+contract. Omitting it disables both point-cloud stages for backward compatibility;
+mesh geometry is never presented as cropped.
+
+Benchmark the same frozen replay frames with reconstruction only, crop, and
+crop-plus-sampling scenarios:
+
+```bash
+python tools/mapping/benchmark_world_reconstruction.py \
+  --rig-config .local/configs/replay_rig.yaml \
+  --start-frame 0 --frames 100 --warmup 10 --device cuda \
+  --report .local/reports/world_reconstruction_benchmark.json
+```
+
+The stable timing schema separates processing-only and capture-inclusive values. Key
+fields are `raw_to_world_fused_ms`, `workspace_crop_ms`, `global_sampling_ms`,
+`combined_per_camera_sequential_ms`,
+`raw_to_world_sampled_ms`, `raw_to_tsdf_update_ms`, `extract_point_cloud_ms`,
+`extract_mesh_ms`, `post_crop_ms`, and `post_sampling_ms`; reports aggregate p50, p95,
+mean, and max. TSDF update and map extraction remain distinct rates and metrics.
+Cold live-map acceptance may use `--build-warmup-sets` to prebuild the map before
+opening the fixed performance/RSS window; warmup and measured sets are both recorded.
 
 Run the independent Rerun viewer on the existing snapshot acceptance command:
 

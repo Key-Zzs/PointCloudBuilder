@@ -297,8 +297,20 @@ def _carry_static_map(
         old_map is None
         or new_map is None
         or old_map.static_revision != new_map.static_revision
-        or (new_map.tsdf_points is not None or new_map.tsdf_mesh is not None)
-        or (old_map.tsdf_points is None and old_map.tsdf_mesh is None)
+        or (
+            new_map.tsdf_points is not None
+            or new_map.tsdf_points_raw is not None
+            or new_map.tsdf_points_cropped is not None
+            or new_map.tsdf_points_sampled is not None
+            or new_map.tsdf_mesh is not None
+        )
+        or (
+            old_map.tsdf_points is None
+            and old_map.tsdf_points_raw is None
+            and old_map.tsdf_points_cropped is None
+            and old_map.tsdf_points_sampled is None
+            and old_map.tsdf_mesh is None
+        )
     ):
         return replacement
     return replace(
@@ -306,6 +318,9 @@ def _carry_static_map(
         map=replace(
             new_map,
             tsdf_points=old_map.tsdf_points,
+            tsdf_points_raw=old_map.tsdf_points_raw,
+            tsdf_points_cropped=old_map.tsdf_points_cropped,
+            tsdf_points_sampled=old_map.tsdf_points_sampled,
             tsdf_mesh=old_map.tsdf_mesh,
         ),
     )

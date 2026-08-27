@@ -122,6 +122,11 @@ def test_recording_rejects_tamper_and_cross_file_forgery(tmp_path: Path) -> None
         validate_rig_depth_recording(output)
 
 
+def test_ffs_recording_requires_backend_provenance(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="backend provenance"):
+        RigDepthRecordingWriter(tmp_path / "ffs", depth_source="ffs_stereo")
+
+
 def test_tsdf_config_is_strict_and_reports_default_memory() -> None:
     raw = {
         "schema_version": "pointcloud-builder.tsdf.v1",

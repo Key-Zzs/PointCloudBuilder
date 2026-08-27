@@ -28,9 +28,12 @@ from pointcloud_builder.utils import (
 class _StageTiming:
     """Low-overhead stage timing that uses one synchronized CUDA timeline."""
 
-    def __init__(self, device: torch.device) -> None:
-        self.cuda = device.type == "cuda"
+    def __init__(self, device: torch.device, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.cuda = enabled and device.type == "cuda"
         self._events: dict[str, torch.cuda.Event] = {}
+        if not enabled:
+            return
         if self.cuda:
             self._start_event = torch.cuda.Event(enable_timing=True)
             self._end_event = torch.cuda.Event(enable_timing=True)
@@ -39,6 +42,8 @@ class _StageTiming:
             self._start_time = time.perf_counter()
 
     def mark(self, name: str) -> None:
+        if not self.enabled:
+            return
         if self.cuda:
             event = torch.cuda.Event(enable_timing=True)
             event.record()
@@ -47,6 +52,17 @@ class _StageTiming:
             setattr(self, f"_{name}_time", time.perf_counter())
 
     def finish(self) -> dict[str, float]:
+        if not self.enabled:
+            return {
+                name: 0.0
+                for name in (
+                    "deprojection",
+                    "rgb_mapping",
+                    "crop",
+                    "sampling",
+                    "total_builder_pipeline",
+                )
+            }
         if self.cuda:
             self._end_event.record()
             self._end_event.synchronize()
@@ -125,11 +141,25 @@ class PointCloudBuilder:
     def build_stages_with_resolved_depth(
         self,
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+        *,
+        timing_enabled: bool = True,
     ) -> tuple[dict[str, Tensor], Meta, ResolvedDepth]:
         """Return point stages and the exact same-pass depth used to deproject them."""
 
-        resolved = self._resolve_depth(frame)
-        _, meta, stages = self._build_from_frame(frame, mode="staged", resolved=resolved)
+        started = time.perf_counter() if timing_enabled else 0.0
+        resolved = self._resolve_depth(frame, timing_enabled=timing_enabled)
+        if timing_enabled and resolved.depth.is_cuda:
+            torch.cuda.current_stream(resolved.depth.device).synchronize()
+        depth_resolution_ms = (
+            (time.perf_counter() - started) * 1000.0 if timing_enabled else 0.0
+        )
+        _, meta, stages = self._build_from_frame(
+            frame,
+            mode="staged",
+            resolved=resolved,
+            timing_enabled=timing_enabled,
+        )
+        meta["timing_ms"]["depth_resolution"] = depth_resolution_ms
         return stages, meta, resolved
 
     def build_perception_stages(
@@ -161,11 +191,14 @@ class PointCloudBuilder:
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
         mode: str,
         resolved: ResolvedDepth | None = None,
+        timing_enabled: bool = True,
     ) -> tuple[Tensor, Meta, dict[str, Tensor]]:
-        resolved = resolved or self._resolve_depth(frame)
+        resolved = resolved or self._resolve_depth(
+            frame, timing_enabled=timing_enabled
+        )
         depth = resolved.depth
         intrinsics = resolved.intrinsics
-        stage_timer = _StageTiming(self.device)
+        stage_timer = _StageTiming(self.device, enabled=timing_enabled)
         points, valid_mask = deproject_depth(
             depth,
             intrinsics,
@@ -320,6 +353,8 @@ class PointCloudBuilder:
     def _resolve_depth(
         self,
         frame: RGBDFrame | StereoIRFrame | dict[str, Any],
+        *,
+        timing_enabled: bool = True,
     ) -> ResolvedDepth:
         if self.config.depth_source.mode == "frame":
             return ResolvedDepth(
@@ -332,6 +367,8 @@ class PointCloudBuilder:
         estimator = getattr(self, "depth_estimator", None)
         if estimator is None:
             raise RuntimeError("FFS depth estimator was not initialized")
+        if hasattr(estimator, "timing_enabled"):
+            estimator.timing_enabled = timing_enabled
         result = estimator.infer(frame)
         return ResolvedDepth(
             depth=result.depth_m,

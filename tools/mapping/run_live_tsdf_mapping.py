@@ -24,7 +24,9 @@ from pointcloud_builder.mapping.open3d import Open3dTsdfMap
 from pointcloud_builder.mapping.performance import evaluate_rss_plateau
 from pointcloud_builder.mapping.process import AsyncTsdfMapper, MapperProcessConfig
 from pointcloud_builder.mapping.recording import RigDepthRecordingWriter
+from pointcloud_builder.mapping.provenance import rig_backend_provenance
 from pointcloud_builder.mapping.validation import sha256_file
+from pointcloud_builder.reconstruction_timing import summarize_ms
 from pointcloud_builder.rig import build_live_rig, load_rig_config
 
 
@@ -33,6 +35,7 @@ def main() -> None:
     parser.add_argument("--rig-config", required=True)
     parser.add_argument("--tsdf-config", required=True)
     parser.add_argument("--matched-sets", type=int, default=300)
+    parser.add_argument("--build-warmup-sets", type=int, default=0)
     parser.add_argument("--initial-map")
     parser.add_argument("--map-output")
     parser.add_argument("--recording-output")
@@ -44,7 +47,11 @@ def main() -> None:
     parser.add_argument("--rerun-record")
     parser.add_argument("--viewer-point-budget", type=int, default=30_000)
     args = parser.parse_args()
-    if args.matched_sets <= 0 or args.viewer_point_budget <= 0:
+    if (
+        args.matched_sets <= 0
+        or args.build_warmup_sets < 0
+        or args.viewer_point_budget <= 0
+    ):
         raise ValueError("matched-set count and viewer point budget must be positive")
     report_path = _private_output(args.report)
     map_output = _private_output(args.map_output) if args.map_output else None
@@ -82,6 +89,8 @@ def main() -> None:
         initial_volume = str(initial_root / "volume.npz")
     if tsdf_config.dynamic.mode == "frozen_static" and initial_volume is None:
         raise ValueError("frozen_static mode requires --initial-map")
+    if tsdf_config.dynamic.mode == "frozen_static" and args.build_warmup_sets:
+        raise ValueError("frozen_static mode cannot have build warmup sets")
 
     pipeline = build_live_rig(rig_config, device="cuda")
     mapper = AsyncTsdfMapper(
@@ -92,6 +101,8 @@ def main() -> None:
     viewer_telemetry = None
     writer = None
     writer_published = False
+    map_published = False
+    publication_error = None
     mapper_started = False
     mapper_telemetry = None
     acquisition_started = False
@@ -101,6 +112,8 @@ def main() -> None:
     snapshot_processing_latencies: list[float] = []
     mapper_submit_accepted = 0
     mapper_submit_rejected = 0
+    warmup_submit_accepted = 0
+    warmup_submit_rejected = 0
     viewer_overheads: list[float] = []
     latest_snapshot = None
     last_revision = None
@@ -108,7 +121,13 @@ def main() -> None:
         viewer, viewer_error = _start_viewer(args, rerun_record)
         writer = (
             RigDepthRecordingWriter(
-                recording_output, depth_source=tsdf_config.integration.source
+                recording_output,
+                depth_source=tsdf_config.integration.source,
+                backend_provenance=(
+                    rig_backend_provenance(rig_config)
+                    if tsdf_config.integration.source == "ffs_stereo"
+                    else None
+                ),
             )
             if recording_output is not None
             else None
@@ -120,9 +139,23 @@ def main() -> None:
             # initial snapshot before capture so it cannot contend with the live
             # latency interval or remain in the multiprocessing feeder pipe.
             latest_snapshot = mapper.wait_for_snapshot()
-        started = time.perf_counter()
         pipeline.acquisition.start()
         acquisition_started = True
+        for _ in range(args.build_warmup_sets):
+            built = pipeline.capture_next()
+            if writer is not None:
+                writer.append(built.result.depth_frame_set)
+            if mapper.submit(built.result.depth_frame_set):
+                warmup_submit_accepted += 1
+            else:
+                warmup_submit_rejected += 1
+            snapshot = mapper.poll_snapshot()
+            if snapshot is not None:
+                latest_snapshot = snapshot
+        if args.build_warmup_sets:
+            mapper.flush()
+            mapper.reset_acceptance_window()
+        started = time.perf_counter()
         for index in range(args.matched_sets):
             built = pipeline.capture_next()
             snapshot_latencies.append(built.total_ms)
@@ -261,7 +294,9 @@ def main() -> None:
             writer.finalize(
                 report={
                     "schema_version": "pointcloud-builder.live-tsdf-source.v1",
-                    "matched_sets": args.matched_sets,
+                    "matched_sets": args.matched_sets + args.build_warmup_sets,
+                    "build_warmup_sets": args.build_warmup_sets,
+                    "acceptance_sets": args.matched_sets,
                     "depth_source": tsdf_config.integration.source,
                 }
             )
@@ -280,30 +315,39 @@ def main() -> None:
                 mapper.save_volume(volume_path)
                 mapper_telemetry = mapper.close()
                 mapper_started = False
-                _require_publishable_mapper(
-                    mapper_telemetry,
-                    mode=tsdf_config.dynamic.mode,
-                    memory_plateau=evaluate_rss_plateau(
-                        mapper_telemetry.child_rss_samples_mb
-                    ),
-                )
-                published = Open3dTsdfMap(
-                    tsdf_config, workspace_frame=rig_config.output_frame
-                )
                 try:
-                    published.load(volume_path)
-                    write_tsdf_map_artifact(
-                        map_output,
-                        mapper=published,
-                        source_recording_sha256=str(recording_sha),
-                        integration_metrics={
-                            "live_matched_sets": args.matched_sets,
-                            "duration_s": duration_s,
-                            "mapper_telemetry": mapper_telemetry.__dict__,
-                        },
+                    _require_publishable_mapper(
+                        mapper_telemetry,
+                        mode=tsdf_config.dynamic.mode,
+                        memory_plateau=evaluate_rss_plateau(
+                            mapper_telemetry.child_rss_samples_mb
+                        ),
                     )
-                finally:
-                    published.close()
+                except RuntimeError as error:
+                    publication_error = str(error)
+                else:
+                    published = Open3dTsdfMap(
+                        tsdf_config, workspace_frame=rig_config.output_frame
+                    )
+                    try:
+                        published.load(volume_path)
+                        write_tsdf_map_artifact(
+                            map_output,
+                            mapper=published,
+                            source_recording_sha256=str(recording_sha),
+                            integration_metrics={
+                                "live_matched_sets": (
+                                    args.matched_sets + args.build_warmup_sets
+                                ),
+                                "build_warmup_sets": args.build_warmup_sets,
+                                "acceptance_sets": args.matched_sets,
+                                "duration_s": duration_s,
+                                "mapper_telemetry": mapper_telemetry.__dict__,
+                            },
+                        )
+                        map_published = True
+                    finally:
+                        published.close()
         else:
             mapper_telemetry = mapper.close()
             mapper_started = False
@@ -320,6 +364,8 @@ def main() -> None:
             if frozen_static
             else mapper_submit_accepted == args.matched_sets
             and mapper_submit_rejected == 0
+            and warmup_submit_accepted == args.build_warmup_sets
+            and warmup_submit_rejected == 0
         )
         mapping_gates = {
             "acquisition_clean": acquisition_clean,
@@ -331,9 +377,13 @@ def main() -> None:
             <= tsdf_config.integration.queue_capacity,
             "mapper_submission_policy": submissions_complete,
         }
+        if map_output is not None:
+            mapping_gates["map_publication"] = map_published
         report = {
             "schema_version": "pointcloud-builder.live-tsdf-report.v1",
             "matched_sets": args.matched_sets,
+            "build_warmup_sets": args.build_warmup_sets,
+            "recording_matched_sets": args.matched_sets + args.build_warmup_sets,
             "duration_s": duration_s,
             "snapshot_fps": args.matched_sets / duration_s,
             "snapshot_latency_ms": _summary(snapshot_latencies),
@@ -343,8 +393,13 @@ def main() -> None:
             "memory_plateau": memory_plateau,
             "acquisition_clean": acquisition_clean,
             "mapper": mapper_telemetry.__dict__,
+            "tsdf_timing_ms": _timing_stage_summary(
+                mapper_telemetry.child_timing_samples_ms
+            ),
             "mapper_submit_accepted": mapper_submit_accepted,
             "mapper_submit_rejected": mapper_submit_rejected,
+            "warmup_submit_accepted": warmup_submit_accepted,
+            "warmup_submit_rejected": warmup_submit_rejected,
             "mapper_depth_submission_policy": (
                 "initial_frozen_map_only" if frozen_static else "per_frame_depth"
             ),
@@ -357,7 +412,8 @@ def main() -> None:
                 "telemetry": viewer_telemetry,
                 "producer_overhead_ms": _summary(viewer_overheads),
             },
-            "map_published": map_output is not None,
+            "map_published": map_published,
+            "publication_error": publication_error,
             "recording_published": writer_published,
             "gates": mapping_gates,
             "passed": all(mapping_gates.values()),
@@ -368,6 +424,8 @@ def main() -> None:
             encoding="utf-8",
         )
         print(json.dumps(report, indent=2, sort_keys=True))
+        if publication_error is not None:
+            raise RuntimeError(publication_error)
     except BaseException:
         if writer is not None and not writer_published:
             writer.abort()
@@ -422,6 +480,20 @@ def _summary(values: list[float]) -> dict[str, float] | None:
         "p95": float(np.quantile(values, 0.95)),
         "mean": statistics.mean(values),
         "maximum": max(values),
+    }
+
+
+def _timing_stage_summary(
+    samples: tuple[dict[str, float], ...],
+) -> dict[str, dict[str, float]]:
+    if not samples:
+        return {}
+    names = sorted(set().union(*(sample.keys() for sample in samples)))
+    return {
+        name: summarize_ms(
+            [float(sample[name]) for sample in samples if name in sample]
+        )
+        for name in names
     }
 
 

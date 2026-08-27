@@ -12,6 +12,11 @@ weight`, and dummy `UInt16[3] color`. With 50,000 blocks at resolution 16, attri
 alone are 2,457,600,000 bytes before hash-map/runtime overhead; size the deployment
 host accordingly.
 
+Production persistent mapping uses `integration.source: ffs_stereo`; the recommended
+backend is the validated TensorRT plugin. Missing FFS artifacts are fatal and never
+select native depth implicitly. Native TSDF is retained only as an optional diagnostic
+baseline and may report `DEGRADED_GEOMETRY` without changing production status.
+
 Native observations retain raw `uint16` and device meters-per-unit. Open3D divides by
 its `depth_scale`, so the backend passes the reciprocal. FFS observations are
 rectified float meters, invalid=0, scale=1, in the left-IR optical frame. Non-identity
@@ -23,13 +28,36 @@ Recording and offline reconstruction:
 ```bash
 python tools/mapping/record_live_rig_depth.py \
   --config .local/configs/live_rig.yaml --matched-sets 300 \
-  --depth-source native --output .local/recordings/native
+  --depth-source ffs_stereo --output .local/recordings/ffs_production
 
 python tools/mapping/build_tsdf_offline.py \
-  --recording .local/recordings/native \
+  --recording .local/recordings/ffs_production \
   --config configs/mapping/tsdf_example.yaml \
-  --output .local/maps/native_static
+  --output .local/maps/ffs_static
 ```
+
+An FFS recording is publishable only when its checksummed manifest binds every camera
+to `tensorrt_plugin`, precision, artifact ID, and pipeline-config SHA. Production
+acceptance verifies that the map source receipt matches that manifest. `--native-map`
+is optional and reports `NOT_RUN` when omitted; it never blocks the FFS verdict.
+
+Postprocessing occurs only after the volume extracts a raw workspace point cloud:
+
+```text
+VoxelBlockGrid -> raw_point_cloud -> crop_workspace_cloud -> sample_point_cloud
+               -> full extracted mesh (independent; not cropped)
+```
+
+The optional `postprocess.crop` and `postprocess.sampling` sections reuse the same
+`CropConfig`, `SamplingConfig`, workspace crop, and sampler as current snapshots.
+Without `postprocess`, both stages are disabled. Artifacts expose `point_cloud_raw.ply`,
+`point_cloud_cropped.ply`, and `point_cloud_sampled.ply`; empty and undersized clouds
+follow the existing repeat/zero padding rules.
+
+Timing is split into coordinate/block activation, volume integration, point extraction,
+mesh extraction, post-crop, and post-sampling. `raw_to_tsdf_update_ms` ends at the map
+update; `map_to_sampled_cloud_ms` starts from an existing map. Mesh time is excluded
+from all point-cloud totals.
 
 For live publication, first produce a passing snapshot-only report with the same rig
 config and matched-set count, then supply it to the asynchronous mapper:
@@ -44,6 +72,15 @@ python tools/mapping/run_live_tsdf_mapping.py \
   --map-output .local/maps/live_static \
   --report .local/reports/live_tsdf.json
 ```
+
+For a cold `build_static` acceptance, `--build-warmup-sets N` records and integrates
+an explicit prebuild interval, drains it through a lifecycle barrier, and then starts
+the unchanged N-set FPS/p95/RSS window. Both counts remain in the same checksummed
+source recording. This prevents normal empty-map block allocation from being mislabeled
+as a steady-state leak. Frame-stride eligibility is applied before the wall-clock
+update limiter, so the two controls cannot accidentally multiply and starve updates.
+When full mesh plus deterministic FPS extraction costs hundreds of milliseconds,
+keep `maximum_mesh_hz` below the update rate; the production example uses 0.2 Hz.
 
 Map publication fails closed if acquisition is unclean, the mapper child fails or
 integrates nothing, FPS loss exceeds 10%, or end-to-end snapshot p95 grows by more

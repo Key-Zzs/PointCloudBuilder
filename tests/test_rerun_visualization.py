@@ -108,6 +108,9 @@ def test_default_blueprint_includes_all_spatial_mapping_entities() -> None:
         "/clouds/**",
         "/map/tsdf_mesh",
         "/map/tsdf_points",
+        "/map/tsdf_points_raw",
+        "/map/tsdf_points_cropped",
+        "/map/tsdf_points_sampled",
         "/map/dynamic_overlay",
     ]
 
@@ -165,7 +168,11 @@ def test_map_mesh_packet_is_bounded_and_indices_remain_valid() -> None:
 
 def test_latest_only_replacement_carries_unconsumed_static_map() -> None:
     static = MapVisualization(
-        tsdf_points=np.zeros((3, 3), dtype=np.float32), static_revision=7
+        tsdf_points=np.zeros((3, 3), dtype=np.float32),
+        tsdf_points_raw=np.zeros((4, 3), dtype=np.float32),
+        tsdf_points_cropped=np.zeros((3, 3), dtype=np.float32),
+        tsdf_points_sampled=np.zeros((2, 3), dtype=np.float32),
+        static_revision=7,
     )
     dynamic = MapVisualization(
         dynamic_overlay=np.ones((2, 3), dtype=np.float32), static_revision=7
@@ -175,6 +182,9 @@ def test_latest_only_replacement_carries_unconsumed_static_map() -> None:
     carried = _carry_static_map(dropped, replacement)
     assert carried.map is not None
     assert carried.map.tsdf_points is not None
+    assert carried.map.tsdf_points_raw is not None
+    assert carried.map.tsdf_points_cropped is not None
+    assert carried.map.tsdf_points_sampled is not None
     assert carried.map.dynamic_overlay is not None
 
 

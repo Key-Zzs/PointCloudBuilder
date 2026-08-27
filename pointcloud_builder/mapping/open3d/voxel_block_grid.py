@@ -95,8 +95,13 @@ class Open3dTsdfMap:
         self._validate_frame_set(frame_set)
         started = time.perf_counter()
         integrated_cameras = []
+        block_activation_ms = 0.0
+        volume_integrate_ms = 0.0
         for observation in frame_set.observations:
-            if self._integrate_observation(observation):
+            valid, activation_ms, integrate_ms = self._integrate_observation(observation)
+            block_activation_ms += activation_ms
+            volume_integrate_ms += integrate_ms
+            if valid:
                 integrated_cameras.append(observation.camera_name)
         if not integrated_cameras:
             return TsdfIntegrationResult(
@@ -104,6 +109,9 @@ class Open3dTsdfMap:
                 integrated_cameras=(),
                 active_block_count=self._state.active_block_count,
                 integration_ms=(time.perf_counter() - started) * 1000.0,
+                block_activation_ms=block_activation_ms,
+                volume_integrate_ms=volume_integrate_ms,
+                map_update_total_ms=(time.perf_counter() - started) * 1000.0,
                 skipped=True,
                 reason="no_valid_depth",
             )
@@ -125,6 +133,9 @@ class Open3dTsdfMap:
             integrated_cameras=tuple(integrated_cameras),
             active_block_count=active,
             integration_ms=elapsed_ms,
+            block_activation_ms=block_activation_ms,
+            volume_integrate_ms=volume_integrate_ms,
+            map_update_total_ms=elapsed_ms,
         )
 
     def _validate_frame_set(self, frame_set: RigDepthFrameSet) -> None:
@@ -146,7 +157,9 @@ class Open3dTsdfMap:
                     "non-identity camera distortion requires explicitly rectified depth"
                 )
 
-    def _integrate_observation(self, observation: RigDepthObservation) -> bool:
+    def _integrate_observation(
+        self, observation: RigDepthObservation
+    ) -> tuple[bool, float, float]:
         o3d = self.o3d
         device = o3d.core.Device(self.config.backend.device)
         depth = observation.depth.copy()
@@ -158,7 +171,7 @@ class Open3dTsdfMap:
         )
         depth[~valid] = 0
         if not valid.any():
-            return False
+            return False, 0.0, 0.0
         depth_image = o3d.t.geometry.Image(o3d.core.Tensor(depth, device=device))
         intrinsic = o3d.core.Tensor(
             intrinsic_matrix(observation),
@@ -171,6 +184,8 @@ class Open3dTsdfMap:
             device=device,
         )
         scale = open3d_depth_scale(observation)
+        self._synchronize_device()
+        started = time.perf_counter()
         coords = self._volume.compute_unique_block_coordinates(
             depth_image,
             intrinsic,
@@ -179,6 +194,9 @@ class Open3dTsdfMap:
             depth_max=self.config.depth.maximum_m,
             trunc_voxel_multiplier=self.config.volume.trunc_voxel_multiplier,
         )
+        self._synchronize_device()
+        activation_ms = (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
         self._volume.integrate(
             coords,
             depth_image,
@@ -188,14 +206,24 @@ class Open3dTsdfMap:
             depth_max=self.config.depth.maximum_m,
             trunc_voxel_multiplier=self.config.volume.trunc_voxel_multiplier,
         )
-        return True
+        self._synchronize_device()
+        integrate_ms = (time.perf_counter() - started) * 1000.0
+        return True, activation_ms, integrate_ms
 
     def extract(self) -> MapExtraction:
         self._require_open()
         return extract_geometry(
             self._volume,
             weight_threshold=self.config.extraction.weight_threshold,
+            workspace_frame=self.workspace_frame,
+            postprocess=self.config.postprocess,
+            device=self.config.backend.device,
+            synchronize=self._synchronize_device,
         )
+
+    def _synchronize_device(self) -> None:
+        if self.config.backend.device.upper().startswith("CUDA"):
+            self.o3d.core.cuda.synchronize()
 
     def volume_statistics(self) -> dict[str, Any]:
         self._require_open()

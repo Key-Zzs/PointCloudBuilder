@@ -7,8 +7,9 @@ same resolved depth feeds both deprojection and `RigDepthFrameSet`; TSDF never c
 
 ```text
 CameraRig worker A/B -> host-time matcher -> RigFrameProcessor
-                                           |-> current workspace clouds -> fusion -> policy sample
-                                           |-> CPU RigDepthFrameSet -> latest-only TSDF process
+                                           |-> current clouds -> fusion -> crop -> sample
+                                           |-> CPU RigDepthFrameSet -> latest-only TSDF update
+                                                                          |-> extract -> crop -> sample
 current result -> bounded packet -> latest-only Rerun process
 ```
 
@@ -26,6 +27,15 @@ clouds already expressed in workspace coordinates.
 
 Real artifacts are never package inputs. Private camera YAML, provisions, captures,
 recordings, maps, screenshots, reports, and RRD files stay below ignored `.local/`.
+
+`ReconstructionTiming` is the shared JSON-safe contract for live and replay. Current
+snapshot stages and totals, persistent update stages, and TSDF extraction stages use
+separate stable namespaces and aggregate to p50/p95/mean/max. CUDA FFS uses CUDA events;
+CUDA point operations and Open3D stages synchronize at stage boundaries. Capture and
+frame matching appear only in the separate capture-inclusive section.
+
+The production map source is FFS stereo with TensorRT plugin. Native depth is an
+optional diagnostic baseline; no runtime fallback crosses that source boundary.
 
 See the existing [CameraRig integration](camera-rig-integration.md),
 [live acquisition](live-rig-acquisition.md), and [workspace fusion](workspace-fusion.md)

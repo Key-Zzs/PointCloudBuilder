@@ -23,7 +23,8 @@ from pointcloud_builder.mapping.validation import (
     write_checksums,
 )
 
-_SCHEMA = "pointcloud-builder.tsdf-map-artifact.v1"
+_SCHEMA_V1 = "pointcloud-builder.tsdf-map-artifact.v1"
+_SCHEMA = "pointcloud-builder.tsdf-map-artifact.v2"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -55,6 +56,15 @@ def write_tsdf_map_artifact(
         mapper.save(volume_path)
         extraction = mapper.extract()
         _write_point_ply(temporary / "point_cloud.ply", extraction.points)
+        _write_point_ply(
+            temporary / "point_cloud_raw.ply", extraction.raw_points
+        )
+        _write_point_ply(
+            temporary / "point_cloud_cropped.ply", extraction.cropped_points
+        )
+        _write_point_ply(
+            temporary / "point_cloud_sampled.ply", extraction.sampled_points
+        )
         _write_mesh_ply(
             temporary / "mesh.ply", extraction.vertices, extraction.triangles
         )
@@ -72,9 +82,19 @@ def write_tsdf_map_artifact(
             "volume": before,
             "extraction": {
                 "point_count": extraction.point_count,
+                "raw_point_count": extraction.raw_point_count,
+                "cropped_point_count": extraction.cropped_point_count,
+                "sampled_point_count": extraction.sampled_point_count,
                 "vertex_count": extraction.vertex_count,
                 "triangle_count": extraction.triangle_count,
                 "extraction_ms": extraction.extraction_ms,
+                "extract_point_cloud_ms": extraction.extract_point_cloud_ms,
+                "extract_mesh_ms": extraction.extract_mesh_ms,
+                "post_crop_ms": extraction.post_crop_ms,
+                "post_sampling_ms": extraction.post_sampling_ms,
+                "extract_raw_world_cloud_ms": extraction.extract_raw_world_cloud_ms,
+                "extract_cropped_world_cloud_ms": extraction.extract_cropped_world_cloud_ms,
+                "extract_sampled_world_cloud_ms": extraction.extract_sampled_world_cloud_ms,
             },
             "integration": integration_metrics,
             "save_load_parity": parity,
@@ -96,6 +116,9 @@ def write_tsdf_map_artifact(
                 "config": "config.resolved.yaml",
                 "volume": "volume.npz",
                 "point_cloud": "point_cloud.ply",
+                "point_cloud_raw": "point_cloud_raw.ply",
+                "point_cloud_cropped": "point_cloud_cropped.ply",
+                "point_cloud_sampled": "point_cloud_sampled.ply",
                 "mesh": "mesh.ply",
                 "metrics": "metrics.json",
                 "source_recording": "source_recording.json",
@@ -122,7 +145,8 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
     if not (artifact / "screenshots").is_dir():
         raise ValueError("TSDF map artifact is missing screenshots directory")
     manifest = load_json(artifact / "manifest.json")
-    if manifest.get("schema_version") != _SCHEMA:
+    schema = manifest.get("schema_version")
+    if schema not in {_SCHEMA_V1, _SCHEMA}:
         raise ValueError("unsupported TSDF map artifact schema")
     if (
         not isinstance(manifest.get("workspace_frame"), str)
@@ -144,6 +168,14 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
         "metrics": "metrics.json",
         "source_recording": "source_recording.json",
     }
+    if schema == _SCHEMA:
+        expected_files.update(
+            {
+                "point_cloud_raw": "point_cloud_raw.ply",
+                "point_cloud_cropped": "point_cloud_cropped.ply",
+                "point_cloud_sampled": "point_cloud_sampled.ply",
+            }
+        )
     if manifest.get("files") != expected_files:
         raise ValueError("TSDF map manifest exact file contract mismatch")
     if not set(expected_files.values()) <= set(checksums):
@@ -192,6 +224,9 @@ def write_extracted_geometry(output: str | Path, extraction: MapExtraction) -> P
     )
     try:
         _write_point_ply(temporary / "point_cloud.ply", extraction.points)
+        _write_point_ply(temporary / "raw.ply", extraction.raw_points)
+        _write_point_ply(temporary / "cropped.ply", extraction.cropped_points)
+        _write_point_ply(temporary / "sampled.ply", extraction.sampled_points)
         _write_mesh_ply(
             temporary / "mesh.ply", extraction.vertices, extraction.triangles
         )
@@ -200,9 +235,16 @@ def write_extracted_geometry(output: str | Path, extraction: MapExtraction) -> P
             {
                 "schema_version": "pointcloud-builder.tsdf-extraction.v1",
                 "point_count": extraction.point_count,
+                "raw_point_count": extraction.raw_point_count,
+                "cropped_point_count": extraction.cropped_point_count,
+                "sampled_point_count": extraction.sampled_point_count,
                 "vertex_count": extraction.vertex_count,
                 "triangle_count": extraction.triangle_count,
                 "extraction_ms": extraction.extraction_ms,
+                "extract_point_cloud_ms": extraction.extract_point_cloud_ms,
+                "extract_mesh_ms": extraction.extract_mesh_ms,
+                "post_crop_ms": extraction.post_crop_ms,
+                "post_sampling_ms": extraction.post_sampling_ms,
             },
         )
         members = sorted(
@@ -235,7 +277,19 @@ def _save_load_parity(
     finally:
         loaded.close()
     distance = _sampled_symmetric_distance(
-        extraction_before.points, extraction_after.points, maximum_points=2000
+        extraction_before.raw_points,
+        extraction_after.raw_points,
+        maximum_points=2000,
+    )
+    cropped_distance = _sampled_symmetric_distance(
+        extraction_before.cropped_points,
+        extraction_after.cropped_points,
+        maximum_points=2000,
+    )
+    sampled_distance = _sampled_symmetric_distance(
+        extraction_before.sampled_points,
+        extraction_after.sampled_points,
+        maximum_points=2000,
     )
     shapes_equal = all(
         before["attributes"][name]["shape"] == after["attributes"][name]["shape"]
@@ -247,6 +301,10 @@ def _save_load_parity(
     )
     counts_equal = (
         extraction_before.point_count == extraction_after.point_count
+        and extraction_before.cropped_point_count
+        == extraction_after.cropped_point_count
+        and extraction_before.sampled_point_count
+        == extraction_after.sampled_point_count
         and extraction_before.vertex_count == extraction_after.vertex_count
         and extraction_before.triangle_count == extraction_after.triangle_count
     )
@@ -256,6 +314,8 @@ def _save_load_parity(
         and statistics_equal
         and counts_equal
         and distance["maximum_m"] <= 1e-6
+        and cropped_distance["maximum_m"] <= 1e-6
+        and sampled_distance["maximum_m"] <= 1e-6
     )
     return {
         "active_blocks_equal": before["active_block_count"]
@@ -264,6 +324,8 @@ def _save_load_parity(
         "tsdf_weight_statistics_equal": statistics_equal,
         "geometry_counts_equal": counts_equal,
         "sampled_symmetric_distance_m": distance,
+        "cropped_symmetric_distance_m": cropped_distance,
+        "postprocessed_symmetric_distance_m": sampled_distance,
         "validation_ms": (time.perf_counter() - started) * 1000.0,
         "passed": passed,
     }

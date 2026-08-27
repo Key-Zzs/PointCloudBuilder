@@ -105,6 +105,12 @@ matched cameras -> 逐相机点云 -> snapshot voxel fusion -> 全局采样
 matched cameras -> 逐相机 depth + K + T_workspace_from_camera -> 异步 TSDF map
 ```
 
+生产 persistent-map 路径固定为 `ffs_stereo` 加 TensorRT plugin backend。engine、plugin
+或 manifest 不可用时 fail-closed，绝不自动回退到 native depth。Native TSDF 只是可选
+诊断 baseline；native 几何退化不会使 FFS 生产验收失败。camera A/B 当前继续使用已经验证
+的 legacy ChArUco target。500 x 700 mm 大板只是一项未来部署 preset，状态为
+`DEFERRED`；当前 M9 closure 不要求其实机证据，也不要求重新 provision。
+
 第一条是低延迟策略/动态观测；第二条是静态 workspace 历史。生产默认组合为冻结的
 TSDF 加当前 fused cloud。`guarded_continuous` 必须显式启用，并在新表面达到配置的
 连续固定帧数前屏蔽瞬时像素。
@@ -124,6 +130,32 @@ python tools/mapping/build_tsdf_offline.py \
   --config configs/mapping/tsdf_example.yaml \
   --output .local/maps/static_tsdf
 ```
+
+FFS recording manifest 会校验并记录逐相机 backend、precision、artifact ID 和
+pipeline-config SHA。生产验收沿 map 的 source-recording receipt 核验该 lineage，且必须
+为 `tensorrt_plugin`；native map 输入是可选项。
+
+persistent map 输出完整 mesh，以及 raw、workspace-cropped、sampled 三路点云。
+`configs/mapping/tsdf_example.yaml` 展示可选 `postprocess` 合同；旧配置省略该段时，
+两个点云后处理阶段都关闭。mesh 始终是完整 TSDF mesh，不伪装成已裁剪 mesh。
+
+使用同一批冻结 replay frames 比较仅重建、重建加 crop、重建加 crop 与 sampling：
+
+```bash
+python tools/mapping/benchmark_world_reconstruction.py \
+  --rig-config .local/configs/replay_rig.yaml \
+  --start-frame 0 --frames 100 --warmup 10 --device cuda \
+  --report .local/reports/world_reconstruction_benchmark.json
+```
+
+稳定 timing schema 区分 processing-only 与 capture-inclusive。关键字段包括
+`raw_to_world_fused_ms`、`workspace_crop_ms`、`global_sampling_ms`、
+`raw_to_world_sampled_ms`、`raw_to_tsdf_update_ms`、`extract_point_cloud_ms`、
+`combined_per_camera_sequential_ms`、
+`extract_mesh_ms`、`post_crop_ms` 和 `post_sampling_ms`；报告聚合 p50、p95、mean、max。
+TSDF update 与 map extraction 始终作为不同速率、不同性能指标报告。
+冷启动 live-map 验收可用 `--build-warmup-sets` 先完成显式预建，再开启固定的性能/RSS
+窗口；warmup 与正式测量帧都会写进同一个 recording。
 
 在现有 snapshot 验收命令上启用独立 Rerun：
 

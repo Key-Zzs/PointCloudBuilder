@@ -19,6 +19,7 @@ from pointcloud_builder.mapping.recording import (
     validate_rig_depth_recording,
 )
 from pointcloud_builder.mapping.validation import sha256_file
+from pointcloud_builder.reconstruction_timing import summarize_ms
 
 
 def main() -> None:
@@ -35,16 +36,38 @@ def main() -> None:
         raise ValueError("TSDF config source differs from rig-depth recording")
     mapper = Open3dTsdfMap(config, workspace_frame=manifest["workspace_frame"])
     integrations = []
+    raw_to_depth_frame_set_ms = []
     started = time.perf_counter()
     try:
         for frame_set in iter_rig_depth_recording(recording):
             result = mapper.integrate(frame_set)
             if not result.skipped:
                 integrations.append(result)
+                raw_to_depth_frame_set_ms.append(
+                    frame_set.raw_to_depth_frame_set_ms
+                )
         if not integrations:
             raise RuntimeError("TSDF frame stride selected no recording frames")
         mapper.freeze()
         latencies = [item.integration_ms for item in integrations]
+        timing_stages = {
+            "block_activation_plus_coordinate_generation_ms": [
+                item.block_activation_ms for item in integrations
+            ],
+            "volume_integrate_ms": [
+                item.volume_integrate_ms for item in integrations
+            ],
+            "map_update_total_ms": [
+                item.map_update_total_ms for item in integrations
+            ],
+        }
+        if all(value > 0.0 for value in raw_to_depth_frame_set_ms):
+            timing_stages["raw_to_tsdf_update_ms"] = [
+                item.map_update_total_ms + raw_to_depth_ms
+                for item, raw_to_depth_ms in zip(
+                    integrations, raw_to_depth_frame_set_ms, strict=True
+                )
+            ]
         artifact = write_tsdf_map_artifact(
             output,
             mapper=mapper,
@@ -59,6 +82,10 @@ def main() -> None:
                     "p50": statistics.median(latencies),
                     "p95": float(np.quantile(latencies, 0.95)),
                     "mean": statistics.mean(latencies),
+                },
+                "timing_ms": {
+                    name: summarize_ms(values)
+                    for name, values in timing_stages.items()
                 },
                 "estimated_attribute_bytes": config.estimated_attribute_bytes,
             },

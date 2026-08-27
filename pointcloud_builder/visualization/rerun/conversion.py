@@ -128,10 +128,7 @@ def map_visualization_from_snapshot(
     points = None
     mesh = None
     if include_static:
-        points = extraction.points
-        if len(points) > point_budget:
-            indices = np.linspace(0, len(points) - 1, point_budget).round().astype(int)
-            points = points[indices]
+        points = _bounded_numpy_cloud(extraction.points, point_budget)
         mesh = _bounded_mesh(
             extraction.vertices,
             extraction.triangles,
@@ -141,6 +138,21 @@ def map_visualization_from_snapshot(
     dynamic_mask = snapshot.dynamic_masks[0][1] if snapshot.dynamic_masks else None
     return MapVisualization(
         tsdf_points=None if points is None else np.ascontiguousarray(points),
+        tsdf_points_raw=(
+            None
+            if not include_static
+            else _bounded_numpy_cloud(extraction.raw_points, point_budget)
+        ),
+        tsdf_points_cropped=(
+            None
+            if not include_static
+            else _bounded_numpy_cloud(extraction.cropped_points, point_budget)
+        ),
+        tsdf_points_sampled=(
+            None
+            if not include_static
+            else _bounded_numpy_cloud(extraction.sampled_points, point_budget)
+        ),
         tsdf_mesh=mesh,
         dynamic_overlay=bounded_cloud(dynamic_overlay, point_budget),
         raycast_depth=raycast_depth,
@@ -149,6 +161,14 @@ def map_visualization_from_snapshot(
         frozen=snapshot.map_state.lifecycle == "frozen",
         reset=reset,
     )
+
+
+def _bounded_numpy_cloud(points: np.ndarray, point_budget: int) -> np.ndarray:
+    selected = points
+    if len(selected) > point_budget:
+        indices = np.linspace(0, len(selected) - 1, point_budget).round().astype(int)
+        selected = selected[indices]
+    return np.ascontiguousarray(selected)
 
 
 def _bounded_mesh(

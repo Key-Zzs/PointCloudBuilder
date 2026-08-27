@@ -14,6 +14,7 @@ import numpy as np
 
 from pointcloud_builder.camera_model import CameraIntrinsics
 from pointcloud_builder.mapping.types import RigDepthFrameSet, RigDepthObservation
+from pointcloud_builder.mapping.provenance import validate_production_ffs_provenance
 from pointcloud_builder.mapping.validation import (
     artifact_member,
     load_json,
@@ -21,13 +22,20 @@ from pointcloud_builder.mapping.validation import (
     write_checksums,
 )
 
-_SCHEMA = "pointcloud-builder.rig-depth-recording.v1"
+_SCHEMA_V1 = "pointcloud-builder.rig-depth-recording.v1"
+_SCHEMA = "pointcloud-builder.rig-depth-recording.v2"
 
 
 class RigDepthRecordingWriter:
     """Write into a sibling temporary directory and publish only after validation."""
 
-    def __init__(self, output: str | Path, *, depth_source: str) -> None:
+    def __init__(
+        self,
+        output: str | Path,
+        *,
+        depth_source: str,
+        backend_provenance: dict[str, dict[str, object]] | None = None,
+    ) -> None:
         if depth_source not in {"native", "ffs_stereo"}:
             raise ValueError("unsupported rig-depth recording source")
         self.output = Path(output)
@@ -41,6 +49,11 @@ class RigDepthRecordingWriter:
         (self._temporary / "frames").mkdir()
         (self._temporary / "reports").mkdir()
         self.depth_source = depth_source
+        self.backend_provenance = dict(backend_provenance or {})
+        if depth_source == "ffs_stereo" and not self.backend_provenance:
+            raise ValueError("FFS recording requires backend provenance")
+        if depth_source == "native" and self.backend_provenance:
+            raise ValueError("native recording must not claim FFS backend provenance")
         self._sets: list[dict[str, Any]] = []
         self._calibrations: dict[str, dict[str, Any]] = {}
         self._closed = False
@@ -88,6 +101,7 @@ class RigDepthRecordingWriter:
                 "matched_set_index": frame_set.matched_set_index,
                 "host_timestamp_ns": frame_set.host_timestamp_ns,
                 "maximum_skew_ms": frame_set.maximum_skew_ms,
+                "raw_to_depth_frame_set_ms": frame_set.raw_to_depth_frame_set_ms,
                 "cameras": cameras,
             }
         )
@@ -125,6 +139,11 @@ class RigDepthRecordingWriter:
         if indices != sorted(indices) or len(set(indices)) != len(indices):
             raise ValueError("recording matched-set indices must be unique and ordered")
         camera_names = sorted(self._calibrations)
+        backend_provenance = None
+        if self.depth_source == "ffs_stereo":
+            backend_provenance = validate_production_ffs_provenance(
+                self.backend_provenance, camera_names
+            )
         manifest = {
             "schema_version": _SCHEMA,
             "depth_source": self.depth_source,
@@ -135,6 +154,7 @@ class RigDepthRecordingWriter:
             "matched_set_count": len(self._sets),
             "matched_sets": self._sets,
             "calibrations": [f"calibration/{name}.json" for name in camera_names],
+            "backend_provenance": backend_provenance,
         }
         _write_json(self._temporary / "manifest.json", manifest)
         _write_json(self._temporary / "reports" / "recording.json", report or {})
@@ -166,7 +186,8 @@ def validate_rig_depth_recording(root: str | Path) -> dict[str, Any]:
     artifact = Path(root)
     checksums = validate_checksums(artifact)
     manifest = load_json(artifact / "manifest.json")
-    if manifest.get("schema_version") != _SCHEMA:
+    schema = manifest.get("schema_version")
+    if schema not in {_SCHEMA_V1, _SCHEMA}:
         raise ValueError("unsupported rig-depth recording schema")
     camera_names = manifest.get("camera_names")
     matched_sets = manifest.get("matched_sets")
@@ -189,6 +210,13 @@ def validate_rig_depth_recording(root: str | Path) -> dict[str, Any]:
     expected_calibrations = [f"calibration/{name}.json" for name in camera_names]
     if manifest.get("calibrations") != expected_calibrations:
         raise ValueError("recording calibration file set mismatch")
+    if schema == _SCHEMA:
+        if manifest["depth_source"] == "ffs_stereo":
+            validate_production_ffs_provenance(
+                manifest.get("backend_provenance"), camera_names
+            )
+        elif manifest.get("backend_provenance") is not None:
+            raise ValueError("native recording cannot contain FFS backend provenance")
     indices = [
         item.get("matched_set_index") for item in matched_sets if isinstance(item, dict)
     ]
@@ -306,6 +334,9 @@ def iter_rig_depth_recording(
             matched_set_index=item["matched_set_index"],
             host_timestamp_ns=item["host_timestamp_ns"],
             maximum_skew_ms=item["maximum_skew_ms"],
+            raw_to_depth_frame_set_ms=float(
+                item.get("raw_to_depth_frame_set_ms", 0.0)
+            ),
             observations=tuple(observations),
         )
 
