@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from pointcloud_builder.mapping.artifact import (
+    _volume_statistics_equal,
     load_tsdf_map_artifact,
     validate_tsdf_map_artifact,
     write_tsdf_map_artifact,
@@ -21,6 +22,25 @@ from pointcloud_builder.rig import (
 )
 
 pytest.importorskip("open3d")
+
+
+def test_volume_statistics_allow_only_float32_reduction_roundoff() -> None:
+    base = {
+        "shape": [100, 8, 8, 8, 1],
+        "dtype": "Float32",
+        "minimum": -1.0,
+        "maximum": 1.0,
+        "mean": 0.345662921667099,
+        "nonzero_count": 40000,
+    }
+    reordered = {**base, "mean": base["mean"] + 2.0e-7}
+    changed_values = {**base, "mean": base["mean"] + 2.0e-5}
+
+    assert _volume_statistics_equal(base, reordered)
+    assert not _volume_statistics_equal(base, changed_values)
+    assert not _volume_statistics_equal(
+        base, {**reordered, "nonzero_count": base["nonzero_count"] - 1}
+    )
 
 
 def _rig():

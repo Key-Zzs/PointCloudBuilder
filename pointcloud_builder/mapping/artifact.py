@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -56,9 +56,7 @@ def write_tsdf_map_artifact(
         mapper.save(volume_path)
         extraction = mapper.extract()
         _write_point_ply(temporary / "point_cloud.ply", extraction.points)
-        _write_point_ply(
-            temporary / "point_cloud_raw.ply", extraction.raw_points
-        )
+        _write_point_ply(temporary / "point_cloud_raw.ply", extraction.raw_points)
         _write_point_ply(
             temporary / "point_cloud_cropped.ply", extraction.cropped_points
         )
@@ -192,7 +190,14 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
         raise ValueError("TSDF map metrics/manifest identity mismatch")
     parity = metrics.get("save_load_parity")
     if not isinstance(parity, dict) or not parity.get("passed"):
-        raise ValueError("TSDF map save/load parity did not pass")
+        gates = parity.get("gates") if isinstance(parity, dict) else None
+        failed = (
+            sorted(name for name, passed in gates.items() if passed is not True)
+            if isinstance(gates, dict)
+            else []
+        )
+        detail = "" if not failed else ": " + ", ".join(failed)
+        raise ValueError("TSDF map save/load parity did not pass" + detail)
     source = load_json(artifact / "source_recording.json")
     digest = source.get("recording_manifest_sha256")
     if (
@@ -296,7 +301,7 @@ def _save_load_parity(
         for name in ("tsdf", "weight", "color")
     )
     statistics_equal = all(
-        before["attributes"][name] == after["attributes"][name]
+        _volume_statistics_equal(before["attributes"][name], after["attributes"][name])
         for name in ("tsdf", "weight")
     )
     counts_equal = (
@@ -308,27 +313,52 @@ def _save_load_parity(
         and extraction_before.vertex_count == extraction_after.vertex_count
         and extraction_before.triangle_count == extraction_after.triangle_count
     )
-    passed = bool(
-        before["active_block_count"] == after["active_block_count"]
-        and shapes_equal
-        and statistics_equal
-        and counts_equal
-        and distance["maximum_m"] <= 1e-6
-        and cropped_distance["maximum_m"] <= 1e-6
-        and sampled_distance["maximum_m"] <= 1e-6
-    )
-    return {
+    gates = {
         "active_blocks_equal": before["active_block_count"]
         == after["active_block_count"],
+        "attribute_shapes_equal": shapes_equal,
+        "tsdf_weight_statistics_equal": statistics_equal,
+        "geometry_counts_equal": counts_equal,
+        "raw_geometry_max_distance_le_1um": distance["maximum_m"] <= 1e-6,
+        "cropped_geometry_max_distance_le_1um": (cropped_distance["maximum_m"] <= 1e-6),
+        "postprocessed_geometry_max_distance_le_1um": (
+            sampled_distance["maximum_m"] <= 1e-6
+        ),
+    }
+    passed = bool(all(gates.values()))
+    return {
+        "active_blocks_equal": gates["active_blocks_equal"],
         "attribute_shapes_equal": shapes_equal,
         "tsdf_weight_statistics_equal": statistics_equal,
         "geometry_counts_equal": counts_equal,
         "sampled_symmetric_distance_m": distance,
         "cropped_symmetric_distance_m": cropped_distance,
         "postprocessed_symmetric_distance_m": sampled_distance,
+        "gates": gates,
         "validation_ms": (time.perf_counter() - started) * 1000.0,
         "passed": passed,
     }
+
+
+def _volume_statistics_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Compare order-invariant summaries at the precision of their source values."""
+
+    exact_fields = ("shape", "dtype", "minimum", "maximum", "nonzero_count")
+    if any(left.get(name) != right.get(name) for name in exact_fields):
+        return False
+    try:
+        left_mean = float(left["mean"])
+        right_mean = float(right["mean"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    # TSDF means originate from float32 values. Hash-map save/load may reorder
+    # blocks, changing only float32 reduction roundoff while all stored values,
+    # extrema, occupancy, and extracted geometry remain identical.
+    epsilon = float(np.finfo(np.float32).eps)
+    return bool(
+        np.isfinite((left_mean, right_mean)).all()
+        and np.isclose(left_mean, right_mean, rtol=8.0 * epsilon, atol=epsilon)
+    )
 
 
 def _sampled_symmetric_distance(
