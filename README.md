@@ -418,3 +418,21 @@ The 500x700 mm board is `DEFERRED` and is not a clean-room gate. Do not infer it
 dictionary or `legacy_pattern` from dimensions or successful corner detection. Future
 deployment must use authoritative generator metadata/creator confirmation, or print a
 new board with a known specification and reprovision both cameras.
+
+## 31. Projection models
+
+PCB now preserves CameraRig frame, distortion model, coefficients, and explicit
+raw/rectified pixel geometry. Shared projection/deprojection APIs drive the builder,
+FFS RGB mapping, calibration, and diagnostics; unsupported model directions fail
+closed. Quantitative librealsense parity, the FFS no-double-rectification contract,
+and the distinction between model parity and physical intrinsic accuracy are in
+[`docs/projection-models.md`](docs/projection-models.md).
+
+## 32. Multi-pose N-camera calibration
+
+CameraRig remains one-physical-camera only. PCB owns gauge-fixed, robust multi-pose
+N-camera bundle adjustment, connected partial-visibility graphs, pose-diversity gates,
+solve/holdout validation, and explicit candidate-only export under
+`pointcloud_builder.rig_calibration`. The operator workflow, mathematics, artifact
+contracts, synthetic acceptance, and deferred real third-camera status are documented
+in [`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md).

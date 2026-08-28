@@ -403,3 +403,19 @@ report、map、截图与 RRD 必须位于已忽略的 `.local/`。Public example
 500x700 mm board 状态为 `DEFERRED`，不是 clean-room gate。禁止根据尺寸或成功 corner
 detection 推断 ArUco dictionary/`legacy_pattern`。未来部署必须获得权威 generator metadata/
 制作者确认，或者打印已知 spec 的新板并重新 provision 两台相机。
+
+## 31. Projection model
+
+PCB 现在完整保留 CameraRig 的 frame、distortion model、coefficients 与显式
+raw/rectified pixel geometry。Builder、FFS RGB mapping、calibration 与 diagnostic 共用
+projection/deprojection API；不支持的 model direction 会 fail closed。librealsense 定量
+parity、FFS 无 double-rectification 契约，以及 model parity 与实体 intrinsic accuracy 的
+区别见 [`docs/projection-models.md`](docs/projection-models.md)。
+
+## 32. Multi-pose N-camera calibration
+
+CameraRig 仍严格只表示一台实体相机。PCB 在 `pointcloud_builder.rig_calibration` 中拥有
+gauge-fixed robust multi-pose N-camera bundle adjustment、connected partial-visibility
+graph、pose-diversity gate、solve/holdout validation 与显式 candidate-only export。Operator
+流程、数学模型、artifact contract、synthetic acceptance 及 real 第三相机 deferred 状态见
+[`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md)。
