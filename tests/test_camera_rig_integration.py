@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from pathlib import Path
 import subprocess
 import sys
+from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
-
 from camera_rig.api import (
     CameraFrame,
     CameraIntrinsics,
@@ -16,6 +15,7 @@ from camera_rig.api import (
     StreamFrame,
     load_camera_bundle,
 )
+
 from pointcloud_builder.integrations.camera_rig import (
     CameraRigFrameAdapter,
     TransformResolutionError,
@@ -23,6 +23,7 @@ from pointcloud_builder.integrations.camera_rig import (
     create_native_builder,
     resolve_transform,
 )
+from pointcloud_builder.projection_parity import _audit_propagation
 
 ROOT = Path(__file__).parents[1]
 BUNDLE_FIXTURE = (
@@ -155,6 +156,12 @@ def test_transform_resolver_rejects_duplicate_conflict_and_missing_path() -> Non
 
 def test_calibration_adapter_preserves_nonidentity_workspace_directions() -> None:
     calibration = calibration_from_camera_bundle(_bundle())
+    source_intrinsics = _bundle().intrinsics["color"]
+    converted_intrinsics = calibration.intrinsics["color"]
+    assert converted_intrinsics.frame == source_intrinsics.frame
+    assert converted_intrinsics.distortion_model == source_intrinsics.distortion_model
+    assert converted_intrinsics.distortion_coeffs == source_intrinsics.distortion_coeffs
+    assert converted_intrinsics.pixel_geometry == "raw"
     reference = calibration.intrinsic_frames["ir_left"]
     depth = calibration.intrinsic_frames["depth"]
     workspace_from_reference = calibration.transform(reference, "workspace")
@@ -168,6 +175,19 @@ def test_calibration_adapter_preserves_nonidentity_workspace_directions() -> Non
         [0.5, -0.26, 2.0, 1.0],
     )
     assert calibration.transform("workspace", depth).target_frame == depth
+
+
+def test_projection_propagation_gate_detects_adapter_mutation() -> None:
+    bundle = _bundle()
+    calibration = calibration_from_camera_bundle(bundle)
+    intrinsics = dict(calibration.intrinsics)
+    intrinsics["color"] = replace(
+        intrinsics["color"], fx=intrinsics["color"].fx + 1.0
+    )
+    mutated = replace(calibration, intrinsics=intrinsics)
+    report = _audit_propagation(bundle, mutated)
+    assert report["status"] == "FAIL"
+    assert report["per_stream"]["color"]["checks"]["fx"] is False
 
 
 def test_native_factory_uses_bundle_scale_intrinsics_and_frames() -> None:
@@ -223,9 +243,9 @@ def test_integration_imports_only_camera_rig_stable_api() -> None:
                 isinstance(node, ast.ImportFrom)
                 and node.module
                 and node.module.startswith("camera_rig")
+                and node.module != "camera_rig.api"
             ):
-                if node.module != "camera_rig.api":
-                    violations.append(f"{path.name}:{node.lineno}:{node.module}")
+                violations.append(f"{path.name}:{node.lineno}:{node.module}")
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if (

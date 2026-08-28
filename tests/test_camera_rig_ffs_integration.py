@@ -2,22 +2,24 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
 import torch
-
 from camera_rig.api import (
     CameraFrame,
     CameraIntrinsics,
     StreamFrame,
     load_camera_bundle,
 )
+
 from pointcloud_builder.config import CropConfig, FFSConfig, SamplingConfig
 from pointcloud_builder.integrations.camera_rig import (
     create_ffs_builder,
     ffs_calibration_from_camera_bundle,
 )
+from pointcloud_builder.projection_parity import _audit_ffs_contract
 from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 
 ROOT = Path(__file__).parents[1]
@@ -28,8 +30,8 @@ BUNDLE_FIXTURE = (
 
 class ConstantDisparityBackend:
     name = "synthetic"
-    provenance = {"synthetic": True}
-    last_timing_ms: dict[str, float] = {}
+    provenance: ClassVar[dict[str, bool]] = {"synthetic": True}
+    last_timing_ms: ClassVar[dict[str, float]] = {}
 
     def __init__(self, disparity: float) -> None:
         self.disparity = disparity
@@ -98,6 +100,9 @@ def test_bundle_ffs_calibration_uses_frames_intrinsics_distortion_and_norm_basel
     assert calibration.right_intrinsics.fx == pytest.approx(3.0)
     assert calibration.left_to_right.translation == pytest.approx((-0.05, 0.0, 0.0))
     assert calibration.rectification_identity is True
+    assert calibration.left_intrinsics.pixel_geometry == "rectified"
+    assert calibration.left_intrinsics.distortion_model == "none"
+    assert calibration.left_intrinsics.distortion_coeffs == ()
 
 
 def test_bundle_ffs_calibration_fails_strict_gate_without_fabrication() -> None:
@@ -117,6 +122,21 @@ def test_bundle_ffs_calibration_fails_strict_gate_without_fabrication() -> None:
     )
     with pytest.raises(ValueError, match="requires rectified IR input"):
         ffs_calibration_from_camera_bundle(replace(bundle, intrinsics=intrinsics))
+
+
+def test_ffs_parity_gate_binds_derived_model_to_camera_rig_source() -> None:
+    bundle = load_camera_bundle(BUNDLE_FIXTURE)
+    calibration = ffs_calibration_from_camera_bundle(bundle)
+    mutated = replace(
+        calibration,
+        left_intrinsics=replace(
+            calibration.left_intrinsics,
+            fx=calibration.left_intrinsics.fx + 50.0,
+        ),
+    )
+    report = _audit_ffs_contract(mutated, bundle)
+    assert report["status"] == "FAIL"
+    assert report["source_to_rectified_left_match"] is False
 
 
 def test_ffs_factory_injects_bundle_calibration_and_emits_ir_left_workspace_cloud() -> (

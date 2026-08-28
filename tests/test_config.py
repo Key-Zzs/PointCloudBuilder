@@ -17,3 +17,5 @@ def test_yaml_config_parses() -> None:
     assert config.sampling.mode == "voxel_random"
     assert config.sampling.num_points == 1024
     assert config.sampling.pad_mode == "repeat"
+    assert config.camera.color_intrinsics.pixel_geometry == "rectified"
+    assert config.camera.color_intrinsics.distortion_model == "none"
