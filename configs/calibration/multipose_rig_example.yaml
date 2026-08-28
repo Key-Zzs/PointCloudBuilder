@@ -1,0 +1,15 @@
+anchor_pose_id: pose_0
+robust_loss: huber
+loss_scale_px: 1.0
+max_nfev: 1500
+min_corners_per_observation: 6
+min_observations_per_camera: 3
+min_pose_count: 6
+min_image_coverage_fraction: 0.08
+min_translation_span_m: 0.08
+min_depth_span_m: 0.08
+min_normal_span_deg: 12.0
+min_yaw_span_deg: 6.0
+min_pitch_span_deg: 6.0
+final_reprojection_p95_px: 1.0
+max_condition_number: 100000000.0

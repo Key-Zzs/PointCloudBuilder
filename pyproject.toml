@@ -53,6 +53,11 @@ reconstruction = [
   "psutil>=6,<8",
   "matplotlib>=3.9,<4",
 ]
+calibration = [
+  "scipy>=1.10,<2",
+  "opencv-contrib-python-headless==4.14.0.94",
+  "pyrealsense2==2.58.3.10794",
+]
 
 [tool.setuptools.packages.find]
 include = ["pointcloud_builder*"]
