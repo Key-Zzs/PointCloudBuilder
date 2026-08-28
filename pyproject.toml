@@ -39,6 +39,7 @@ tsdf = [
   "open3d==0.19.0",
 ]
 reconstruction = [
+  "scipy>=1.10,<2",
   "opencv-contrib-python-headless==4.14.0.94",
   "pyrealsense2==2.58.3.10794",
   "open3d==0.19.0",
