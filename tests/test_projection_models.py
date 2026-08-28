@@ -124,6 +124,7 @@ def test_real_projection_report_writer_requires_local_path(tmp_path) -> None:
     with pytest.raises(ValueError, match="under repository .local"):
         write_projection_report({"status": "synthetic"}, tmp_path / "report.json")
     repository_local = Path(__file__).resolve().parents[1] / ".local"
+    repository_local.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=repository_local) as directory:
         output = Path(directory) / "report.json"
         write_projection_report({"status": "synthetic"}, output)
