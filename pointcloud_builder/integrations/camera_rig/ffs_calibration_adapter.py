@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from pointcloud_builder.ffs.calibration import FFSCalibration, make_calibration
 from pointcloud_builder.integrations.camera_rig.calibration_adapter import (
     camera_intrinsics_to_pcb,
     resolve_bundle_transform,
 )
 from pointcloud_builder.integrations.camera_rig.dependencies import CameraBundle
-from pointcloud_builder.integrations.camera_rig.validation import validate_passed_fixed_bundle
-from pointcloud_builder.ffs.calibration import FFSCalibration, make_calibration
+from pointcloud_builder.integrations.camera_rig.validation import (
+    validate_passed_fixed_bundle,
+)
 
 
 def calibration_from_camera_bundle(
@@ -30,8 +32,8 @@ def calibration_from_camera_bundle(
     T_color_from_left = resolve_bundle_transform(bundle, left.frame, color.frame)
     baseline_m = float(np.linalg.norm(T_right_from_left.matrix[:3, 3]))
     return make_calibration(
-        camera_intrinsics_to_pcb(left),
-        camera_intrinsics_to_pcb(right),
+        camera_intrinsics_to_pcb(left, pixel_geometry="rectified"),
+        camera_intrinsics_to_pcb(right, pixel_geometry="rectified"),
         tuple(float(value) for value in left.distortion_coeffs),
         tuple(float(value) for value in right.distortion_coeffs),
         _extrinsics(T_right_from_left.matrix),

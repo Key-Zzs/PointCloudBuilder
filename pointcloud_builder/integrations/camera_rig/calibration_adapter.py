@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
 from pointcloud_builder.camera_model import CameraIntrinsics as PCBIntrinsics
 from pointcloud_builder.integrations.camera_rig.dependencies import (
@@ -11,17 +10,26 @@ from pointcloud_builder.integrations.camera_rig.dependencies import (
     CameraIntrinsics,
     RigidTransform,
 )
-from pointcloud_builder.integrations.camera_rig.transform_resolver import resolve_transform
+from pointcloud_builder.integrations.camera_rig.transform_resolver import (
+    resolve_transform,
+)
 from pointcloud_builder.integrations.camera_rig.types import (
     CameraRigCalibration,
     FrameExplicitTransform,
 )
-from pointcloud_builder.integrations.camera_rig.validation import validate_passed_fixed_bundle
+from pointcloud_builder.integrations.camera_rig.validation import (
+    validate_passed_fixed_bundle,
+)
 
 
-def camera_intrinsics_to_pcb(intrinsics: CameraIntrinsics) -> PCBIntrinsics:
-    """Copy pinhole values while frame metadata remains in CameraRigCalibration."""
+def camera_intrinsics_to_pcb(
+    intrinsics: CameraIntrinsics,
+    *,
+    pixel_geometry: str = "raw",
+) -> PCBIntrinsics:
+    """Copy the complete CameraRig projection contract without silent loss."""
 
+    rectified = pixel_geometry == "rectified"
     return PCBIntrinsics(
         width=int(intrinsics.width),
         height=int(intrinsics.height),
@@ -29,6 +37,12 @@ def camera_intrinsics_to_pcb(intrinsics: CameraIntrinsics) -> PCBIntrinsics:
         fy=float(intrinsics.fy),
         cx=float(intrinsics.cx),
         cy=float(intrinsics.cy),
+        distortion_model="none" if rectified else str(intrinsics.distortion_model),
+        distortion_coeffs=()
+        if rectified
+        else tuple(float(value) for value in intrinsics.distortion_coeffs),
+        pixel_geometry=pixel_geometry,
+        frame=str(intrinsics.frame),
     )
 
 
@@ -78,7 +92,7 @@ def calibration_from_camera_bundle(
                 f"CameraBundle has no transform from {stream_name!r} frame "
                 f"{source_frame!r} to workspace frame {fixed.parent_frame!r}"
             )
-    actual_name = str(getattr(bundle.device, "camera_name"))
+    actual_name = str(bundle.device.camera_name)
     return CameraRigCalibration(
         camera_name=actual_name,
         workspace_frame=fixed.parent_frame,

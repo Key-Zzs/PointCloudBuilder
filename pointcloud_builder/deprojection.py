@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from pointcloud_builder.camera_model import CameraIntrinsics
+from pointcloud_builder.projection import deproject_pixels
 from pointcloud_builder.types import Tensor
 
 
@@ -25,10 +26,13 @@ def deproject_depth(
     depth_hw = _normalize_depth_shape(depth, intrinsics)
     z = depth_hw.to(dtype=torch.float32) * depth_scale
     grid_x, grid_y = _pixel_grid(intrinsics, z.device)
-    x = (grid_x - intrinsics.cx) * z / intrinsics.fx
-    y = (grid_y - intrinsics.cy) * z / intrinsics.fy
-    points_hw = torch.stack([x, y, z], dim=-1)
-    valid_hw = torch.isfinite(points_hw).all(dim=-1) & (points_hw[..., 2] > 0.0)
+    result = deproject_pixels(
+        torch.stack((grid_x, grid_y), dim=-1),
+        z,
+        intrinsics,
+    )
+    points_hw = result.points_camera
+    valid_hw = result.valid
     if not flatten:
         return points_hw, valid_hw
     points = points_hw.reshape(-1, 3)

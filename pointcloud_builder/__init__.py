@@ -7,10 +7,17 @@ from pointcloud_builder.config import (
     CropConfig,
     DepthSourceConfig,
     FFSConfig,
-    PointCloudConfig,
     PointCloudBuilderConfig,
+    PointCloudConfig,
     SamplingConfig,
     load_config,
+)
+from pointcloud_builder.projection import (
+    DeprojectionResult,
+    ProjectionModelError,
+    ProjectionResult,
+    deproject_pixels,
+    project_points,
 )
 from pointcloud_builder.types import Meta, RGBDFrame, StereoIRFrame
 
@@ -19,14 +26,19 @@ __all__ = [
     "CameraExtrinsics",
     "CameraIntrinsics",
     "CropConfig",
+    "DeprojectionResult",
     "DepthSourceConfig",
     "FFSConfig",
     "Meta",
     "PointCloudBuilder",
-    "PointCloudConfig",
     "PointCloudBuilderConfig",
+    "PointCloudConfig",
+    "ProjectionModelError",
+    "ProjectionResult",
     "RGBDFrame",
-    "StereoIRFrame",
     "SamplingConfig",
+    "StereoIRFrame",
+    "deproject_pixels",
     "load_config",
+    "project_points",
 ]

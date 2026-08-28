@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -12,8 +12,9 @@ from pointcloud_builder.camera_model import CameraModel
 from pointcloud_builder.config import PointCloudBuilderConfig, load_config
 from pointcloud_builder.crop import crop_point_cloud
 from pointcloud_builder.deprojection import deproject_depth
-from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.ffs.types import ResolvedDepth
+from pointcloud_builder.projection import project_points
+from pointcloud_builder.sampling import sample_point_cloud
 from pointcloud_builder.types import Meta, RGBDFrame, StereoIRFrame, Tensor
 from pointcloud_builder.utils import (
     as_tensor,
@@ -107,7 +108,7 @@ class PointCloudBuilder:
                 )
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "PointCloudBuilder":
+    def from_yaml(cls, path: str | Path) -> PointCloudBuilder:
         """Instantiate a builder from a YAML configuration file."""
 
         return cls(load_config(path))
@@ -323,16 +324,14 @@ class PointCloudBuilder:
         rotation = torch.tensor(extrinsics.rotation, dtype=points_depth.dtype, device=points_depth.device)
         translation = torch.tensor(extrinsics.translation, dtype=points_depth.dtype, device=points_depth.device)
         points_color = points_depth @ rotation.T + translation
-        z = points_color[:, 2]
-        finite_depth = torch.isfinite(points_color).all(dim=-1) & (z > 0.0)
-
         intrinsics = self.camera.color_intrinsics
-        u = points_color[:, 0] * intrinsics.fx / z + intrinsics.cx
-        v = points_color[:, 1] * intrinsics.fy / z + intrinsics.cy
+        projection = project_points(points_color, intrinsics)
+        u = projection.pixels_px[:, 0]
+        v = projection.pixels_px[:, 1]
         u_nearest = torch.round(u).to(dtype=torch.long)
         v_nearest = torch.round(v).to(dtype=torch.long)
         in_bounds = (
-            finite_depth
+            projection.valid
             & (u_nearest >= 0)
             & (u_nearest < intrinsics.width)
             & (v_nearest >= 0)

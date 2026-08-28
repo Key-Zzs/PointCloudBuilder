@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +13,12 @@ from pointcloud_builder.types import Tensor
 
 @dataclass(frozen=True)
 class CameraIntrinsics:
-    """Pinhole camera intrinsics for one image stream."""
+    """Projection model for one image stream.
+
+    Legacy YAML files that contain only the six pinhole values are interpreted
+    as ideal/rectified pinhole images.  CameraRig adapters override those
+    defaults explicitly for raw factory streams.
+    """
 
     width: int
     height: int
@@ -20,6 +26,51 @@ class CameraIntrinsics:
     fy: float
     cx: float
     cy: float
+    distortion_model: str = "none"
+    distortion_coeffs: tuple[float, ...] = ()
+    pixel_geometry: str = "rectified"
+    frame: str = ""
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError("camera image width and height must be positive")
+        values = (self.fx, self.fy, self.cx, self.cy, *self.distortion_coeffs)
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("camera projection parameters must be finite")
+        if self.fx <= 0.0 or self.fy <= 0.0:
+            raise ValueError("camera focal lengths must be positive")
+        if self.pixel_geometry not in {"raw", "rectified"}:
+            raise ValueError("pixel_geometry must be 'raw' or 'rectified'")
+        if self.distortion_model not in {
+            "none",
+            "brown-conrady",
+            "modified-brown-conrady",
+            "inverse-brown-conrady",
+            "ftheta",
+            "kannala-brandt4",
+        }:
+            raise ValueError(f"unsupported distortion model: {self.distortion_model!r}")
+        coefficients = tuple(float(value) for value in self.distortion_coeffs)
+        object.__setattr__(self, "distortion_coeffs", coefficients)
+        if self.distortion_model == "none" and any(
+            abs(value) > 1e-12 for value in coefficients
+        ):
+            raise ValueError("distortion_model='none' cannot have non-zero coefficients")
+        if self.pixel_geometry == "rectified" and (
+            self.distortion_model != "none"
+            or any(abs(value) > 1e-12 for value in coefficients)
+        ):
+            raise ValueError(
+                "rectified pixel geometry requires distortion_model='none' and zero coefficients"
+            )
+
+    @property
+    def is_identity_projection(self) -> bool:
+        """Whether distortion is numerically an identity mapping."""
+
+        return self.distortion_model == "none" or not any(
+            abs(value) > 1e-12 for value in self.distortion_coeffs
+        )
 
 
 @dataclass(frozen=True)
@@ -42,7 +93,7 @@ class CameraModel:
     depth_to_color_extrinsics: CameraExtrinsics | None = None
 
     @classmethod
-    def from_config(cls, config: Any) -> "CameraModel":
+    def from_config(cls, config: Any) -> CameraModel:
         """Create a camera model from typed config."""
 
         return cls(

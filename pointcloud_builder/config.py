@@ -356,6 +356,10 @@ def _parse_intrinsics(raw: dict[str, Any], name: str) -> CameraIntrinsics:
         fy=float(_require_value(raw, "fy")),
         cx=float(_require_value(raw, "cx")),
         cy=float(_require_value(raw, "cy")),
+        distortion_model=str(raw.get("distortion_model", "none")),
+        distortion_coeffs=tuple(float(value) for value in raw.get("distortion_coeffs", ())),
+        pixel_geometry=str(raw.get("pixel_geometry", "rectified")),
+        frame=str(raw.get("frame", "")),
     )
 
 

@@ -40,6 +40,7 @@ from pointcloud_builder.mapping.recording import (
     iter_rig_depth_recording,
     validate_rig_depth_recording,
 )
+from pointcloud_builder.projection import project_points
 from pointcloud_builder.rig import build_live_rig, load_rig_config
 from pointcloud_builder.workspace import ExpectedPlaneRegion
 from pointcloud_builder.workspace.types import WorkspacePointCloud
@@ -488,15 +489,11 @@ def _color_projection_uv(
     translation = np.asarray(extrinsics.translation, dtype=np.float64)
     color = points_depth @ rotation.T + translation
     intrinsics = camera_model.color_intrinsics
-    uv = np.column_stack(
-        (
-            color[:, 0] * intrinsics.fx / color[:, 2] + intrinsics.cx,
-            color[:, 1] * intrinsics.fy / color[:, 2] + intrinsics.cy,
-        )
-    )
+    projection = project_points(torch.from_numpy(color), intrinsics)
+    uv = projection.pixels_px.detach().cpu().numpy()
+    projection_valid = projection.valid.detach().cpu().numpy()
     valid = (
-        np.isfinite(uv).all(axis=1)
-        & (color[:, 2] > 0)
+        projection_valid
         & (np.rint(uv[:, 0]) >= 0)
         & (np.rint(uv[:, 0]) < intrinsics.width)
         & (np.rint(uv[:, 1]) >= 0)
