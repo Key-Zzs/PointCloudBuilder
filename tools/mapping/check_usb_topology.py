@@ -6,10 +6,9 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
-
 
 PORT_PATTERN = re.compile(r"/usb(?P<bus>\d+)/(?P<node>\d+(?:-[\d.]+)+)/")
 
@@ -70,8 +69,14 @@ def _read_speed(path: Path) -> int:
 
 
 def write_reports(
-    devices: list[dict[str, Any]], *, report_path: Path, identity_path: Path
+    devices: list[dict[str, Any]],
+    *,
+    report_path: Path,
+    identity_path: Path,
+    expected_count: int = 2,
 ) -> dict[str, Any]:
+    if expected_count < 1:
+        raise ValueError("expected_count must be positive")
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     existing = (
         json.loads(identity_path.read_text(encoding="utf-8"))
@@ -95,7 +100,7 @@ def write_reports(
         },
     }
     passed = bool(
-        len(named) == 2
+        len(named) == expected_count
         and all("D435I" in str(item["model"]).upper() for item in named.values())
         and all(int(item["actual_link_speed_mbps"]) >= 5000 for item in named.values())
     )
@@ -103,6 +108,7 @@ def write_reports(
         "schema_version": "pointcloud-builder.usb-topology.v1",
         "captured_at": now,
         "device_count": len(named),
+        "expected_count": expected_count,
         "devices": dict(sorted(named.items())),
         "shared_root_hub": shared,
         "topology_status": "SHARED_ROOT_HUB_OBSERVED" if shared else "SEPARATE_ROOT_HUBS",
@@ -119,9 +125,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--identity-map", type=Path, required=True)
+    parser.add_argument("--expected-count", type=int, default=2)
     args = parser.parse_args()
     report = write_reports(
-        discover(), report_path=args.report, identity_path=args.identity_map
+        discover(),
+        report_path=args.report,
+        identity_path=args.identity_map,
+        expected_count=args.expected_count,
     )
     print(
         json.dumps(

@@ -1,0 +1,18 @@
+schema_version: pointcloud-builder.ncamera-acceptance-thresholds.v1
+
+# Preregister and freeze thresholds before inspecting new physical-acceptance data.
+# These conservative values reproduce the accepted current real A/B contract; do not
+# weaken gates after seeing results.
+thresholds:
+  maximum_overlap_distance_mm: 30.0
+  minimum_overlap_points: 100000
+  maximum_symmetric_median_mm: 1.5
+  maximum_symmetric_p95_mm: 25.0
+  maximum_board_median_mm: 1.25
+  maximum_board_p95_mm: 2.5
+  maximum_plane_offset_mm: 1.0
+  maximum_normal_split_deg: 0.6
+  maximum_double_layer_thickness_mm: 2.5
+  maximum_diagnostic_translation_mm: 1.0
+  maximum_diagnostic_rotation_deg: 0.25
+  voxel_size_mm: 2.5

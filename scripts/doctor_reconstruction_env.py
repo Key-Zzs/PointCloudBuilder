@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
-from importlib import metadata
 import json
 import os
-from pathlib import Path
 import platform
 import sys
+from dataclasses import asdict, dataclass
+from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 
@@ -26,8 +26,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-hardware", action="store_true")
     parser.add_argument("--expected-env", default="pcb-reconstruction")
     parser.add_argument("--asset-root", default=".local/ffs")
+    parser.add_argument("--expected-d435i-count", type=int, default=2)
     parser.add_argument("--report")
     args = parser.parse_args(argv)
+    if args.expected_d435i_count < 1:
+        parser.error("--expected-d435i-count must be positive")
     checks: list[Check] = []
     checks.append(
         _check(
@@ -50,10 +53,22 @@ def main(argv: list[str] | None = None) -> int:
     checks.extend(_torch_checks(no_hardware=args.no_hardware))
     checks.extend(_ffs_asset_checks(Path(args.asset_root), warning=args.no_hardware))
     if args.no_hardware:
-        checks.append(Check("d435i_devices", "WARNING", {"reason": "skipped"}))
-        checks.append(Check("usb3_links", "WARNING", {"reason": "skipped"}))
+        checks.append(
+            Check(
+                "d435i_devices",
+                "WARNING",
+                {"reason": "skipped", "expected_count": args.expected_d435i_count},
+            )
+        )
+        checks.append(
+            Check(
+                "usb3_links",
+                "WARNING",
+                {"reason": "skipped", "expected_count": args.expected_d435i_count},
+            )
+        )
     else:
-        checks.extend(_device_checks())
+        checks.extend(_device_checks(args.expected_d435i_count))
     report = {
         "schema_version": "pointcloud-builder.reconstruction-doctor.v1",
         "mode": "no_hardware" if args.no_hardware else "full",
@@ -203,7 +218,7 @@ def _ffs_asset_checks(root: Path, *, warning: bool) -> list[Check]:
     return checks
 
 
-def _device_checks() -> list[Check]:
+def _device_checks(expected_count: int = 2) -> list[Check]:
     try:
         import pyrealsense2 as rs
 
@@ -222,13 +237,15 @@ def _device_checks() -> list[Check]:
         return [
             Check(
                 "d435i_devices",
-                "PASS" if len(d435i) >= 2 else "FAIL",
-                {"count": len(d435i)},
+                "PASS" if len(d435i) == expected_count else "FAIL",
+                {"count": len(d435i), "expected_count": expected_count},
             ),
             Check(
                 "usb3_links",
-                "PASS" if len(usb) >= 2 and all(v.startswith("3") for v in usb) else "FAIL",
-                {"descriptors": usb},
+                "PASS"
+                if len(usb) == expected_count and all(v.startswith("3") for v in usb)
+                else "FAIL",
+                {"descriptors": usb, "expected_count": expected_count},
             ),
         ]
     except Exception as error:

@@ -1,0 +1,74 @@
+schema_version: pointcloud-builder.rig.v1
+output_frame: workspace
+
+# Private, promoted PCB artifact. Runtime fails closed if its camera identities,
+# CameraBundle hashes, camera set, or workspace frame do not match this config.
+rig_calibration:
+  type: validated_multipose
+  artifact: path/to/private/calibration/deployment/rig_calibration.json
+
+cameras:
+  - name: camera_a
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_a/runtime.yaml
+      provision_artifact: path/to/private/camera_a/provision
+    depth: {mode: ffs_stereo}
+    pointcloud: {use_rgb: true}
+    pipeline_config: path/to/private/shared_ffs_pipeline.yaml
+    local_crop: {enabled: false}
+
+  - name: camera_b
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_b/runtime.yaml
+      provision_artifact: path/to/private/camera_b/provision
+    depth: {mode: ffs_stereo}
+    pointcloud: {use_rgb: true}
+    pipeline_config: path/to/private/shared_ffs_pipeline.yaml
+    local_crop: {enabled: false}
+
+  - name: camera_c
+    enabled: true
+    source:
+      type: camera_rig_live
+      camera_config: path/to/private/camera_c/runtime.yaml
+      provision_artifact: path/to/private/camera_c/provision
+    depth: {mode: ffs_stereo}
+    pointcloud: {use_rgb: true}
+    pipeline_config: path/to/private/shared_ffs_pipeline.yaml
+    local_crop: {enabled: false}
+
+timing:
+  mode: nearest_host_timestamp
+  maximum_skew_ms: 33.4
+  reference_camera: camera_a
+
+live:
+  buffer_capacity: 2
+  matcher_wait_timeout_s: 0.2
+  join_timeout_s: 5.0
+  telemetry_history_capacity: 10000
+
+# Re-measure these bounds in every new workspace; do not copy the current lab crop.
+workspace_crop:
+  enabled: true
+  x: [-0.50, 0.50]
+  y: [-0.40, 0.60]
+  z: [-0.10, 1.00]
+
+fusion:
+  enabled: true
+  voxel_size_m: 0.0025
+  origin: [-0.50, -0.40, -0.10]
+  deterministic: true
+
+sampling:
+  enabled: false
+  mode: voxel_fps
+  num_points: 4096
+  voxel_size: 0.005
+  deterministic: true
+  seed: 31

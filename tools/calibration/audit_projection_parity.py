@@ -22,7 +22,7 @@ from pointcloud_builder.projection_parity import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, type=Path)
-    parser.add_argument("--camera-label", required=True, choices=("camera_a", "camera_b"))
+    parser.add_argument("--camera-label", required=True)
     parser.add_argument(
         "--runtime-config",
         type=Path,
@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if (
+        not args.camera_label.strip()
+        or any(character in args.camera_label for character in "/\\")
+    ):
+        raise ValueError("--camera-label must be a portable non-empty camera name")
     bundle_path = require_repo_local_path(args.bundle, label="real CameraBundle")
     output_path = require_repo_local_path(args.output, label="real projection report")
     bundle = load_camera_bundle(bundle_path)

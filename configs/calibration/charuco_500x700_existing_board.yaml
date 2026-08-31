@@ -1,0 +1,14 @@
+schema_version: pointcloud-builder.existing-target-metadata.v1
+registration_route: camera_rig_identify_and_register_existing
+physical_size_mm: [500, 700]
+physical_square_layout: [5, 7]
+square_length_mm: 100
+marker_length_mm: 75
+aruco_dictionary: DICT_4X4_50
+
+# These fields remain evidence-gated. They are intentionally not assigned values
+# here and must be resolved by CameraRig visual identification or source metadata.
+unresolved_fields:
+  - legacy_pattern
+  - border_bits
+  - canonical_squares_x_squares_y_orientation
