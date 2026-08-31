@@ -70,6 +70,116 @@ critical Python/PyTorch/CUDA/TensorRT/OpenCV ABI and installs exactly one `cv2`
 provider: `opencv-contrib-python-headless==4.14.0.94`. It also pins OmegaConf,
 which is required to deserialize the official FFS checkpoint metadata.
 
+### 6.1 Moving the same D435i rig to a new computer
+
+This section applies when the camera serials, fixed camera poses, workspace, and
+physical calibration target have not changed and only the host is replaced. If any
+camera, the workspace, or the target has moved, do not reuse the old extrinsics;
+repeat discovery, preflight, and provisioning in Sections 8–10.
+
+#### 6.1.1 Transfer private camera assets
+
+`.local/` is ignored by Git and can contain camera serials, calibration, and local
+absolute paths. Transfer it only over trusted encrypted media or a controlled
+connection; never commit it. Do not copy the whole old `.local/` tree. Preserve the
+relative layout and transfer only what the active rig YAML references:
+
+- `.local/camera_rig/camera_identity_map.json`;
+- each camera's runtime YAML and validated provision artifact;
+- the target spec/metadata for the unchanged physical target;
+- the active production rig, pipeline, and TSDF YAML files;
+- the promoted rig-calibration artifact referenced by the rig YAML; and
+- only when continuing an old map, the referenced initial map with matching
+  calibration provenance.
+
+Old recordings, evidence, logs, FFS smoke output, and old TensorRT Engines are not
+required at runtime. After transfer, find old-host absolute paths in YAML/JSON and
+replace them with paths relative to the new checkout. Do not edit serials, intrinsics,
+extrinsics, or calibration values:
+
+```bash
+find .local -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) \
+  -exec grep -nEH '/home/|/Users/|^[[:space:]]*[A-Za-z]:\\' {} +
+camera-rig device list
+camera-rig provision validate --artifact .local/camera_rig/camera_a/provision
+```
+
+Run `provision validate` for every camera in the rig and confirm that the discovered
+devices, identity map, and runtime YAML still identify the same physical D435i units.
+If your directory name differs, use the `source.provision_artifact` path from the
+production rig YAML. Then run the USB-topology check in Section 8.
+
+#### 6.1.2 Download and verify the official FFS weights
+
+The weights come from the [official NVlabs repository](https://github.com/NVlabs/Fast-FoundationStereo)
+and its [official weights folder](https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link).
+Download the `20-30-48` directory in a browser, or use `gdown` in the activated
+`pcb-reconstruction` environment:
+
+```bash
+python -m pip install gdown
+FFS_DOWNLOAD_DIR="${PWD}/.local/downloads/fast-foundationstereo-weights"
+python -m gdown \
+  'https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link' \
+  --folder -O "$FFS_DOWNLOAD_DIR"
+
+FFS_WEIGHT_FILE="$(find "$FFS_DOWNLOAD_DIR" \
+  -path '*/20-30-48/model_best_bp2_serialize.pth' -print -quit)"
+test -n "$FFS_WEIGHT_FILE"
+FFS_WEIGHT_DIR="$(dirname "$FFS_WEIGHT_FILE")"
+mkdir -p .local/ffs/artifacts
+install -m 0644 "$FFS_WEIGHT_DIR/model_best_bp2_serialize.pth" \
+  .local/ffs/artifacts/model_best_bp2_serialize.pth
+install -m 0644 "$FFS_WEIGHT_DIR/cfg.yaml" .local/ffs/artifacts/cfg.yaml
+
+printf '%s  %s\n' \
+  98b5a9acf39fbfa795025de8cea95ce123daa40f6b6234d719167751024cf692 \
+  .local/ffs/artifacts/model_best_bp2_serialize.pth \
+  d45afe99b176454d5aff416edf16c8da6a99579f8f374b927f37907442a7d6bc \
+  .local/ffs/artifacts/cfg.yaml | sha256sum -c -
+```
+
+For a browser download, manually copy `model_best_bp2_serialize.pth` and `cfg.yaml`
+into the same destination and then run the `printf ... | sha256sum -c -` check above.
+The checkpoint is loaded with `torch.load(..., weights_only=False)`, so use only the
+trusted official files after their hashes pass.
+
+#### 6.1.3 Rebuild TensorRT assets on the new computer
+
+Do not reuse the old computer's `.engine` files or `libffs_gwc_plugin.so`. A default
+TensorRT Engine is tied to its build platform, TensorRT version, and GPU compute
+capability; see NVIDIA's [Engine Compatibility](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/engine-compatibility.html).
+Build on the new host with the pinned environment and target GPU. First obtain
+matching TensorRT 10.16 C++ headers:
+
+```bash
+git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
+  https://github.com/NVIDIA/TensorRT.git .local/third_party/TensorRT
+git -C .local/third_party/TensorRT sparse-checkout set include
+
+FFS_CUDA_ARCH="$(python -c \
+  'import torch; p=torch.cuda.get_device_capability(); print(f"{p[0]}{p[1]}")')"
+printf 'Target CUDA architecture: %s\n' "$FFS_CUDA_ARCH"
+
+python scripts/prepare_ffs_assets.py --build-tensorrt \
+  --asset-root .local/ffs \
+  --checkpoint .local/ffs/artifacts/model_best_bp2_serialize.pth \
+  --model-config .local/ffs/artifacts/cfg.yaml \
+  --tensorrt-root .local/third_party/TensorRT \
+  --cuda-arch "$FFS_CUDA_ARCH"
+python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
+```
+
+Production uses the generated FP16 `tensorrt_plugin` route. To create a pipeline YAML,
+copy `configs/mapping/ffs_workspace_example.yaml` under `.local/configs/` and point its
+Engine, plugin, manifest, and backend-config fields at the new `.local/ffs/` files;
+paths declared from `.local/configs/` can use relative `../ffs/...` paths. Camera
+serials and CameraRig calibration are not part of the FFS asset bundle: they continue
+to come from the transferred and validated runtime, provision, and rig configuration.
+Complete the PyTorch, all three TensorRT-route, and same-fresh-CameraRig-NPZ smokes in
+Section 11 before running Doctor below. An asset-check PASS does not replace actual
+Engine loading and a camera smoke.
+
 ## 7. Doctor
 
 ```bash

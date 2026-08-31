@@ -68,6 +68,105 @@ Python/PyTorch/CUDA/TensorRT/OpenCV ABI，并只安装一个 `cv2` provider：
 `opencv-contrib-python-headless==4.14.0.94`。环境还固定安装 OmegaConf，用于反序列化
 官方 FFS checkpoint 元数据。
 
+### 6.1 同一批 D435i 迁移到新电脑
+
+本节适用于相机序列号、固定安装位姿、workspace 和实体标定板均未改变，仅更换主机的
+情况。若移动过任一相机、workspace 或标定板，不得复用旧外参；按第 8–10 节重新发现、
+preflight 和 provision。
+
+#### 6.1.1 迁移私有相机资产
+
+`.local/` 被 Git 忽略，其中可能包含相机序列号、标定和本地绝对路径。只通过可信的
+加密介质或受控连接迁移，不要提交到仓库。不要整包复制旧 `.local/`；保留相对目录结构，
+只迁移当前 rig YAML 实际引用的内容：
+
+- `.local/camera_rig/camera_identity_map.json`；
+- 每台相机的 runtime YAML 和已验证 provision artifact；
+- 与未改变实体板对应的 target spec/metadata；
+- 当前生产 rig/pipeline/TSDF YAML；
+- rig YAML 引用的已提升 rig-calibration artifact；
+- 只有在继续旧地图时，才迁移命令所引用且标定 provenance 一致的 initial map。
+
+旧 recordings、evidence、logs、FFS smoke 输出和旧 TensorRT Engine 都不是运行必需项。
+迁移后检查 YAML/JSON 中的旧主机绝对路径并改成新 checkout 内的相对路径；不要修改序列号、
+内参、外参或标定数值：
+
+```bash
+find .local -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) \
+  -exec grep -nEH '/home/|/Users/|^[[:space:]]*[A-Za-z]:\\' {} +
+camera-rig device list
+camera-rig provision validate --artifact .local/camera_rig/camera_a/provision
+```
+
+对 rig 中每台相机分别执行 `provision validate`，并确认发现的设备、identity map 与 runtime
+YAML 仍指向同一实体 D435i。若目录名不同，使用生产 rig YAML 的
+`source.provision_artifact` 路径。随后按第 8 节运行 USB topology 检查。
+
+#### 6.1.2 下载并校验官方 FFS 权重
+
+FFS 权重来自 [NVlabs 官方仓库](https://github.com/NVlabs/Fast-FoundationStereo) 的 [官方 weights 目录](https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link)。
+在网页中下载 `20-30-48` 目录，或在已经激活的 `pcb-reconstruction` 环境中使用
+`gdown`：
+
+```bash
+python -m pip install gdown
+FFS_DOWNLOAD_DIR="${PWD}/.local/downloads/fast-foundationstereo-weights"
+python -m gdown \
+  'https://drive.google.com/drive/folders/1HuTt7UIp7gQsMiDvJwVuWmKpvFzIIMap?usp=drive_link' \
+  --folder -O "$FFS_DOWNLOAD_DIR"
+
+FFS_WEIGHT_FILE="$(find "$FFS_DOWNLOAD_DIR" \
+  -path '*/20-30-48/model_best_bp2_serialize.pth' -print -quit)"
+test -n "$FFS_WEIGHT_FILE"
+FFS_WEIGHT_DIR="$(dirname "$FFS_WEIGHT_FILE")"
+mkdir -p .local/ffs/artifacts
+install -m 0644 "$FFS_WEIGHT_DIR/model_best_bp2_serialize.pth" \
+  .local/ffs/artifacts/model_best_bp2_serialize.pth
+install -m 0644 "$FFS_WEIGHT_DIR/cfg.yaml" .local/ffs/artifacts/cfg.yaml
+
+printf '%s  %s\n' \
+  98b5a9acf39fbfa795025de8cea95ce123daa40f6b6234d719167751024cf692 \
+  .local/ffs/artifacts/model_best_bp2_serialize.pth \
+  d45afe99b176454d5aff416edf16c8da6a99579f8f374b927f37907442a7d6bc \
+  .local/ffs/artifacts/cfg.yaml | sha256sum -c -
+```
+
+网页下载时，将其中的 `model_best_bp2_serialize.pth` 和 `cfg.yaml` 手工复制到同一目标
+目录，再执行上面的 `printf ... | sha256sum -c -`。checkpoint 由
+`torch.load(..., weights_only=False)` 加载，因此只能使用上述经过哈希校验的可信官方文件。
+
+#### 6.1.3 在新电脑重建 TensorRT 资产
+
+不要从旧电脑复用 `.engine` 或 `libffs_gwc_plugin.so`。默认 TensorRT Engine 绑定构建时的
+平台、TensorRT 版本和 GPU compute capability，具体规则见 [NVIDIA Engine Compatibility](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/engine-compatibility.html)；
+新主机应使用已固定的环境和目标 GPU 重新构建。先获取匹配的 TensorRT 10.16 C++ headers：
+
+```bash
+git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
+  https://github.com/NVIDIA/TensorRT.git .local/third_party/TensorRT
+git -C .local/third_party/TensorRT sparse-checkout set include
+
+FFS_CUDA_ARCH="$(python -c \
+  'import torch; p=torch.cuda.get_device_capability(); print(f"{p[0]}{p[1]}")')"
+printf 'Target CUDA architecture: %s\n' "$FFS_CUDA_ARCH"
+
+python scripts/prepare_ffs_assets.py --build-tensorrt \
+  --asset-root .local/ffs \
+  --checkpoint .local/ffs/artifacts/model_best_bp2_serialize.pth \
+  --model-config .local/ffs/artifacts/cfg.yaml \
+  --tensorrt-root .local/third_party/TensorRT \
+  --cuda-arch "$FFS_CUDA_ARCH"
+python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
+```
+
+生产使用生成的 FP16 `tensorrt_plugin` route。新建 pipeline YAML 时，从
+`configs/mapping/ffs_workspace_example.yaml` 复制到 `.local/configs/`，并让其中的
+Engine、plugin、manifest 和 backend config 指向刚生成的 `.local/ffs/` 文件；从
+`.local/configs/` 声明时可使用 `../ffs/...` 相对路径。相机序列号和 CameraRig 标定不属于
+FFS asset bundle，继续由迁移并验证过的 runtime/provision/rig 配置提供。按第 11 节完成
+PyTorch、三条 TensorRT route 和同一新鲜 CameraRig NPZ frame 的 smoke 后，再运行下方
+Doctor；资产检查 PASS 不能替代实际 Engine 加载和相机 smoke。
+
 ## 7. Doctor
 
 ```bash
