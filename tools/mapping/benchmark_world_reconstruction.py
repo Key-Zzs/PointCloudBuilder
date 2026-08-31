@@ -4,24 +4,27 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
-from pathlib import Path
 import time
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from pointcloud_builder.mapping.provenance import (
     rig_backend_provenance,
     validate_production_ffs_provenance,
 )
-from pointcloud_builder.rig.pipeline import RigCameraRuntime
-from pointcloud_builder.rig.processor import RigFrameProcessor
-from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 from pointcloud_builder.reconstruction_benchmark import (
     benchmark_reconstruction_scenarios,
     benchmark_timing_overhead,
 )
 from pointcloud_builder.rig import build_live_rig, build_replay_rig, load_rig_config
+from pointcloud_builder.rig.pipeline import RigCameraRuntime
+from pointcloud_builder.rig.processor import RigFrameProcessor
+from pointcloud_builder.rig_calibration.deployment import (
+    configured_rig_calibration_provenance,
+)
+from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 
 
 def main() -> None:
@@ -98,6 +101,7 @@ def main() -> None:
             "depth_sources": {
                 camera.name: camera.depth.mode for camera in config.enabled_cameras
             },
+            "rig_calibration": configured_rig_calibration_provenance(config),
             "production_backend_binding": backend_binding,
             "passed": bool(
                 report["same_inputs"]

@@ -21,6 +21,9 @@ from pointcloud_builder.fusion import (
     fusion_geometry_metrics,
 )
 from pointcloud_builder.rig import build_live_rig, load_rig_config
+from pointcloud_builder.rig_calibration.deployment import (
+    runtime_rig_calibration_provenance,
+)
 from pointcloud_builder.visualization import save_ascii_ply
 from pointcloud_builder.workspace import ExpectedPlaneRegion
 
@@ -77,6 +80,9 @@ def main() -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     pipeline = build_live_rig(config, device="cuda")
+    calibration_provenance = runtime_rig_calibration_provenance(
+        pipeline.processor.runtimes
+    )
     viewer = None
     viewer_error: str | None = None
     viewer_telemetry: dict[str, Any] | None = None
@@ -136,6 +142,7 @@ def main() -> None:
                         "input_points": float(result.concatenated.points.shape[0]),
                         "fused_voxels": float(result.fused.points.shape[0]),
                         "sampled_points": float(result.sampled.points.shape[0]),
+                        "production_applied": 1.0,
                     },
                 )
                 if not viewer.submit(packet):
@@ -245,6 +252,7 @@ def main() -> None:
         "profile": profile,
         "rig_config_sha256": _sha256_file(args.rig_config),
         "mapping_config_sha256": _sha256_file(args.mapping_config),
+        "rig_calibration": calibration_provenance,
         "matched_sets": matched_count,
         "duration_s": duration_s,
         "throughput_fps": matched_count / max(duration_s, 1e-9),
@@ -294,9 +302,9 @@ def main() -> None:
 
 def _validate_profile_config(config: Any, profile: ProfileName) -> None:
     cameras = config.enabled_cameras
-    if len(cameras) != 2:
+    if len(cameras) < 2:
         raise ValueError(
-            "live reconstruction profiles require exactly two enabled cameras"
+            "live reconstruction profiles require at least two enabled cameras"
         )
     if any(camera.source.type != "camera_rig_live" for camera in cameras):
         raise ValueError("live reconstruction profiles require camera_rig_live sources")

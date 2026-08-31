@@ -53,6 +53,11 @@ def main() -> None:
             raise FileExistsError(f"Rerun recording already exists: {record_path}")
 
     rig = load_rig_config(rig_path)
+    if rig.rig_calibration is not None:
+        raise ValueError(
+            "candidate viewer requires rig_calibration to be omitted; "
+            "use production tools for a deployed artifact"
+        )
     solution = load_solution(solution_path)
     validation = json.loads(validation_path.read_text(encoding="utf-8"))
     pipeline = build_live_rig(rig, device="cuda")

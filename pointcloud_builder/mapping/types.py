@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import numbers
-from pathlib import Path
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -62,6 +62,13 @@ class RigDepthObservation:
     distortion_model: str
     distortion_coeffs: tuple[float, ...]
     rectified: bool
+    calibration_mode: Literal[
+        "fixed_provision", "validated_multipose_deployment"
+    ] = "fixed_provision"
+    rig_calibration_schema: str | None = None
+    rig_calibration_fingerprint: str | None = None
+    solution_fingerprint: str | None = None
+    camera_bundle_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -137,6 +144,36 @@ class RigDepthObservation:
         coeffs = tuple(float(value) for value in self.distortion_coeffs)
         if not np.isfinite(coeffs).all():
             raise ValueError("distortion coefficients must be finite")
+        if self.calibration_mode not in {
+            "fixed_provision",
+            "validated_multipose_deployment",
+        }:
+            raise ValueError("unsupported rig calibration mode")
+        deployment_values = (
+            self.rig_calibration_schema,
+            self.rig_calibration_fingerprint,
+            self.solution_fingerprint,
+        )
+        if self.calibration_mode == "fixed_provision":
+            if any(value is not None for value in deployment_values):
+                raise ValueError(
+                    "fixed-provision observation cannot claim deployed calibration"
+                )
+        else:
+            if self.rig_calibration_schema != (
+                "pointcloud-builder.rig-calibration-deployment.v1"
+            ):
+                raise ValueError("deployed observation has wrong calibration schema")
+            for label, value in (
+                ("rig_calibration_fingerprint", self.rig_calibration_fingerprint),
+                ("solution_fingerprint", self.solution_fingerprint),
+            ):
+                if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                    raise ValueError(f"{label} must be a lowercase SHA-256")
+        if self.camera_bundle_sha256 is not None and _SHA256.fullmatch(
+            self.camera_bundle_sha256
+        ) is None:
+            raise ValueError("camera_bundle_sha256 must be a lowercase SHA-256")
         object.__setattr__(self, "depth", depth)
         object.__setattr__(self, "valid_mask", mask)
         object.__setattr__(

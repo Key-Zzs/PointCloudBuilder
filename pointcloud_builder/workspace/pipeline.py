@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from pointcloud_builder.config import CropConfig
@@ -42,6 +42,7 @@ class SingleCameraWorkspacePipeline:
         *,
         workspace_crop: CropConfig,
         provision_sha256: str | None = None,
+        calibration_provenance: dict[str, Any] | None = None,
         timing_enabled: bool = True,
     ) -> None:
         if workspace_crop.frame != context.workspace_frame:
@@ -51,6 +52,7 @@ class SingleCameraWorkspacePipeline:
         self.provision_sha256 = provision_sha256 or canonical_bundle_sha256(
             context.calibration.bundle
         )
+        self.calibration_provenance = dict(calibration_provenance or {})
         self.timing_enabled = timing_enabled
 
     def process(self, camera_frame: Any) -> SingleCameraWorkspaceStages:
@@ -149,6 +151,7 @@ class SingleCameraWorkspacePipeline:
                 resolved_depth=resolved_depth,
                 context=self.context,
                 provision_sha256=self.provision_sha256,
+                calibration_provenance=self.calibration_provenance,
             ),
             metadata={
                 "camera_name": mapping["camera_name"],
@@ -159,6 +162,13 @@ class SingleCameraWorkspacePipeline:
                 "source_frame": self.context.source_frame,
                 "workspace_frame": self.context.workspace_frame,
                 "depth_mode": self.context.depth_mode,
+                "calibration_mode": self.calibration_provenance.get(
+                    "calibration_mode", "fixed_provision"
+                ),
+                "production_applied": True,
+                "rig_calibration_fingerprint": self.calibration_provenance.get(
+                    "rig_calibration_fingerprint"
+                ),
                 "builder": builder_meta,
                 "timing_ms": timing_ms,
             },

@@ -24,7 +24,8 @@ from pointcloud_builder.mapping.validation import (
 )
 
 _SCHEMA_V1 = "pointcloud-builder.tsdf-map-artifact.v1"
-_SCHEMA = "pointcloud-builder.tsdf-map-artifact.v2"
+_SCHEMA_V2 = "pointcloud-builder.tsdf-map-artifact.v2"
+_SCHEMA = "pointcloud-builder.tsdf-map-artifact.v3"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -34,6 +35,7 @@ def write_tsdf_map_artifact(
     mapper: Open3dTsdfMap,
     source_recording_sha256: str,
     integration_metrics: dict[str, Any],
+    rig_calibration_provenance: dict[str, Any] | None = None,
 ) -> TsdfMapArtifact:
     destination = Path(output)
     if mapper.state.lifecycle != "frozen":
@@ -105,6 +107,11 @@ def write_tsdf_map_artifact(
                 "recording_manifest_sha256": source_recording_sha256,
             },
         )
+        rig_calibration = _normalize_rig_calibration_provenance(
+            rig_calibration_provenance,
+            workspace_frame=mapper.workspace_frame,
+        )
+        _write_json(temporary / "rig_calibration.json", rig_calibration)
         manifest = {
             "schema_version": _SCHEMA,
             "workspace_frame": mapper.workspace_frame,
@@ -120,6 +127,15 @@ def write_tsdf_map_artifact(
                 "mesh": "mesh.ply",
                 "metrics": "metrics.json",
                 "source_recording": "source_recording.json",
+                "rig_calibration": "rig_calibration.json",
+            },
+            "rig_calibration": {
+                "calibration_mode": rig_calibration["calibration_mode"],
+                "rig_calibration_fingerprint": rig_calibration[
+                    "rig_calibration_fingerprint"
+                ],
+                "solution_fingerprint": rig_calibration["solution_fingerprint"],
+                "camera_set": rig_calibration["camera_set"],
             },
         }
         _write_json(temporary / "manifest.json", manifest)
@@ -144,7 +160,7 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
         raise ValueError("TSDF map artifact is missing screenshots directory")
     manifest = load_json(artifact / "manifest.json")
     schema = manifest.get("schema_version")
-    if schema not in {_SCHEMA_V1, _SCHEMA}:
+    if schema not in {_SCHEMA_V1, _SCHEMA_V2, _SCHEMA}:
         raise ValueError("unsupported TSDF map artifact schema")
     if (
         not isinstance(manifest.get("workspace_frame"), str)
@@ -166,7 +182,7 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
         "metrics": "metrics.json",
         "source_recording": "source_recording.json",
     }
-    if schema == _SCHEMA:
+    if schema in {_SCHEMA_V2, _SCHEMA}:
         expected_files.update(
             {
                 "point_cloud_raw": "point_cloud_raw.ply",
@@ -174,6 +190,8 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
                 "point_cloud_sampled": "point_cloud_sampled.ply",
             }
         )
+    if schema == _SCHEMA:
+        expected_files["rig_calibration"] = "rig_calibration.json"
     if manifest.get("files") != expected_files:
         raise ValueError("TSDF map manifest exact file contract mismatch")
     if not set(expected_files.values()) <= set(checksums):
@@ -206,8 +224,48 @@ def validate_tsdf_map_artifact(root: str | Path) -> dict[str, Any]:
         or _SHA256.fullmatch(digest) is None
     ):
         raise ValueError("TSDF source recording receipt is invalid")
+    if schema == _SCHEMA:
+        rig_calibration = load_json(artifact / "rig_calibration.json")
+        checked = _validate_map_rig_calibration(
+            rig_calibration, workspace_frame=manifest["workspace_frame"]
+        )
+        summary = manifest.get("rig_calibration")
+        expected_summary = {
+            "calibration_mode": checked["calibration_mode"],
+            "rig_calibration_fingerprint": checked[
+                "rig_calibration_fingerprint"
+            ],
+            "solution_fingerprint": checked["solution_fingerprint"],
+            "camera_set": checked["camera_set"],
+        }
+        if summary != expected_summary:
+            raise ValueError("TSDF map rig calibration summary mismatch")
     load_tsdf_config(artifact / "config.resolved.yaml")
     return manifest
+
+
+def validate_tsdf_map_rig_calibration_compatibility(
+    root: str | Path, live_provenance: dict[str, Any]
+) -> None:
+    """Fail closed when an initial map and live rig use different geometry."""
+
+    artifact = Path(root)
+    manifest = validate_tsdf_map_artifact(artifact)
+    if manifest["schema_version"] == _SCHEMA:
+        map_provenance = load_json(artifact / "rig_calibration.json")
+    else:
+        map_provenance = {
+            "calibration_mode": "fixed_provision",
+            "rig_calibration_fingerprint": None,
+        }
+    mismatches = []
+    for name in ("calibration_mode", "rig_calibration_fingerprint"):
+        if map_provenance.get(name) != live_provenance.get(name):
+            mismatches.append(name)
+    if mismatches:
+        raise ValueError(
+            "initial map/live rig calibration mismatch: " + ", ".join(mismatches)
+        )
 
 
 def load_tsdf_map_artifact(root: str | Path) -> Open3dTsdfMap:
@@ -426,3 +484,75 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _normalize_rig_calibration_provenance(
+    value: dict[str, Any] | None, *, workspace_frame: str
+) -> dict[str, Any]:
+    raw = dict(value or {})
+    mode = raw.get("calibration_mode", "fixed_provision")
+    normalized = {
+        "schema_version": "pointcloud-builder.tsdf-rig-calibration.v1",
+        "workspace_frame": workspace_frame,
+        "calibration_mode": mode,
+        "rig_calibration_schema": raw.get("rig_calibration_schema"),
+        "rig_calibration_fingerprint": raw.get("rig_calibration_fingerprint"),
+        "solution_fingerprint": raw.get("solution_fingerprint"),
+        "camera_set": sorted(raw.get("camera_bundle_hashes", {})),
+        "camera_bundle_hashes": dict(sorted(raw.get("camera_bundle_hashes", {}).items())),
+        "production_applied": True,
+    }
+    return _validate_map_rig_calibration(normalized, workspace_frame=workspace_frame)
+
+
+def _validate_map_rig_calibration(
+    value: object, *, workspace_frame: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("TSDF map rig calibration must be a mapping")
+    if (
+        value.get("schema_version")
+        != "pointcloud-builder.tsdf-rig-calibration.v1"
+        or value.get("workspace_frame") != workspace_frame
+        or value.get("production_applied") is not True
+    ):
+        raise ValueError("TSDF map rig calibration identity mismatch")
+    camera_set = value.get("camera_set")
+    hashes = value.get("camera_bundle_hashes")
+    if (
+        not isinstance(camera_set, list)
+        or camera_set != sorted(set(camera_set))
+        or not isinstance(hashes, dict)
+        or sorted(hashes) != camera_set
+    ):
+        raise ValueError("TSDF map camera set/hash mismatch")
+    mode = value.get("calibration_mode")
+    if mode == "fixed_provision":
+        if any(
+            value.get(name) is not None
+            for name in (
+                "rig_calibration_schema",
+                "rig_calibration_fingerprint",
+                "solution_fingerprint",
+            )
+        ):
+            raise ValueError("fixed TSDF map cannot claim deployed calibration")
+    elif mode == "validated_multipose_deployment":
+        if value.get("rig_calibration_schema") != (
+            "pointcloud-builder.rig-calibration-deployment.v1"
+        ):
+            raise ValueError("TSDF map deployment schema mismatch")
+        for name in ("rig_calibration_fingerprint", "solution_fingerprint"):
+            digest = value.get(name)
+            if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+                raise ValueError(f"TSDF map {name} is invalid")
+        if not camera_set:
+            raise ValueError("deployed TSDF map requires a camera set")
+        if any(
+            not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
+            for digest in hashes.values()
+        ):
+            raise ValueError("TSDF map CameraBundle hash is invalid")
+    else:
+        raise ValueError("TSDF map calibration mode is unsupported")
+    return dict(value)

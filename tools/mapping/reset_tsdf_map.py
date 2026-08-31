@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pointcloud_builder.mapping.artifact import (
     load_tsdf_map_artifact,
+    validate_tsdf_map_artifact,
     write_tsdf_map_artifact,
 )
 from pointcloud_builder.mapping.validation import load_json
@@ -20,7 +21,13 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     output = _private_output(args.output)
+    manifest = validate_tsdf_map_artifact(args.map)
     source = load_json(Path(args.map) / "source_recording.json")
+    rig_calibration = (
+        load_json(Path(args.map) / "rig_calibration.json")
+        if manifest["schema_version"] == "pointcloud-builder.tsdf-map-artifact.v3"
+        else None
+    )
     mapper = load_tsdf_map_artifact(args.map)
     try:
         mapper.unfreeze()
@@ -34,6 +41,7 @@ def main() -> None:
                 "reset_from_validated_map": True,
                 "new_map_revision": state.map_revision,
             },
+            rig_calibration_provenance=rig_calibration,
         )
     finally:
         mapper.close()

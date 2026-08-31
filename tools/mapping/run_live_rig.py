@@ -15,6 +15,9 @@ import torch
 import yaml
 
 from pointcloud_builder.rig import build_live_rig, load_rig_config
+from pointcloud_builder.rig_calibration.deployment import (
+    runtime_rig_calibration_provenance,
+)
 from pointcloud_builder.visualization import save_ascii_ply
 from pointcloud_builder.workspace import (
     ExpectedPlaneRegion,
@@ -67,10 +70,15 @@ def main() -> None:
         memory_samples.append(_memory_sample(0, process))
 
     runs = []
+    calibration_provenance = None
     for run_index, frame_count in enumerate((args.frames, args.reopen_frames)):
         if frame_count == 0:
             continue
         pipeline = build_live_rig(config, device="cuda")
+        resolved = runtime_rig_calibration_provenance(pipeline.processor.runtimes)
+        if calibration_provenance is not None and resolved != calibration_provenance:
+            raise ValueError("rig calibration provenance changed across reopen")
+        calibration_provenance = resolved
         runs.append(
             _run_once(
                 pipeline,
@@ -154,6 +162,7 @@ def main() -> None:
         "acceptance_scope": args.acceptance_scope,
         "enforced_gates": list(enforced_gates),
         "depth_modes": depth_modes,
+        "rig_calibration": calibration_provenance,
         "runs": runs,
         "processed_fps": processed_fps,
         "matcher_retention_ratio_passed": bool(matcher["match_ratio"] >= 0.95),
@@ -230,7 +239,7 @@ def _run_once(
     evidence: bool,
     memory_sample_every: int,
     memory_samples: list[dict[str, int | None]],
-    process: psutil.Process,
+    process: Any,
 ) -> dict[str, Any]:
     plane_records: dict[str, list[dict[str, Any]]] = {}
     stage_records: dict[str, list[dict[str, Any]]] = {}
@@ -491,7 +500,7 @@ def _plane(raw: dict[str, Any], frame: str) -> ExpectedPlaneRegion:
     )
 
 
-def _memory_sample(frame_index: int, process: psutil.Process) -> dict[str, int | None]:
+def _memory_sample(frame_index: int, process: Any) -> dict[str, int | None]:
     return {
         "frame_index": frame_index,
         "rss_bytes": int(process.memory_info().rss),

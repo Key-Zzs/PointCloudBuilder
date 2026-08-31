@@ -4,18 +4,18 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from collections.abc import MutableSequence, Sequence
-from dataclasses import replace
 import json
-from pathlib import Path
 import resource
 import signal
 import statistics
+import sys
 import tempfile
 import time
+from collections import deque
+from collections.abc import MutableSequence, Sequence
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
-import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -25,18 +25,24 @@ import numpy as np
 
 from pointcloud_builder.mapping.artifact import (
     validate_tsdf_map_artifact,
+    validate_tsdf_map_rig_calibration_compatibility,
     write_tsdf_map_artifact,
 )
 from pointcloud_builder.mapping.config import load_tsdf_config
 from pointcloud_builder.mapping.open3d import Open3dTsdfMap
 from pointcloud_builder.mapping.performance import evaluate_rss_plateau
 from pointcloud_builder.mapping.process import AsyncTsdfMapper, MapperProcessConfig
-from pointcloud_builder.mapping.recording import RigDepthRecordingWriter
 from pointcloud_builder.mapping.provenance import rig_backend_provenance
+from pointcloud_builder.mapping.recording import (
+    RigDepthRecordingWriter,
+    validate_rig_depth_recording,
+)
 from pointcloud_builder.mapping.validation import sha256_file
 from pointcloud_builder.reconstruction_timing import summarize_ms
 from pointcloud_builder.rig import build_live_rig, load_rig_config
-
+from pointcloud_builder.rig_calibration.deployment import (
+    configured_rig_calibration_provenance,
+)
 
 DEFAULT_FINITE_MATCHED_SETS = 300
 DEFAULT_FINITE_VIEWER_POINT_BUDGET = 30_000
@@ -135,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise ValueError("--map-output requires --snapshot-baseline-report")
 
     rig_config = load_rig_config(args.rig_config)
+    live_calibration_provenance = configured_rig_calibration_provenance(rig_config)
     tsdf_config = load_tsdf_config(args.tsdf_config)
     baseline = (
         None
@@ -154,6 +161,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         manifest = validate_tsdf_map_artifact(initial_root)
         if manifest["workspace_frame"] != rig_config.output_frame:
             raise ValueError("initial map workspace differs from live rig")
+        validate_tsdf_map_rig_calibration_compatibility(
+            initial_root, live_calibration_provenance
+        )
         initial_config = load_tsdf_config(initial_root / "config.resolved.yaml")
         _validate_initial_map_compatibility(initial_config, tsdf_config)
         initial_volume = str(initial_root / "volume.npz")
@@ -278,6 +288,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                         / max(time.perf_counter() - started, 1e-9),
                         "input_points": float(result.concatenated.points.shape[0]),
                         "fused_voxels": float(result.fused.points.shape[0]),
+                        "production_applied": 1.0,
                         "actual_concatenated_points": float(
                             result.concatenated.points.shape[0]
                         ),
@@ -391,6 +402,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
 
         recording_sha = None
+        recording_calibration_provenance = live_calibration_provenance
         if writer is not None:
             writer.finalize(
                 report={
@@ -407,6 +419,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             writer_published = True
             assert recording_output is not None
             recording_sha = sha256_file(recording_output / "manifest.json")
+            recording_calibration_provenance = validate_rig_depth_recording(
+                recording_output
+            )["rig_calibration"]
 
         if map_output is not None:
             mapper.freeze()
@@ -448,6 +463,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                                 "duration_s": duration_s,
                                 "mapper_telemetry": mapper_telemetry.__dict__,
                             },
+                            rig_calibration_provenance=(
+                                recording_calibration_provenance
+                            ),
                         )
                         map_published = True
                     finally:
@@ -533,6 +551,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             "map_published": map_published,
             "publication_error": publication_error,
             "recording_published": writer_published,
+            "rig_calibration": live_calibration_provenance,
             "gates": mapping_gates,
             "passed": all(mapping_gates.values()),
         }

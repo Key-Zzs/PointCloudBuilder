@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import queue
 import threading
 import time
+from dataclasses import asdict, dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,6 +29,11 @@ from pointcloud_builder.rig.pipeline import RigCameraRuntime
 from pointcloud_builder.rig.processor import RigFrameProcessor
 from pointcloud_builder.rig.types import RigBuildResult, RigFrameSet
 from pointcloud_builder.rig.validation import validate_rig_runtimes
+from pointcloud_builder.rig_calibration.deployment import (
+    apply_deployment_to_context,
+    camera_bundle_artifact_sha256,
+    resolve_configured_rig_calibration,
+)
 from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 
 
@@ -275,6 +280,8 @@ def build_live_rig(
         )
     no_sampling = SamplingConfig(mode="stride", num_points=1, enabled=False)
     camera_configs: dict[str, Any] = {}
+    bundles: dict[str, Any] = {}
+    provision_artifacts: dict[str, str] = {}
     runtimes: dict[str, RigCameraRuntime] = {}
     serials: set[str] = set()
     for camera in config.enabled_cameras:
@@ -301,6 +308,18 @@ def build_live_rig(
             raise ValueError(
                 f"camera {camera.name!r} provision parent frame differs from rig output"
             )
+        camera_configs[camera.name] = camera_config
+        bundles[camera.name] = bundle
+        provision_artifacts[camera.name] = source.provision_artifact
+
+    deployment = resolve_configured_rig_calibration(
+        config,
+        bundles=bundles,
+        provision_artifacts=provision_artifacts,
+    )
+    for camera in config.enabled_cameras:
+        source = camera.source
+        bundle = bundles[camera.name]
         if camera.depth.mode == "native":
             context = create_native_builder(
                 bundle,
@@ -328,18 +347,25 @@ def build_live_rig(
                 sampling=no_sampling,
                 use_rgb=camera.pointcloud.use_rgb,
             )
-        camera_configs[camera.name] = camera_config
+        context, calibration_provenance = apply_deployment_to_context(
+            context, camera.name, deployment
+        )
+        calibration_provenance["camera_bundle_sha256"] = (
+            camera_bundle_artifact_sha256(source.provision_artifact, bundle=bundle)
+        )
         runtimes[camera.name] = RigCameraRuntime(
             source=SimpleNamespace(camera_name=camera.name),
             pipeline=SingleCameraWorkspacePipeline(
                 context,
                 workspace_crop=config.workspace_crop,
                 provision_sha256=provision_identity_sha256(source.provision_artifact),
+                calibration_provenance=calibration_provenance,
             ),
             provenance={
                 "source_type": "camera_rig_live",
                 "depth_mode": camera.depth.mode,
                 "pointcloud_format": ("xyzrgb" if camera.pointcloud.use_rgb else "xyz"),
+                **calibration_provenance,
             },
         )
     validate_rig_runtimes(config, runtimes)

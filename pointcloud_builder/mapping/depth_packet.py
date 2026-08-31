@@ -40,6 +40,7 @@ def observation_from_same_pass(
     resolved_depth: Any,
     context: Any,
     provision_sha256: str,
+    calibration_provenance: dict[str, Any] | None = None,
 ) -> RigDepthObservation:
     """Copy only the depth geometry consumed by TSDF; never derive it from clouds."""
 
@@ -63,6 +64,7 @@ def observation_from_same_pass(
         raise ValueError(f"unsupported rig depth mode: {context.depth_mode!r}")
     valid = np.isfinite(depth) & (depth > 0)
     bundle_intrinsics = context.calibration.bundle.intrinsics[stream_name]
+    provenance = dict(calibration_provenance or {})
     return RigDepthObservation(
         camera_name=str(mapping["camera_name"]),
         depth=depth,
@@ -80,4 +82,13 @@ def observation_from_same_pass(
         distortion_model=str(bundle_intrinsics.distortion_model),
         distortion_coeffs=tuple(float(x) for x in bundle_intrinsics.distortion_coeffs),
         rectified=rectified,
+        calibration_mode=str(
+            provenance.get("calibration_mode", "fixed_provision")
+        ),
+        rig_calibration_schema=provenance.get("rig_calibration_schema"),
+        rig_calibration_fingerprint=provenance.get(
+            "rig_calibration_fingerprint"
+        ),
+        solution_fingerprint=provenance.get("solution_fingerprint"),
+        camera_bundle_sha256=provenance.get("camera_bundle_sha256"),
     )

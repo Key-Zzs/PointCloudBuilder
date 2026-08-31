@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import statistics
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -89,6 +89,7 @@ def main() -> None:
                 },
                 "estimated_attribute_bytes": config.estimated_attribute_bytes,
             },
+            rig_calibration_provenance=manifest.get("rig_calibration"),
         )
     finally:
         mapper.close()

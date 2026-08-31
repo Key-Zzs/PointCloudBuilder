@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import time
+from pathlib import Path
 
-from pointcloud_builder.mapping.recording import RigDepthRecordingWriter
 from pointcloud_builder.mapping.provenance import rig_backend_provenance
+from pointcloud_builder.mapping.recording import RigDepthRecordingWriter
 from pointcloud_builder.rig import build_live_rig, load_rig_config
+from pointcloud_builder.rig_calibration.deployment import (
+    runtime_rig_calibration_provenance,
+)
 
 
 def main() -> None:
@@ -32,6 +35,9 @@ def main() -> None:
             f"rig depth modes {sorted(actual_sources)} differ from --depth-source"
         )
     pipeline = build_live_rig(config, device="cuda")
+    calibration_provenance = runtime_rig_calibration_provenance(
+        pipeline.processor.runtimes
+    )
     backend_provenance = (
         rig_backend_provenance(config) if args.depth_source == "ffs_stereo" else None
     )
@@ -54,6 +60,7 @@ def main() -> None:
                 "matched_sets": args.matched_sets,
                 "depth_source": args.depth_source,
                 "backend_provenance": backend_provenance,
+                "rig_calibration": calibration_provenance,
                 "duration_s": duration_s,
                 "recording_fps": args.matched_sets / duration_s,
                 "matcher": acquisition["matcher"],
@@ -74,6 +81,7 @@ def main() -> None:
                 "matched_sets": args.matched_sets,
                 "depth_source": args.depth_source,
                 "backend_provenance": backend_provenance,
+                "rig_calibration": calibration_provenance,
                 "recording_fps": args.matched_sets / duration_s,
                 "published": True,
             },

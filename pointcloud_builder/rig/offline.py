@@ -13,18 +13,36 @@ from pointcloud_builder.mapping.depth_packet import provision_identity_sha256
 from pointcloud_builder.rig.config import RigConfig
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
 from pointcloud_builder.rig.sources import CameraRigReplaySource
+from pointcloud_builder.rig_calibration.deployment import (
+    apply_deployment_to_context,
+    camera_bundle_artifact_sha256,
+    resolve_configured_rig_calibration,
+)
 from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 
 
 def build_replay_rig(config: RigConfig, *, device: str = "auto") -> OfflineRigPipeline:
     runtimes: dict[str, RigCameraRuntime] = {}
     no_sampling = SamplingConfig(mode="stride", num_points=1, enabled=False)
+    bundles = {}
+    provision_artifacts = {}
     for camera in config.enabled_cameras:
         if camera.source.type != "camera_rig_replay":
             raise ValueError(
                 f"camera {camera.name!r} requires an injected synthetic runtime"
             )
         bundle = load_provisioned_camera_bundle(camera.source.provision_artifact)
+        if bundle.device.camera_name != camera.name:
+            raise ValueError(f"camera {camera.name!r} provision bundle identity mismatch")
+        bundles[camera.name] = bundle
+        provision_artifacts[camera.name] = camera.source.provision_artifact
+    deployment = resolve_configured_rig_calibration(
+        config,
+        bundles=bundles,
+        provision_artifacts=provision_artifacts,
+    )
+    for camera in config.enabled_cameras:
+        bundle = bundles[camera.name]
         if camera.depth.mode == "native":
             context = create_native_builder(
                 bundle,
@@ -52,6 +70,14 @@ def build_replay_rig(config: RigConfig, *, device: str = "auto") -> OfflineRigPi
                 sampling=no_sampling,
                 use_rgb=camera.pointcloud.use_rgb,
             )
+        context, calibration_provenance = apply_deployment_to_context(
+            context, camera.name, deployment
+        )
+        calibration_provenance["camera_bundle_sha256"] = (
+            camera_bundle_artifact_sha256(
+                camera.source.provision_artifact, bundle=bundle
+            )
+        )
         if context.workspace_frame != config.output_frame:
             raise ValueError(
                 f"camera {camera.name!r} output frame differs from bundle parent frame"
@@ -64,11 +90,13 @@ def build_replay_rig(config: RigConfig, *, device: str = "auto") -> OfflineRigPi
                 provision_sha256=provision_identity_sha256(
                     camera.source.provision_artifact
                 ),
+                calibration_provenance=calibration_provenance,
             ),
             provenance={
                 "source_type": "camera_rig_replay",
                 "depth_mode": camera.depth.mode,
                 "pointcloud_format": ("xyzrgb" if camera.pointcloud.use_rgb else "xyz"),
+                **calibration_provenance,
             },
         )
     return OfflineRigPipeline(config, runtimes)

@@ -3,6 +3,7 @@
 from pointcloud_builder.rig.config import (
     RIG_SCHEMA_VERSION,
     RigCameraConfig,
+    RigCalibrationDeploymentConfig,
     RigConfig,
     RigDepthConfig,
     RigPointCloudConfig,
@@ -48,6 +49,7 @@ __all__ = [
     "PerCameraCloud",
     "PerCameraFramedCloud",
     "RigBuildResult",
+    "RigCalibrationDeploymentConfig",
     "RigCameraConfig",
     "RigCameraRuntime",
     "RigFrameProcessor",

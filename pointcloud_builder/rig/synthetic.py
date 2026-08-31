@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-
 from camera_rig.api import CameraBundle, CameraFrame, StreamFrame
 
 from pointcloud_builder.config import SamplingConfig
@@ -14,6 +13,11 @@ from pointcloud_builder.integrations.camera_rig import create_native_builder
 from pointcloud_builder.rig.config import RigConfig
 from pointcloud_builder.rig.pipeline import OfflineRigPipeline, RigCameraRuntime
 from pointcloud_builder.rig.sources import SyntheticCameraSource
+from pointcloud_builder.rig_calibration.deployment import (
+    apply_deployment_to_context,
+    camera_bundle_artifact_sha256,
+    resolve_configured_rig_calibration,
+)
 from pointcloud_builder.workspace import SingleCameraWorkspacePipeline
 
 
@@ -37,12 +41,13 @@ def create_synthetic_scene(
 ) -> SyntheticScene:
     """Render each camera from its own optical pose; no depth image is copied."""
 
-    if not 1 <= len(camera_names) <= 3:
-        raise ValueError("synthetic scene supports one to three cameras")
+    if not 1 <= len(camera_names) <= 4:
+        raise ValueError("synthetic scene supports one to four cameras")
     positions = (
         np.array((-0.62, -0.58, 0.88), dtype=np.float64),
         np.array((0.64, -0.52, 0.84), dtype=np.float64),
         np.array((0.02, 0.68, 0.96), dtype=np.float64),
+        np.array((0.00, -0.76, 1.02), dtype=np.float64),
     )
     target = np.array((0.0, 0.0, 0.08), dtype=np.float64)
     offsets = timestamp_offsets_ns or {}
@@ -83,11 +88,24 @@ def create_synthetic_scene(
 def build_synthetic_rig(config: RigConfig, scene: SyntheticScene) -> OfflineRigPipeline:
     no_sampling = SamplingConfig(mode="stride", num_points=1, enabled=False)
     runtimes: dict[str, RigCameraRuntime] = {}
+    bundles = {}
+    provision_artifacts = {}
     for camera in config.enabled_cameras:
         if camera.source.type != "synthetic":
             raise ValueError(f"camera {camera.name!r} is not configured as synthetic")
         try:
-            bundle = scene.bundles[camera.name]
+            bundles[camera.name] = scene.bundles[camera.name]
+        except KeyError as error:
+            raise ValueError(f"missing bundle for camera {camera.name!r}") from error
+        provision_artifacts[camera.name] = camera.source.provision_artifact
+    deployment = resolve_configured_rig_calibration(
+        config,
+        bundles=bundles,
+        provision_artifacts=provision_artifacts,
+    )
+    for camera in config.enabled_cameras:
+        try:
+            bundle = bundles[camera.name]
             frames = scene.frames[camera.name]
         except KeyError as error:
             raise ValueError(f"missing bundle for camera {camera.name!r}") from error
@@ -99,6 +117,14 @@ def build_synthetic_rig(config: RigConfig, scene: SyntheticScene) -> OfflineRigP
             sampling=no_sampling,
             use_rgb=camera.pointcloud.use_rgb,
         )
+        context, calibration_provenance = apply_deployment_to_context(
+            context, camera.name, deployment
+        )
+        calibration_provenance["camera_bundle_sha256"] = (
+            camera_bundle_artifact_sha256(
+                camera.source.provision_artifact, bundle=bundle
+            )
+        )
         if context.workspace_frame != config.output_frame:
             raise ValueError(
                 f"camera {camera.name!r} output frame differs from bundle parent frame"
@@ -106,13 +132,16 @@ def build_synthetic_rig(config: RigConfig, scene: SyntheticScene) -> OfflineRigP
         runtimes[camera.name] = RigCameraRuntime(
             source=SyntheticCameraSource(camera.name, frames),
             pipeline=SingleCameraWorkspacePipeline(
-                context, workspace_crop=config.workspace_crop
+                context,
+                workspace_crop=config.workspace_crop,
+                calibration_provenance=calibration_provenance,
             ),
             provenance={
                 "source_type": "synthetic",
                 "scene": "analytic_plane_box_v1",
                 "depth_mode": "native",
                 "bundle_id": bundle.bundle_id,
+                **calibration_provenance,
             },
         )
     return OfflineRigPipeline(config, runtimes)

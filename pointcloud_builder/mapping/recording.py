@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import os
-from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Iterator
+from collections.abc import Iterator
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from pointcloud_builder.camera_model import CameraIntrinsics
-from pointcloud_builder.mapping.types import RigDepthFrameSet, RigDepthObservation
 from pointcloud_builder.mapping.provenance import validate_production_ffs_provenance
+from pointcloud_builder.mapping.types import RigDepthFrameSet, RigDepthObservation
 from pointcloud_builder.mapping.validation import (
     artifact_member,
     load_json,
@@ -23,7 +24,8 @@ from pointcloud_builder.mapping.validation import (
 )
 
 _SCHEMA_V1 = "pointcloud-builder.rig-depth-recording.v1"
-_SCHEMA = "pointcloud-builder.rig-depth-recording.v2"
+_SCHEMA_V2 = "pointcloud-builder.rig-depth-recording.v2"
+_SCHEMA = "pointcloud-builder.rig-depth-recording.v3"
 
 
 class RigDepthRecordingWriter:
@@ -119,6 +121,11 @@ class RigDepthRecordingWriter:
             "distortion_model": observation.distortion_model,
             "distortion_coeffs": list(observation.distortion_coeffs),
             "rectified": observation.rectified,
+            "calibration_mode": observation.calibration_mode,
+            "rig_calibration_schema": observation.rig_calibration_schema,
+            "rig_calibration_fingerprint": observation.rig_calibration_fingerprint,
+            "solution_fingerprint": observation.solution_fingerprint,
+            "camera_bundle_sha256": observation.camera_bundle_sha256,
         }
         previous = self._calibrations.get(observation.camera_name)
         if previous is not None and previous != value:
@@ -144,6 +151,30 @@ class RigDepthRecordingWriter:
             backend_provenance = validate_production_ffs_provenance(
                 self.backend_provenance, camera_names
             )
+        modes = {value["calibration_mode"] for value in self._calibrations.values()}
+        schemas = {
+            value["rig_calibration_schema"] for value in self._calibrations.values()
+        }
+        fingerprints = {
+            value["rig_calibration_fingerprint"]
+            for value in self._calibrations.values()
+        }
+        solutions = {
+            value["solution_fingerprint"] for value in self._calibrations.values()
+        }
+        if any(len(values) != 1 for values in (modes, schemas, fingerprints, solutions)):
+            raise ValueError("recording cameras do not share one rig calibration")
+        calibration_provenance = {
+            "calibration_mode": next(iter(modes)),
+            "rig_calibration_schema": next(iter(schemas)),
+            "rig_calibration_fingerprint": next(iter(fingerprints)),
+            "solution_fingerprint": next(iter(solutions)),
+            "camera_bundle_hashes": {
+                name: self._calibrations[name]["camera_bundle_sha256"]
+                for name in camera_names
+            },
+            "production_applied": True,
+        }
         manifest = {
             "schema_version": _SCHEMA,
             "depth_source": self.depth_source,
@@ -155,6 +186,7 @@ class RigDepthRecordingWriter:
             "matched_sets": self._sets,
             "calibrations": [f"calibration/{name}.json" for name in camera_names],
             "backend_provenance": backend_provenance,
+            "rig_calibration": calibration_provenance,
         }
         _write_json(self._temporary / "manifest.json", manifest)
         _write_json(self._temporary / "reports" / "recording.json", report or {})
@@ -187,7 +219,7 @@ def validate_rig_depth_recording(root: str | Path) -> dict[str, Any]:
     checksums = validate_checksums(artifact)
     manifest = load_json(artifact / "manifest.json")
     schema = manifest.get("schema_version")
-    if schema not in {_SCHEMA_V1, _SCHEMA}:
+    if schema not in {_SCHEMA_V1, _SCHEMA_V2, _SCHEMA}:
         raise ValueError("unsupported rig-depth recording schema")
     camera_names = manifest.get("camera_names")
     matched_sets = manifest.get("matched_sets")
@@ -210,13 +242,17 @@ def validate_rig_depth_recording(root: str | Path) -> dict[str, Any]:
     expected_calibrations = [f"calibration/{name}.json" for name in camera_names]
     if manifest.get("calibrations") != expected_calibrations:
         raise ValueError("recording calibration file set mismatch")
-    if schema == _SCHEMA:
+    if schema in {_SCHEMA_V2, _SCHEMA}:
         if manifest["depth_source"] == "ffs_stereo":
             validate_production_ffs_provenance(
                 manifest.get("backend_provenance"), camera_names
             )
         elif manifest.get("backend_provenance") is not None:
             raise ValueError("native recording cannot contain FFS backend provenance")
+    if schema == _SCHEMA:
+        _validate_rig_calibration_provenance(
+            manifest.get("rig_calibration"), camera_names
+        )
     indices = [
         item.get("matched_set_index") for item in matched_sets if isinstance(item, dict)
     ]
@@ -328,6 +364,17 @@ def iter_rig_depth_recording(
                     distortion_model=calibration["distortion_model"],
                     distortion_coeffs=tuple(calibration["distortion_coeffs"]),
                     rectified=calibration["rectified"],
+                    calibration_mode=calibration.get(
+                        "calibration_mode", "fixed_provision"
+                    ),
+                    rig_calibration_schema=calibration.get(
+                        "rig_calibration_schema"
+                    ),
+                    rig_calibration_fingerprint=calibration.get(
+                        "rig_calibration_fingerprint"
+                    ),
+                    solution_fingerprint=calibration.get("solution_fingerprint"),
+                    camera_bundle_sha256=calibration.get("camera_bundle_sha256"),
                 )
             )
         yield RigDepthFrameSet(
@@ -346,3 +393,57 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _validate_rig_calibration_provenance(
+    value: object, camera_names: list[str]
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("recording rig calibration provenance must be a mapping")
+    expected = {
+        "calibration_mode",
+        "rig_calibration_schema",
+        "rig_calibration_fingerprint",
+        "solution_fingerprint",
+        "camera_bundle_hashes",
+        "production_applied",
+    }
+    if set(value) != expected or value.get("production_applied") is not True:
+        raise ValueError("recording rig calibration provenance field mismatch")
+    hashes = value.get("camera_bundle_hashes")
+    if not isinstance(hashes, dict) or sorted(hashes) != camera_names:
+        raise ValueError("recording CameraBundle hash set mismatch")
+    mode = value.get("calibration_mode")
+    if mode == "fixed_provision":
+        if any(
+            value.get(name) is not None
+            for name in (
+                "rig_calibration_schema",
+                "rig_calibration_fingerprint",
+                "solution_fingerprint",
+            )
+        ):
+            raise ValueError("fixed recording cannot claim deployed calibration")
+    elif mode == "validated_multipose_deployment":
+        if value.get("rig_calibration_schema") != (
+            "pointcloud-builder.rig-calibration-deployment.v1"
+        ):
+            raise ValueError("recording deployment schema mismatch")
+        for name in ("rig_calibration_fingerprint", "solution_fingerprint"):
+            digest = value.get(name)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"recording {name} is invalid")
+        if any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in hashes.values()
+        ):
+            raise ValueError("recording deployed CameraBundle hash is invalid")
+    else:
+        raise ValueError("recording calibration_mode is unsupported")
+    return dict(value)
