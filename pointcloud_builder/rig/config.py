@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,6 +80,12 @@ class RigLiveConfig:
 
 
 @dataclass(frozen=True)
+class RigCalibrationDeploymentConfig:
+    type: Literal["validated_multipose"]
+    artifact: str
+
+
+@dataclass(frozen=True)
 class RigConfig:
     schema_version: str
     output_frame: str
@@ -89,6 +95,7 @@ class RigConfig:
     fusion: VoxelFusionConfig
     sampling: SamplingConfig
     live: RigLiveConfig | None = None
+    rig_calibration: RigCalibrationDeploymentConfig | None = None
 
     @property
     def fusion_enabled(self) -> bool:
@@ -119,6 +126,7 @@ def parse_rig_config(raw: dict[str, Any], *, base_dir: Path | None = None) -> Ri
             "fusion",
             "sampling",
             "live",
+            "rig_calibration",
         },
         "rig",
     )
@@ -167,6 +175,24 @@ def parse_rig_config(raw: dict[str, Any], *, base_dir: Path | None = None) -> Ri
         fusion=fusion_config,
         sampling=_sampling(raw.get("sampling")),
         live=live,
+        rig_calibration=(
+            None
+            if raw.get("rig_calibration") is None
+            else _rig_calibration(raw["rig_calibration"], base_dir)
+        ),
+    )
+
+
+def _rig_calibration(
+    value: Any, base_dir: Path | None
+) -> RigCalibrationDeploymentConfig:
+    raw = _mapping(value, "rig_calibration")
+    _keys(raw, {"type", "artifact"}, "rig_calibration")
+    if raw.get("type") != "validated_multipose":
+        raise ValueError("rig_calibration.type must be 'validated_multipose'")
+    return RigCalibrationDeploymentConfig(
+        type="validated_multipose",
+        artifact=_path(raw.get("artifact"), "rig_calibration.artifact", base_dir),
     )
 
 
