@@ -3,29 +3,32 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 
+from pointcloud_builder.camera_model import CameraIntrinsics
+from pointcloud_builder.integrations.camera_rig.types import FrameExplicitTransform
+from pointcloud_builder.visualization.rerun.blueprint import default_blueprint
 from pointcloud_builder.visualization.rerun.conversion import (
     _bounded_mesh,
     bounded_cloud,
     bounded_rgb_preview,
+    packet_from_rig_result,
 )
-from pointcloud_builder.visualization.rerun.blueprint import default_blueprint
+from pointcloud_builder.visualization.rerun.logger import RerunPacketLogger
 from pointcloud_builder.visualization.rerun.packet import (
     CameraVisualization,
     MapVisualization,
     PinholeVisualization,
     VisualizationPacket,
 )
-from pointcloud_builder.visualization.rerun.logger import RerunPacketLogger
 from pointcloud_builder.visualization.rerun.process import (
     RerunOutputConfig,
     RerunViewerProcess,
@@ -154,6 +157,62 @@ def test_visualization_downsampling_is_bounded_and_deterministic() -> None:
     preview, stride = bounded_rgb_preview(np.zeros((20, 1001, 3), dtype=np.uint8))
     assert stride == 4
     assert preview.shape == (5, 251, 3)
+
+
+def test_camera_frustum_uses_active_geometry_override() -> None:
+    T_workspace_from_source = np.eye(4)
+    T_workspace_from_source[0, 3] = 1.0
+    T_color_from_source = np.eye(4)
+    T_color_from_source[0, 3] = 0.1
+    calibration = SimpleNamespace(
+        intrinsic_frames={"color": "camera_a/color"},
+        intrinsics={
+            "color": CameraIntrinsics(
+                width=6, height=4, fx=4.0, fy=4.0, cx=3.0, cy=2.0
+            )
+        },
+        transform=lambda source, target: FrameExplicitTransform(
+            source_frame=source,
+            target_frame=target,
+            matrix=T_color_from_source,
+        ),
+    )
+    context = SimpleNamespace(
+        source_frame="camera_a/ir_left",
+        workspace_frame="workspace",
+        calibration=calibration,
+        T_workspace_from_source=FrameExplicitTransform(
+            source_frame="camera_a/ir_left",
+            target_frame="workspace",
+            matrix=T_workspace_from_source,
+        ),
+    )
+    cloud = torch.zeros((5, 6), dtype=torch.float32)
+    envelope = SimpleNamespace(
+        frame=SimpleNamespace(
+            streams={"color": SimpleNamespace(data=np.zeros((4, 6, 3), dtype=np.uint8))}
+        )
+    )
+    result = SimpleNamespace(
+        frame_match=SimpleNamespace(
+            match_sequence_index=0,
+            match_timestamp_ns=1_000_000_000,
+            envelopes={"camera_a": envelope},
+        ),
+        per_camera_workspace=(
+            SimpleNamespace(camera_name="camera_a", cloud=SimpleNamespace(points=cloud)),
+        ),
+        concatenated=SimpleNamespace(points=cloud),
+        fused=SimpleNamespace(points=cloud),
+        sampled=SimpleNamespace(points=cloud),
+    )
+    runtimes = {
+        "camera_a": SimpleNamespace(pipeline=SimpleNamespace(context=context))
+    }
+
+    packet = packet_from_rig_result(result, runtimes)
+
+    assert packet.cameras[0].T_workspace_from_color[0, 3] == pytest.approx(0.9)
 
 
 def test_map_mesh_packet_is_bounded_and_indices_remain_valid() -> None:

@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import numpy as np
 
+import pointcloud_builder.rig_calibration.validation as validation_module
 from pointcloud_builder.integrations.camera_rig.types import FrameExplicitTransform
 from pointcloud_builder.rig_calibration.artifact import (
     load_observations,
@@ -68,6 +69,36 @@ def test_multicamera_holdout_pose_validation_passes() -> None:
     assert report["holdout"]["status"] == "PASS"
     assert report["holdout"]["pose_count"] == 2
     assert report["holdout"]["global_reprojection"]["p95_px"] < 1.0
+    for metrics in report["holdout"]["per_pose"].values():
+        assert metrics["target_pose_fit"]["success"] is True
+        assert metrics["target_pose_fit"]["camera_poses_fixed"] is True
+        assert metrics["target_pose_fit"]["loss"] == "linear_all_holdout_corners"
+
+
+def test_holdout_target_pose_is_jointly_refined_from_biased_initializer(
+    monkeypatch,
+) -> None:
+    data, _truth, _poses = make_scene(
+        noise_px=0.1, holdout_pose_ids={"pose_9", "pose_11"}
+    )
+    solution = solve_rig_calibration(data)
+    aggregate = validation_module.aggregate_transforms
+
+    def biased_initializer(candidates):
+        result = aggregate(candidates).copy()
+        result[:3, 3] += np.asarray((0.02, -0.015, 0.01))
+        return result
+
+    monkeypatch.setattr(
+        validation_module, "aggregate_transforms", biased_initializer
+    )
+    report = validate_rig_calibration_solution(solution, data)
+
+    assert report["passed"] is True
+    for metrics in report["holdout"]["per_pose"].values():
+        fit = metrics["target_pose_fit"]
+        assert fit["initial_reprojection"]["p95_px"] > 10.0
+        assert fit["final_reprojection"]["p95_px"] < 1.0
 
 
 def test_holdout_nested_status_fails_with_bad_multicamera_reprojection() -> None:

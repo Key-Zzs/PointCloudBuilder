@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import torch
 import yaml
+from camera_rig.api import load_provisioned_camera_bundle
 
 from pointcloud_builder.diagnostics.cross_camera_alignment import (
     apply_transform,
@@ -34,6 +35,11 @@ from pointcloud_builder.diagnostics.cross_camera_alignment import (
     robust_point_to_point_icp,
 )
 from pointcloud_builder.fusion import board_surface_metrics, detect_cube
+from pointcloud_builder.integrations.camera_rig.calibration_adapter import (
+    resolve_bundle_transform,
+    rigid_transform_to_frame_explicit,
+)
+from pointcloud_builder.mapping.depth_packet import provision_identity_sha256
 from pointcloud_builder.mapping.provenance import rig_backend_provenance
 from pointcloud_builder.mapping.recording import (
     RigDepthRecordingWriter,
@@ -42,6 +48,14 @@ from pointcloud_builder.mapping.recording import (
 )
 from pointcloud_builder.projection import project_points
 from pointcloud_builder.rig import build_live_rig, load_rig_config
+from pointcloud_builder.rig_calibration.artifact import (
+    load_solution,
+    solution_fingerprint,
+)
+from pointcloud_builder.rig_calibration.diagnostics import (
+    candidate_diagnostic_contract,
+    candidate_T_workspace_from_geometry_source,
+)
 from pointcloud_builder.workspace import ExpectedPlaneRegion
 from pointcloud_builder.workspace.types import WorkspacePointCloud
 
@@ -60,23 +74,61 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser("analyze")
     analyze.add_argument("--input", required=True)
     analyze.add_argument("--mapping-config", required=True)
+    analyze.add_argument("--analysis-output")
+    analyze.add_argument("--candidate-solution")
+    analyze.add_argument("--candidate-validation")
+    analyze.add_argument(
+        "--allow-missing-cube",
+        action="store_true",
+        help=(
+            "explicit overlap-only mode: skip fixed-cube detection and keep "
+            "cube acceptance NOT_RUN"
+        ),
+    )
     analyze.add_argument("--viewer-point-budget", type=int, default=150_000)
     run = subparsers.add_parser("run")
     run.add_argument("--rig-config", required=True)
     run.add_argument("--mapping-config", required=True)
     run.add_argument("--matched-sets", type=int, default=300)
     run.add_argument("--output", required=True)
+    run.add_argument("--analysis-output")
+    run.add_argument("--candidate-solution")
+    run.add_argument("--candidate-validation")
+    run.add_argument("--allow-missing-cube", action="store_true")
     run.add_argument("--viewer-point-budget", type=int, default=150_000)
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    candidate_solution = getattr(args, "candidate_solution", None)
+    candidate_validation = getattr(args, "candidate_validation", None)
+    if bool(candidate_solution) != bool(candidate_validation):
+        raise ValueError(
+            "--candidate-solution and --candidate-validation must be provided together"
+        )
+    if candidate_solution and not getattr(args, "analysis_output", None):
+        raise ValueError("candidate analysis requires a separate --analysis-output")
     if args.command in {"capture", "run"}:
         capture(Path(args.rig_config), args.matched_sets, _private_root(args.output))
     if args.command in {"analyze", "run"}:
         root = _private_root(args.input if args.command == "analyze" else args.output)
-        analyze(root, Path(args.mapping_config), args.viewer_point_budget)
+        analysis_output = getattr(args, "analysis_output", None)
+        analyze(
+            root,
+            Path(args.mapping_config),
+            args.viewer_point_budget,
+            analysis_output=None
+            if analysis_output is None
+            else _private_root(analysis_output),
+            candidate_solution_path=None
+            if candidate_solution is None
+            else _private_root(candidate_solution),
+            candidate_validation_path=None
+            if candidate_validation is None
+            else _private_root(candidate_validation),
+            allow_missing_cube=bool(getattr(args, "allow_missing_cube", False)),
+        )
 
 
 def capture(rig_config_path: Path, matched_sets: int, output: Path) -> None:
@@ -194,10 +246,24 @@ def capture(rig_config_path: Path, matched_sets: int, output: Path) -> None:
     )
 
 
-def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> None:
+def analyze(
+    root: Path,
+    mapping_config_path: Path,
+    viewer_point_budget: int,
+    *,
+    analysis_output: Path | None = None,
+    candidate_solution_path: Path | None = None,
+    candidate_validation_path: Path | None = None,
+    allow_missing_cube: bool = False,
+) -> None:
     if viewer_point_budget < 1:
         raise ValueError("viewer point budget must be positive")
+    output = root if analysis_output is None else analysis_output
+    if output != root and output.exists():
+        raise FileExistsError(f"analysis output already exists: {output}")
     capture_manifest = _load_json(root / "capture_manifest.json")
+    if _sha256(capture_manifest["rig_config"]) != capture_manifest["rig_config_sha256"]:
+        raise ValueError("captured diagnostic rig config hash no longer matches")
     recording_manifest = validate_rig_depth_recording(root / "depth_recording")
     mapping = yaml.safe_load(mapping_config_path.read_text(encoding="utf-8"))
     if not isinstance(mapping, dict) or not isinstance(
@@ -208,7 +274,32 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
     selected = _load_selected(
         root / "selected_tensors", capture_manifest["selected_indices"]
     )
-    cube = _detect_fixed_cube(selected, board)
+    candidate_contract = None
+    transform_overrides: dict[str, np.ndarray] = {}
+    if candidate_solution_path is not None:
+        assert candidate_validation_path is not None
+        transform_overrides, candidate_contract = _candidate_geometry_overrides(
+            root,
+            capture_manifest,
+            recording_manifest,
+            candidate_solution_path,
+            candidate_validation_path,
+        )
+        selected = _reframe_selected_tensors(
+            selected,
+            transform_overrides,
+            _recording_geometry_transforms(root, recording_manifest),
+        )
+    if allow_missing_cube:
+        cube = None
+        cube_status: dict[str, Any] = {
+            "status": "NOT_RUN",
+            "reason": "OVERLAP_ONLY_MODE_SKIPPED_CUBE_DETECTION",
+            "formal_3d_acceptance": False,
+        }
+    else:
+        cube = _detect_fixed_cube(selected, board)
+        cube_status = {"status": "AVAILABLE"}
 
     fit_anchor, fit_moving = _aggregate_fit_points(selected)
     point_to_plane = _point_to_plane_icp(fit_anchor, fit_moving)
@@ -223,16 +314,23 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
     transform_report = _transform_report(
         correction, point_to_plane, point_to_point, reverse_point_to_plane
     )
-    _write_json(root / "residual_transform.json", transform_report)
+    if output != root:
+        output.mkdir(parents=True)
+        (output / "screenshots").mkdir()
+        (output / "rerun").mkdir()
+    _write_json(output / "residual_transform.json", transform_report)
 
     frame_records: list[dict[str, Any]] = []
     image_before = _directional_accumulator(("u", "v", "r", "e", "p"))
     image_after = _directional_accumulator(("u", "v", "r", "e", "p"))
     depth_before = _directional_accumulator(("z", "e", "p", "edge"))
     depth_after = _directional_accumulator(("z", "e", "p", "edge"))
+    roi_names = ("board", "background", "full_overlap")
+    if cube is not None:
+        roi_names = ("board", "cube", "cube_edge", "background", "full_overlap")
     roi_accumulator: dict[str, dict[str, list[np.ndarray]]] = {
         roi: {"before": [], "after": []}
-        for roi in ("board", "cube", "cube_edge", "background", "full_overlap")
+        for roi in roi_names
     }
     window_transforms: list[np.ndarray] = []
     frames = list(iter_rig_depth_recording(root / "depth_recording"))
@@ -241,7 +339,11 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
         anchor_parts, moving_parts = [], []
         for index in window[:: max(1, len(window) // 3)]:
             geometries = {
-                item.camera_name: _geometry(item, _workspace_crop(capture_manifest))
+                item.camera_name: _geometry(
+                    item,
+                    _workspace_crop(capture_manifest),
+                    T_workspace_from_camera=transform_overrides.get(item.camera_name),
+                )
                 for item in frames[int(index)].observations
             }
             anchor_parts.append(_voxel_downsample(geometries[CAMERA_A]["xyz"], 0.006))
@@ -256,7 +358,11 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
 
     for frame in frames:
         geometries = {
-            item.camera_name: _geometry(item, _workspace_crop(capture_manifest))
+            item.camera_name: _geometry(
+                item,
+                _workspace_crop(capture_manifest),
+                T_workspace_from_camera=transform_overrides.get(item.camera_name),
+            )
             for item in frame.observations
         }
         a, b = geometries[CAMERA_A], geometries[CAMERA_B]
@@ -317,6 +423,8 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
             b["xyz"], b["edge"], board, cube, frozen_overlap[CAMERA_B]
         )
         for name, mask in roi_masks.items():
+            if not mask.any():
+                continue
             roi_accumulator[name]["before"].append(
                 distance_summary_mm(before["b_to_a_distance_m"][mask])
             )
@@ -332,15 +440,19 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
     timing = _load_json(root / "timing.json")
     skew_analysis = _skew_analysis(frame_records, timing["records"])
     rgb_analysis = _rgb_analysis(selected, correction)
-    _write_json(root / "raw_metrics.json", raw_metrics)
-    _write_json(root / "image_position_analysis.json", image_analysis)
-    _write_json(root / "depth_analysis.json", depth_analysis)
-    _write_json(root / "skew_analysis.json", skew_analysis)
-    _write_json(root / "rgb_analysis.json", rgb_analysis)
-    _render_all(root, selected, correction, board, cube, viewer_point_budget)
-    _write_rerun(root, selected, correction, viewer_point_budget)
+    _write_json(output / "raw_metrics.json", raw_metrics)
+    _write_json(output / "image_position_analysis.json", image_analysis)
+    _write_json(output / "depth_analysis.json", depth_analysis)
+    _write_json(output / "skew_analysis.json", skew_analysis)
+    _write_json(output / "rgb_analysis.json", rgb_analysis)
+    _render_all(output, selected, correction, board, cube, viewer_point_budget)
+    _write_rerun(output, selected, correction, viewer_point_budget)
     manifest = {
         "schema_version": SCHEMA,
+        "analysis_calibration": "candidate" if candidate_contract else "production",
+        "analysis_scope": "overlap_only" if allow_missing_cube else "board_and_cube",
+        "capture_root": str(root.resolve()),
+        "candidate_contract": candidate_contract,
         "capture_manifest_sha256": _sha256(root / "capture_manifest.json"),
         "recording_manifest": {
             "schema_version": recording_manifest["schema_version"],
@@ -353,6 +465,7 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
         "scene_rois": {
             "board": asdict(board),
             "cube": cube,
+            "cube_status": cube_status,
             "background": "full overlap excluding fixed board and cube ROIs",
         },
         "quantitative_input": "all full per-camera reconstruction-equivalent tensors reconstructed from same-pass depth observations",
@@ -366,7 +479,137 @@ def analyze(root: Path, mapping_config_path: Path, viewer_point_budget: int) -> 
         "fitted_transform_applied_to_production": False,
         "production_calibration_modified": False,
     }
-    _write_json(root / "manifest.json", manifest)
+    _write_json(output / "manifest.json", manifest)
+
+
+def _candidate_geometry_overrides(
+    root: Path,
+    capture_manifest: dict[str, Any],
+    recording_manifest: dict[str, Any],
+    solution_path: Path,
+    validation_path: Path,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    solution = load_solution(solution_path)
+    validation = _load_json(validation_path)
+    fingerprint = solution_fingerprint(solution)
+    if not solution.passed:
+        raise ValueError("candidate diagnostic requires a passed calibration solution")
+    if (
+        validation.get("passed") is not True
+        or validation.get("status") != "PASS"
+        or validation.get("solution_fingerprint") != fingerprint
+    ):
+        raise ValueError(
+            "candidate validation must pass and bind to the exact solution fingerprint"
+        )
+    holdout = validation.get("holdout")
+    if not isinstance(holdout, dict) or holdout.get("status") != "PASS":
+        raise ValueError("candidate diagnostic requires passed multicamera holdout")
+
+    camera_names = tuple(recording_manifest["camera_names"])
+    if set(solution.T_workspace_from_camera) != set(camera_names):
+        raise ValueError("candidate camera set differs from diagnostic recording")
+    if solution.workspace_frame != recording_manifest["workspace_frame"]:
+        raise ValueError("candidate workspace frame differs from diagnostic recording")
+
+    rig = load_rig_config(capture_manifest["rig_config"])
+    rig_cameras = {camera.name: camera for camera in rig.enabled_cameras}
+    if set(rig_cameras) != set(camera_names):
+        raise ValueError("capture rig camera set differs from diagnostic recording")
+
+    overrides: dict[str, np.ndarray] = {}
+    geometry_contract: dict[str, Any] = {}
+    for camera_name in camera_names:
+        source = rig_cameras[camera_name].source
+        bundle_path = Path(source.provision_artifact)
+        bundle = load_provisioned_camera_bundle(bundle_path)
+        calibration = _load_json(
+            root / "depth_recording" / "calibration" / f"{camera_name}.json"
+        )
+        if calibration.get("workspace_frame") != solution.workspace_frame:
+            raise ValueError(f"{camera_name}: recording workspace frame mismatch")
+        if calibration.get("bundle_identity") != str(bundle.bundle_id):
+            raise ValueError(f"{camera_name}: recording CameraBundle identity mismatch")
+        if calibration.get("provision_sha256") != provision_identity_sha256(bundle_path):
+            raise ValueError(f"{camera_name}: recording provision identity mismatch")
+        if bundle.device.to_dict() != solution.camera_identities[camera_name]:
+            raise ValueError(f"{camera_name}: candidate camera identity mismatch")
+        if _camera_bundle_sha256(bundle_path) != solution.camera_bundle_hashes[camera_name]:
+            raise ValueError(f"{camera_name}: candidate CameraBundle hash mismatch")
+        geometry_source_frame = str(calibration.get("source_frame", ""))
+        internal = rigid_transform_to_frame_explicit(
+            resolve_bundle_transform(
+                bundle,
+                geometry_source_frame,
+                solution.camera_frames[camera_name],
+            )
+        )
+        candidate_transform = candidate_T_workspace_from_geometry_source(
+            solution,
+            camera_name,
+            geometry_source_frame=geometry_source_frame,
+            internal_transform=internal,
+        )
+        overrides[camera_name] = candidate_transform
+        geometry_contract[camera_name] = {
+            "source_frame": geometry_source_frame,
+            "target_frame": solution.workspace_frame,
+            "T_workspace_from_geometry_source": candidate_transform.tolist(),
+        }
+
+    contract = dict(candidate_diagnostic_contract(solution))
+    contract.update(
+        {
+            "solution_path": str(solution_path.resolve()),
+            "solution_sha256": _sha256(solution_path),
+            "validation_path": str(validation_path.resolve()),
+            "validation_sha256": _sha256(validation_path),
+            "holdout": holdout,
+            "geometry_source_overrides": geometry_contract,
+        }
+    )
+    return overrides, contract
+
+
+def _recording_geometry_transforms(
+    root: Path, recording_manifest: dict[str, Any]
+) -> dict[str, np.ndarray]:
+    return {
+        camera_name: np.asarray(
+            _load_json(
+                root / "depth_recording" / "calibration" / f"{camera_name}.json"
+            )["T_workspace_from_camera"],
+            dtype=np.float64,
+        )
+        for camera_name in recording_manifest["camera_names"]
+    }
+
+
+def _reframe_selected_tensors(
+    selected: dict[int, dict[str, dict[str, np.ndarray]]],
+    candidate_transforms: dict[str, np.ndarray],
+    production_transforms: dict[str, np.ndarray],
+) -> dict[int, dict[str, dict[str, np.ndarray]]]:
+    output: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+    for index, cameras in selected.items():
+        output[index] = {}
+        for camera_name, values in cameras.items():
+            reframed = dict(values)
+            points = np.asarray(values["points"]).copy()
+            delta = candidate_transforms[camera_name] @ np.linalg.inv(
+                production_transforms[camera_name]
+            )
+            points[:, :3] = apply_transform(points[:, :3], delta)
+            reframed["points"] = points
+            output[index][camera_name] = reframed
+    return output
+
+
+def _camera_bundle_sha256(path: str | Path) -> str:
+    candidate = Path(path)
+    if candidate.is_dir():
+        candidate = candidate / "camera_bundle.json"
+    return _sha256(candidate)
 
 
 def _validate_diagnostic_config(config: Any) -> None:
@@ -502,7 +745,12 @@ def _color_projection_uv(
     return uv, valid
 
 
-def _geometry(observation: Any, crop: Any) -> dict[str, Any]:
+def _geometry(
+    observation: Any,
+    crop: Any,
+    *,
+    T_workspace_from_camera: np.ndarray | None = None,
+) -> dict[str, Any]:
     if observation.depth_source == "ffs_stereo" and (
         not observation.rectified
         or any(abs(value) > 1e-12 for value in observation.distortion_coeffs)
@@ -518,10 +766,15 @@ def _geometry(observation: Any, crop: Any) -> dict[str, Any]:
     x = (cols - intrinsics.cx) * z / intrinsics.fx
     y = (rows - intrinsics.cy) * z / intrinsics.fy
     camera = np.stack((x, y, z), axis=-1)
-    workspace = camera @ observation.T_workspace_from_camera[:3, :3].T
-    workspace += observation.T_workspace_from_camera[:3, 3]
+    transform = (
+        observation.T_workspace_from_camera
+        if T_workspace_from_camera is None
+        else np.asarray(T_workspace_from_camera, dtype=np.float64)
+    )
+    workspace = camera @ transform[:3, :3].T
+    workspace += transform[:3, 3]
     normal_camera = _organized_normals(camera, valid)
-    normal_workspace = normal_camera @ observation.T_workspace_from_camera[:3, :3].T
+    normal_workspace = normal_camera @ transform[:3, :3].T
     edge = _depth_edges(depth, valid)
     keep = valid & _crop_mask(workspace, crop)
     return {
@@ -793,13 +1046,21 @@ def _single_camera_metrics(
     cube_mask = _cube_mask(geometry["xyz"], cube)
     return {
         "board": plane,
-        "cube": {
-            "point_count": int(cube_mask.sum()),
-            "extent_m": _extent(geometry["xyz"][cube_mask]),
-            "edge_ratio": float(geometry["edge"][cube_mask].mean())
-            if cube_mask.any()
-            else None,
-        },
+        "cube": (
+            {
+                "status": "NOT_RUN",
+                "reason": "NO_CUBE_LIKE_CONNECTED_COMPONENT",
+            }
+            if cube is None
+            else {
+                "status": "AVAILABLE",
+                "point_count": int(cube_mask.sum()),
+                "extent_m": _extent(geometry["xyz"][cube_mask]),
+                "edge_ratio": float(geometry["edge"][cube_mask].mean())
+                if cube_mask.any()
+                else None,
+            }
+        ),
         "valid_point_count": int(geometry["xyz"].shape[0]),
         "edge_ratio": float(geometry["edge"].mean()),
     }
@@ -859,13 +1120,19 @@ def _roi_masks(
     board_mask = _board_mask(points, board)
     cube_mask = _cube_mask(points, cube)
     overlap_mask = np.ones(points.shape[0], dtype=bool) if overlap is None else overlap
-    return {
+    masks = {
         "board": overlap_mask & board_mask,
-        "cube": overlap_mask & cube_mask,
-        "cube_edge": overlap_mask & cube_mask & edge,
         "background": overlap_mask & ~(board_mask | cube_mask),
         "full_overlap": overlap_mask,
     }
+    if cube is not None:
+        masks.update(
+            {
+                "cube": overlap_mask & cube_mask,
+                "cube_edge": overlap_mask & cube_mask & edge,
+            }
+        )
+    return masks
 
 
 def _board_mask(points: np.ndarray, board: Any) -> np.ndarray:
@@ -880,8 +1147,10 @@ def _board_mask(points: np.ndarray, board: Any) -> np.ndarray:
 
 
 def _cube_mask(
-    points: np.ndarray, cube: dict[str, Any], padding_m: float = 0.015
+    points: np.ndarray, cube: dict[str, Any] | None, padding_m: float = 0.015
 ) -> np.ndarray:
+    if cube is None:
+        return np.zeros(points.shape[0], dtype=bool)
     center = np.asarray(cube["center_workspace_m"])
     length, width, height = cube["dimensions_m"]
     yaw = math.radians(float(cube["yaw_deg"]))
@@ -919,6 +1188,14 @@ def _aggregate_raw_metrics(
     for name, values in rois.items():
         before = values["before"]
         after = values["after"]
+        if not before or not after:
+            roi_output[name] = {
+                "status": "NOT_RUN",
+                "reason": "NO_POINTS_IN_ROI",
+                "before": {"frame_count": len(before)},
+                "after": {"frame_count": len(after)},
+            }
+            continue
         b = {
             "frame_count": len(before),
             "median_of_frame_medians_mm": float(
@@ -938,6 +1215,7 @@ def _aggregate_raw_metrics(
             ),
         }
         roi_output[name] = {
+            "status": "AVAILABLE",
             "before": b,
             "after": a,
             "median_improvement": _improvement(
@@ -1263,13 +1541,14 @@ def _render_all(
         mode="camera",
         budget=budget,
     )
-    _render_pair(
-        a[_cube_mask(a[:, :3], cube)],
-        b[_cube_mask(b[:, :3], cube)],
-        shots / "geometry-cube.png",
-        mode="camera",
-        budget=budget,
-    )
+    if cube is not None:
+        _render_pair(
+            a[_cube_mask(a[:, :3], cube)],
+            b[_cube_mask(b[:, :3], cube)],
+            shots / "geometry-cube.png",
+            mode="camera",
+            budget=budget,
+        )
     edge_a, edge_b = middle[CAMERA_A]["edge"], middle[CAMERA_B]["edge"]
     _render_pair(
         a[edge_a & overlap_a],
@@ -1292,13 +1571,14 @@ def _render_all(
         mode="rgb",
         budget=budget,
     )
-    _render_pair(
-        a[_cube_mask(a[:, :3], cube)],
-        b[_cube_mask(b[:, :3], cube)],
-        shots / "rgb-cube.png",
-        mode="rgb",
-        budget=budget,
-    )
+    if cube is not None:
+        _render_pair(
+            a[_cube_mask(a[:, :3], cube)],
+            b[_cube_mask(b[:, :3], cube)],
+            shots / "rgb-cube.png",
+            mode="rgb",
+            budget=budget,
+        )
     _render_pair(
         a[overlap_a],
         b[overlap_b],

@@ -19,6 +19,7 @@ from pointcloud_builder.rig_calibration.se3 import compose
 from pointcloud_builder.rig_calibration.types import (
     RigCalibrationObservations,
     RigCalibrationSolution,
+    RigTargetObservation,
 )
 
 
@@ -117,7 +118,22 @@ def _validate_holdout(
                     T_camera_from_target,
                 )
             )
-        T_workspace_from_target = aggregate_transforms(candidates)
+        initial_T_workspace_from_target = aggregate_transforms(candidates)
+        T_workspace_from_target, fit = _refine_holdout_target_pose(
+            initial_T_workspace_from_target,
+            observations,
+            solution,
+            data,
+            config,
+        )
+        if not fit["success"]:
+            return {
+                "status": "FAIL",
+                "pose_count": len(grouped),
+                "failure_reason": "HOLDOUT_TARGET_POSE_OPTIMIZATION_FAILED",
+                "failed_pose_id": pose_id,
+                "target_pose_fit": fit,
+            }
         errors: list[float] = []
         for observation in observations:
             projected, in_front = project_target_points(
@@ -129,7 +145,10 @@ def _validate_holdout(
             values = np.linalg.norm(projected - observation.image_points_px, axis=1)
             values[~in_front | ~np.isfinite(values)] = 1e4
             errors.extend(values.tolist())
-        per_pose[pose_id] = reprojection_metrics(errors)
+        per_pose[pose_id] = {
+            **reprojection_metrics(errors),
+            "target_pose_fit": fit,
+        }
         all_errors.extend(errors)
     global_reprojection = reprojection_metrics(all_errors)
     passed = bool(
@@ -143,6 +162,70 @@ def _validate_holdout(
         "per_pose": per_pose,
         "p95_gate_px": config.final_reprojection_p95_px,
         "failure_reason": None if passed else "HOLDOUT_REPROJECTION_P95_EXCEEDS_GATE",
+    }
+
+
+def _refine_holdout_target_pose(
+    initial: np.ndarray,
+    observations: list[RigTargetObservation],
+    solution: RigCalibrationSolution,
+    data: RigCalibrationObservations,
+    config: RigCalibrationConfig,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Fit only a holdout pose while keeping every candidate camera pose frozen."""
+
+    from scipy.optimize import least_squares
+    from scipy.spatial.transform import Rotation
+
+    initial_parameters = np.concatenate(
+        (Rotation.from_matrix(initial[:3, :3]).as_rotvec(), initial[:3, 3])
+    )
+
+    def unpack(parameters: np.ndarray) -> np.ndarray:
+        transform = np.eye(4, dtype=np.float64)
+        transform[:3, :3] = Rotation.from_rotvec(parameters[:3]).as_matrix()
+        transform[:3, 3] = parameters[3:]
+        return transform
+
+    def residuals(parameters: np.ndarray) -> np.ndarray:
+        target_pose = unpack(parameters)
+        parts = []
+        for observation in observations:
+            projected, in_front = project_target_points(
+                observation.object_points_m,
+                target_pose,
+                solution.T_workspace_from_camera[observation.camera_id],
+                data.projection_models[observation.camera_id],
+            )
+            residual = projected - observation.image_points_px
+            residual[~in_front | ~np.isfinite(residual).all(axis=1)] = 1e4
+            parts.append(residual.ravel())
+        return np.concatenate(parts)
+
+    initial_errors = np.linalg.norm(
+        residuals(initial_parameters).reshape(-1, 2), axis=1
+    )
+    optimized = least_squares(
+        residuals,
+        initial_parameters,
+        loss="linear",
+        max_nfev=config.max_nfev,
+        xtol=config.optimizer_xtol,
+        ftol=config.optimizer_ftol,
+        gtol=config.optimizer_gtol,
+    )
+    final_errors = np.linalg.norm(residuals(optimized.x).reshape(-1, 2), axis=1)
+    success = bool(optimized.success and np.isfinite(optimized.x).all())
+    return unpack(optimized.x), {
+        "success": success,
+        "status": int(optimized.status),
+        "message": str(optimized.message),
+        "nfev": int(optimized.nfev),
+        "camera_poses_fixed": True,
+        "parameterization": "rotation_vector_plus_translation",
+        "loss": "linear_all_holdout_corners",
+        "initial_reprojection": reprojection_metrics(initial_errors),
+        "final_reprojection": reprojection_metrics(final_errors),
     }
 
 

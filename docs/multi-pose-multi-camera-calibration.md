@@ -130,11 +130,13 @@ identity/hash. It never edits an existing CameraBundle or changes `/clouds/fused
 All real observation, solution, validation, and candidate CLI paths fail closed unless
 their resolved paths are below the repository-root `.local/` directory.
 
-Solve/holdout pose splits are explicit. Holdout target poses are initialized from
-their observations while camera poses remain fixed, then their reprojection is
-reported separately. This prevents presenting optimizer training residual as the
-only validation evidence. Each holdout pose must be observed by at least two cameras;
-fitting and scoring a pose from one camera alone is rejected as self-validation.
+Solve/holdout pose splits are explicit. Each holdout target pose is initialized from
+per-camera PnP and then jointly refined as one six-DoF nuisance pose against all of
+that pose's observations while every candidate camera pose remains fixed. All corners
+are scored with linear loss and no rejection. This prevents presenting optimizer
+training residual as the only validation evidence. Each holdout pose must be observed
+by at least two cameras; fitting and scoring a pose from one camera alone is rejected
+as self-validation.
 
 ## Future physical capture
 
@@ -144,14 +146,17 @@ The operator workflow captures stationary matched sets:
 python tools/calibration/capture_multicamera_target_poses.py \
   --rig-config .local/configs/live_rig.yaml \
   --target .local/target/target_spec.json \
-  --pose-count 20 \
+  --pose-count 24 \
+  --holdout-pose-count 4 \
+  --min-corners-per-observation 6 \
   --output .local/calibration/observations.json
 ```
 
 Use 15 to 30 poses spanning center, left, right, top, bottom, near, far, positive and
-negative yaw, positive and negative pitch, and combined rotations. For each prompt:
-move the board, stop it, then capture. Connected partial visibility is expected and
-supported.
+negative yaw, positive and negative pitch, and combined rotations. Holdout poses are
+predeclared as the final N captures and are never used by the optimizer. For each
+prompt: move the board, stop it, then capture. Connected partial visibility is
+expected and supported.
 
 ## Synthetic acceptance and real status
 
@@ -190,3 +195,51 @@ diagnostic rebuild before/candidate clouds without overwriting production transf
 The adapter checks source and target frame names, and its generated override contract
 binds the solution fingerprint, target identity, and per-camera source bundle
 identity/hash while marking it candidate-only with `production_applied=false`.
+
+Use one immutable diagnostic capture for both baselines and write each analysis to a
+separate directory:
+
+```bash
+python tools/mapping/diagnose_cross_camera_alignment.py capture \
+  --rig-config .local/configs/cross_camera_alignment_ffs.yaml \
+  --matched-sets 300 \
+  --output .local/diagnostics/real_dual_multipose_v1
+
+python tools/mapping/diagnose_cross_camera_alignment.py analyze \
+  --input .local/diagnostics/real_dual_multipose_v1 \
+  --mapping-config .local/configs/m2_native.yaml \
+  --analysis-output .local/diagnostics/real_dual_multipose_v1/production \
+  --allow-missing-cube
+
+python tools/mapping/diagnose_cross_camera_alignment.py analyze \
+  --input .local/diagnostics/real_dual_multipose_v1 \
+  --mapping-config .local/configs/m2_native.yaml \
+  --analysis-output .local/diagnostics/real_dual_multipose_v1/candidate \
+  --candidate-solution .local/calibration/real_dual_multipose_v1/solution.json \
+  --candidate-validation .local/calibration/real_dual_multipose_v1/validation_refined_v2.json \
+  --allow-missing-cube
+```
+
+Candidate analysis fails closed unless the validation is passed, its holdout status
+is `PASS`, its solution fingerprint matches, and the recorded CameraBundle identities,
+hashes, source frames, and workspace frame still match. Analysis never modifies the
+recording or production CameraBundles.
+
+`--allow-missing-cube` selects explicit overlap-only analysis and skips the cube
+detector. The resulting manifest records cube acceptance as `NOT_RUN`; it cannot
+be used as complete 3D physical acceptance. Omit the flag for a formal board-plus-cube
+run.
+
+To inspect a passed candidate continuously on the current live scene without
+modifying any CameraBundle, run:
+
+```bash
+python tools/mapping/view_live_candidate_calibration.py \
+  --rig-config .local/configs/cross_camera_alignment_ffs.yaml \
+  --candidate-solution .local/calibration/real_dual_multipose_v1/solution.json \
+  --candidate-validation .local/calibration/real_dual_multipose_v1/validation_refined_v2.json
+```
+
+This operator-only viewer applies the candidate geometry in memory, runs until
+Ctrl-C, and reports `production_applied=false`. It does not publish a map or an
+accepted production calibration.

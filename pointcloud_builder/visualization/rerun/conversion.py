@@ -80,7 +80,12 @@ def packet_from_rig_result(
         runtime = runtimes[name]
         context = runtime.pipeline.context
         color_frame = context.calibration.intrinsic_frames["color"]
-        transform = context.calibration.transform(color_frame, context.workspace_frame)
+        T_color_from_source = context.calibration.transform(
+            context.source_frame, color_frame
+        ).matrix
+        T_workspace_from_color = (
+            context.T_workspace_from_source.matrix @ np.linalg.inv(T_color_from_source)
+        )
         intrinsics = context.calibration.intrinsics["color"]
         frame = frame_set.envelopes[name].frame
         color = frame.streams.get("color")
@@ -92,7 +97,7 @@ def packet_from_rig_result(
                 camera_name=name,
                 rgb_preview=preview,
                 workspace_cloud=bounded_cloud(camera_clouds[name], point_budget),
-                T_workspace_from_color=transform.matrix,
+                T_workspace_from_color=T_workspace_from_color,
                 color_intrinsics=PinholeVisualization(
                     width=int(preview.shape[1]),
                     height=int(preview.shape[0]),

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 
 from pointcloud_builder.integrations.camera_rig.types import FrameExplicitTransform
@@ -72,3 +77,104 @@ def candidate_diagnostic_contract(solution: RigCalibrationSolution) -> dict[str,
             for camera_id, matrix in sorted(solution.T_workspace_from_camera.items())
         },
     }
+
+
+def require_validated_candidate(
+    solution: RigCalibrationSolution, validation_report: dict[str, Any]
+) -> dict[str, Any]:
+    """Fail closed unless a report passes and binds to the exact candidate."""
+
+    fingerprint = solution_fingerprint(solution)
+    if not solution.passed:
+        raise ValueError("candidate diagnostic requires a passed calibration solution")
+    if (
+        validation_report.get("passed") is not True
+        or validation_report.get("status") != "PASS"
+        or validation_report.get("solution_fingerprint") != fingerprint
+    ):
+        raise ValueError(
+            "candidate validation must pass and bind to the exact solution fingerprint"
+        )
+    holdout = validation_report.get("holdout")
+    if not isinstance(holdout, dict) or holdout.get("status") != "PASS":
+        raise ValueError("candidate diagnostic requires passed multicamera holdout")
+    return holdout
+
+
+def apply_candidate_to_live_pipeline(
+    pipeline: Any,
+    rig_config: Any,
+    solution: RigCalibrationSolution,
+    validation_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply validated transforms in memory for candidate-only live viewing.
+
+    The provisioned CameraBundles and rig configuration are never modified. The
+    caller must build a fresh live pipeline and invoke this before acquisition.
+    """
+
+    holdout = require_validated_candidate(solution, validation_report)
+    cameras = {camera.name: camera for camera in rig_config.enabled_cameras}
+    runtimes = pipeline.processor.runtimes
+    expected = set(solution.T_workspace_from_camera)
+    if set(cameras) != expected or set(runtimes) != expected:
+        raise ValueError("candidate, live rig, and runtime camera sets differ")
+    if solution.workspace_frame != rig_config.output_frame:
+        raise ValueError("candidate workspace frame differs from live rig")
+
+    geometry_contract: dict[str, Any] = {}
+    for camera_name in sorted(expected):
+        camera = cameras[camera_name]
+        runtime = runtimes[camera_name]
+        context = runtime.pipeline.context
+        if context.workspace_frame != solution.workspace_frame:
+            raise ValueError(f"{camera_name}: live runtime workspace frame mismatch")
+        bundle = context.calibration.bundle
+        if bundle.device.to_dict() != solution.camera_identities[camera_name]:
+            raise ValueError(f"{camera_name}: candidate camera identity mismatch")
+        if (
+            _camera_bundle_artifact_sha256(camera.source.provision_artifact)
+            != solution.camera_bundle_hashes[camera_name]
+        ):
+            raise ValueError(f"{camera_name}: candidate CameraBundle hash mismatch")
+        internal = context.calibration.transform(
+            context.source_frame, solution.camera_frames[camera_name]
+        )
+        matrix = candidate_T_workspace_from_geometry_source(
+            solution,
+            camera_name,
+            geometry_source_frame=context.source_frame,
+            internal_transform=internal,
+        )
+        runtime.pipeline.context = replace(
+            context,
+            T_workspace_from_source=FrameExplicitTransform(
+                source_frame=context.source_frame,
+                target_frame=solution.workspace_frame,
+                matrix=matrix,
+            ),
+        )
+        runtime.provenance["calibration_mode"] = "validated_candidate_only"
+        runtime.provenance["production_applied"] = False
+        geometry_contract[camera_name] = {
+            "source_frame": context.source_frame,
+            "target_frame": solution.workspace_frame,
+            "T_workspace_from_geometry_source": matrix.tolist(),
+        }
+
+    contract = dict(candidate_diagnostic_contract(solution))
+    contract.update(
+        {
+            "holdout": holdout,
+            "geometry_source_overrides": geometry_contract,
+            "live_view_only": True,
+        }
+    )
+    return contract
+
+
+def _camera_bundle_artifact_sha256(path: str | Path) -> str:
+    source = Path(path).expanduser().resolve()
+    if source.is_dir():
+        source = source / "camera_bundle.json"
+    return hashlib.sha256(source.read_bytes()).hexdigest()

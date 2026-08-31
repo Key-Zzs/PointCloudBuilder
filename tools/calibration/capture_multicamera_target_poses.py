@@ -29,6 +29,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--pose-count", type=int, default=20)
+    parser.add_argument(
+        "--holdout-pose-count",
+        type=int,
+        default=0,
+        help="Predeclare the final N captured poses as holdout observations.",
+    )
+    parser.add_argument(
+        "--min-corners-per-observation",
+        type=int,
+        default=6,
+        help="Reject detections below this corner count (default: solver gate of 6).",
+    )
     parser.add_argument("--settle-matched-sets", type=int, default=3)
     parser.add_argument("--non-interactive", action="store_true")
     return parser.parse_args()
@@ -38,7 +50,16 @@ def main() -> int:
     args = parse_args()
     if args.pose_count < 2 or args.settle_matched_sets < 0:
         raise ValueError("--pose-count must be at least two and settle count non-negative")
+    if args.holdout_pose_count < 0 or args.holdout_pose_count >= args.pose_count:
+        raise ValueError("--holdout-pose-count must be non-negative and below pose count")
+    if args.min_corners_per_observation < 4:
+        raise ValueError("--min-corners-per-observation must be at least four")
     output = require_repo_local_path(args.output, label="real calibration observations")
+    log_path = output.with_name(f"{output.stem}.capture-log.json")
+    if output.exists() or log_path.exists():
+        raise FileExistsError(
+            "real calibration capture output already exists; choose a fresh artifact root"
+        )
     rig_config_path = require_repo_local_path(args.rig_config, label="real rig config")
     target_path = require_repo_local_path(args.target, label="real target artifact")
     rig = load_rig_config(rig_config_path)
@@ -102,6 +123,11 @@ def main() -> int:
     with acquisition:
         for pose_index in range(args.pose_count):
             pose_id = f"pose_{pose_index}"
+            split = (
+                "holdout"
+                if pose_index >= args.pose_count - args.holdout_pose_count
+                else "solve"
+            )
             if not args.non_interactive:
                 instruction = (
                     "Place the board at the canonical workspace pose"
@@ -115,10 +141,13 @@ def main() -> int:
             frame_set = acquisition.next_frame_set(timeout_s=5.0)
             if frame_set is None:
                 raise TimeoutError(f"no matched frame set for {pose_id}")
-            pose_log = {"pose_id": pose_id, "cameras": {}}
+            pose_log = {"pose_id": pose_id, "split": split, "cameras": {}}
             for camera_id, envelope in sorted(frame_set.envelopes.items()):
                 detected = detector.detect(envelope.frame.color.data)
-                accepted = bool(detected.quality.passed and len(detected.point_ids) >= 4)
+                accepted = bool(
+                    detected.quality.passed
+                    and len(detected.point_ids) >= args.min_corners_per_observation
+                )
                 pose_log["cameras"][camera_id] = {
                     "accepted": accepted,
                     "corner_count": len(detected.point_ids),
@@ -133,6 +162,7 @@ def main() -> int:
                             camera_id=camera_id,
                             pose_id=pose_id,
                             timestamp_ns=envelope.host_receive_timestamp_ns,
+                            split=split,
                         )
                     )
             capture_log.append(pose_log)
@@ -150,12 +180,14 @@ def main() -> int:
         workspace_frame=rig.output_frame,
     )
     write_observations(artifact, output)
-    log_path = output.with_name(f"{output.stem}.capture-log.json")
     log_path.write_text(
         json.dumps(
             {
                 "schema_version": "pointcloud-builder.rig-calibration-capture-log.v1",
                 "created_at_unix_ns": time.time_ns(),
+                "pose_count": args.pose_count,
+                "holdout_pose_count": args.holdout_pose_count,
+                "min_corners_per_observation": args.min_corners_per_observation,
                 "poses": capture_log,
                 "acquisition": acquisition.report(),
             },
@@ -166,7 +198,8 @@ def main() -> int:
         encoding="utf-8",
     )
     print(
-        f"CAPTURED_POSES={args.pose_count}; ACCEPTED_OBSERVATIONS={len(observations)}; "
+        f"CAPTURED_POSES={args.pose_count}; HOLDOUT_POSES={args.holdout_pose_count}; "
+        f"ACCEPTED_OBSERVATIONS={len(observations)}; "
         "local-only artifact written"
     )
     return 0
