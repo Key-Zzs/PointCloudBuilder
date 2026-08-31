@@ -10,6 +10,7 @@ from pointcloud_builder.mapping.artifact import (
     _volume_statistics_equal,
     load_tsdf_map_artifact,
     validate_tsdf_map_artifact,
+    validate_tsdf_map_rig_calibration_compatibility,
     write_tsdf_map_artifact,
 )
 from pointcloud_builder.mapping.config import parse_tsdf_config
@@ -43,8 +44,7 @@ def test_volume_statistics_allow_only_float32_reduction_roundoff() -> None:
     )
 
 
-def _rig():
-    names = ("camera_a", "camera_b")
+def _rig(names: tuple[str, ...] = ("camera_a", "camera_b")):
     raw = {
         "schema_version": "pointcloud-builder.rig.v1",
         "output_frame": "workspace",
@@ -211,6 +211,44 @@ def test_save_load_artifact_geometry_parity_and_lifecycle(tmp_path: Path) -> Non
     with pytest.raises(FeatureNotSupportedError):
         loaded.invalidate_aabb(np.zeros(3), np.ones(3))
     loaded.close()
+    mapper.close()
+
+
+def test_three_camera_frame_set_enters_tsdf_pipeline() -> None:
+    mapper = Open3dTsdfMap(_config(), workspace_frame="workspace")
+    frame_set = _rig(("camera_a", "camera_b", "camera_c")).build(0).depth_frame_set
+    assert len(frame_set.observations) == 3
+    metrics = mapper.integrate(frame_set)
+    assert metrics.integrated_cameras == ("camera_a", "camera_b", "camera_c")
+    mapper.close()
+
+
+def test_initial_map_deployment_fingerprint_must_match(tmp_path: Path) -> None:
+    mapper = Open3dTsdfMap(_config(), workspace_frame="workspace")
+    mapper.integrate(_rig().build(0).depth_frame_set)
+    mapper.freeze()
+    provenance = {
+        "calibration_mode": "validated_multipose_deployment",
+        "rig_calibration_schema": (
+            "pointcloud-builder.rig-calibration-deployment.v1"
+        ),
+        "rig_calibration_fingerprint": "a" * 64,
+        "solution_fingerprint": "b" * 64,
+        "camera_bundle_hashes": {"camera_a": "c" * 64, "camera_b": "d" * 64},
+        "production_applied": True,
+    }
+    output = tmp_path / "deployed-map"
+    write_tsdf_map_artifact(
+        output,
+        mapper=mapper,
+        source_recording_sha256="e" * 64,
+        integration_metrics={},
+        rig_calibration_provenance=provenance,
+    )
+    validate_tsdf_map_rig_calibration_compatibility(output, provenance)
+    mismatched = {**provenance, "rig_calibration_fingerprint": "f" * 64}
+    with pytest.raises(ValueError, match="initial map/live rig calibration mismatch"):
+        validate_tsdf_map_rig_calibration_compatibility(output, mismatched)
     mapper.close()
 
 

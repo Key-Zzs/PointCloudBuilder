@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,7 @@ from pointcloud_builder.rig import (
 )
 
 
-def _rig_config() -> dict:
-    names = ("camera_a", "camera_b")
+def _rig_config(names: tuple[str, ...] = ("camera_a", "camera_b")) -> dict:
     return {
         "schema_version": "pointcloud-builder.rig.v1",
         "output_frame": "workspace",
@@ -63,9 +63,11 @@ def _rig_config() -> dict:
     }
 
 
-def _depth_frame_sets(count: int = 2):
-    scene = create_synthetic_scene(("camera_a", "camera_b"), frame_count=count)
-    rig = build_synthetic_rig(parse_rig_config(_rig_config()), scene)
+def _depth_frame_sets(
+    count: int = 2, names: tuple[str, ...] = ("camera_a", "camera_b")
+):
+    scene = create_synthetic_scene(names, frame_count=count)
+    rig = build_synthetic_rig(parse_rig_config(_rig_config(names)), scene)
     return [rig.build(index).depth_frame_set for index in range(count)]
 
 
@@ -120,6 +122,54 @@ def test_recording_rejects_tamper_and_cross_file_forgery(tmp_path: Path) -> None
     meta.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         validate_rig_depth_recording(output)
+
+
+def test_three_camera_deployed_recording_write_validate_and_replay(
+    tmp_path: Path,
+) -> None:
+    names = ("camera_a", "camera_b", "camera_c")
+    frame = _depth_frame_sets(1, names)[0]
+    deployed = replace(
+        frame,
+        observations=tuple(
+            replace(
+                observation,
+                calibration_mode="validated_multipose_deployment",
+                rig_calibration_schema=(
+                    "pointcloud-builder.rig-calibration-deployment.v1"
+                ),
+                rig_calibration_fingerprint="a" * 64,
+                solution_fingerprint="b" * 64,
+                camera_bundle_sha256=chr(ord("c") + index) * 64,
+            )
+            for index, observation in enumerate(frame.observations)
+        ),
+    )
+    output = tmp_path / "three-camera-recording"
+    writer = RigDepthRecordingWriter(output, depth_source="native")
+    writer.append(deployed)
+    writer.finalize()
+    manifest = validate_rig_depth_recording(output)
+    assert manifest["camera_names"] == list(names)
+    assert manifest["rig_calibration"] == {
+        "calibration_mode": "validated_multipose_deployment",
+        "rig_calibration_schema": (
+            "pointcloud-builder.rig-calibration-deployment.v1"
+        ),
+        "rig_calibration_fingerprint": "a" * 64,
+        "solution_fingerprint": "b" * 64,
+        "camera_bundle_hashes": {
+            name: chr(ord("c") + index) * 64
+            for index, name in enumerate(names)
+        },
+        "production_applied": True,
+    }
+    replayed = next(iter_rig_depth_recording(output))
+    assert [item.camera_name for item in replayed.observations] == list(names)
+    assert all(
+        item.rig_calibration_fingerprint == "a" * 64
+        for item in replayed.observations
+    )
 
 
 def test_ffs_recording_requires_backend_provenance(tmp_path: Path) -> None:

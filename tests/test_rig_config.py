@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
 from pointcloud_builder.rig import load_rig_config, parse_rig_config
 
@@ -299,3 +300,34 @@ def test_public_live_rig_example_loads_with_placeholder_paths() -> None:
     ]
     assert config.timing.mode == "nearest_host_timestamp"
     assert config.live is not None
+
+
+def test_public_three_camera_deployment_example_and_board_metadata() -> None:
+    root = Path(__file__).parents[1]
+    config = load_rig_config(
+        root / "configs/mapping/live_rig_three_camera_example.yaml"
+    )
+    assert [camera.name for camera in config.enabled_cameras] == [
+        "camera_a",
+        "camera_b",
+        "camera_c",
+    ]
+    assert config.rig_calibration is not None
+    assert all(camera.depth.mode == "ffs_stereo" for camera in config.enabled_cameras)
+    assert len({camera.pipeline_config for camera in config.enabled_cameras}) == 1
+
+    metadata = yaml.safe_load(
+        (root / "configs/calibration/charuco_500x700_existing_board.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["physical_size_mm"] == [500, 700]
+    assert metadata["physical_square_layout"] == [5, 7]
+    assert metadata["square_length_mm"] == 100
+    assert metadata["marker_length_mm"] == 75
+    assert metadata["aruco_dictionary"] == "DICT_4X4_50"
+    assert set(metadata["unresolved_fields"]) == {
+        "legacy_pattern",
+        "border_bits",
+        "canonical_squares_x_squares_y_orientation",
+    }

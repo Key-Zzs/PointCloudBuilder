@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import numpy as np
 import pytest
 import torch
 
-from pointcloud_builder.rig import build_synthetic_rig, create_synthetic_scene, parse_rig_config
+from pointcloud_builder.mapping.depth_packet import canonical_bundle_sha256
+from pointcloud_builder.rig import (
+    build_synthetic_rig,
+    create_synthetic_scene,
+    parse_rig_config,
+)
+from pointcloud_builder.rig_calibration.deployment import (
+    canonical_json_sha256,
+    deployment_fingerprint,
+)
 
 
 def _raw(names: tuple[str, ...], *, timing_mode: str = "exact_index") -> dict:
@@ -71,10 +81,10 @@ def _assert_scene_geometry(result) -> None:
         assert float(torch.linalg.norm(top - known_box, dim=1).min()) < 0.035
 
 
-def test_full_pipeline_supports_one_two_and_three_analytic_cameras() -> None:
-    all_names = ("camera_a", "camera_b", "camera_c")
+def test_full_pipeline_supports_one_two_three_and_four_analytic_cameras() -> None:
+    all_names = ("camera_a", "camera_b", "camera_c", "camera_d")
     scene = create_synthetic_scene(all_names)
-    for count in (1, 2, 3):
+    for count in (1, 2, 3, 4):
         names = all_names[:count]
         result = build_synthetic_rig(parse_rig_config(_raw(names)), scene).build(1)
         assert result.canonical_camera_order == tuple(sorted(names))
@@ -84,6 +94,63 @@ def test_full_pipeline_supports_one_two_and_three_analytic_cameras() -> None:
             item.cloud.points.shape[0] for item in result.per_camera_workspace_clouds
         )
         _assert_scene_geometry(result)
+
+
+def test_three_camera_deployed_multipose_runtime_and_provenance(tmp_path) -> None:
+    names = ("camera_a", "camera_b", "camera_c")
+    scene = create_synthetic_scene(names)
+    target_identity = {"kind": "synthetic-grid"}
+    cameras = {}
+    for name in names:
+        identity = scene.bundles[name].device.to_dict()
+        cameras[name] = {
+            "camera_id": name,
+            "camera_identity": identity,
+            "camera_identity_sha256": canonical_json_sha256(identity),
+            "camera_bundle_sha256": canonical_bundle_sha256(scene.bundles[name]),
+            "projection_frame": f"{name}/color_optical",
+            "T_workspace_from_camera": scene.poses[name].tolist(),
+        }
+    artifact = {
+        "schema_version": "pointcloud-builder.rig-calibration-deployment.v1",
+        "status": "deployed",
+        "workspace_frame": "workspace",
+        "target_identity": target_identity,
+        "target_identity_sha256": canonical_json_sha256(target_identity),
+        "solution_fingerprint": "a" * 64,
+        "validation_sha256": "b" * 64,
+        "physical_acceptance_sha256": "c" * 64,
+        "source_receipts": {
+            "solution": {},
+            "validation": {},
+            "physical_acceptance": {},
+        },
+        "cameras": cameras,
+        "creation_metadata": {"synthetic": True},
+    }
+    artifact["rig_calibration_fingerprint"] = deployment_fingerprint(artifact)
+    deployment = tmp_path / "rig_calibration.json"
+    deployment.write_text(json.dumps(artifact), encoding="utf-8")
+    raw = _raw(names)
+    raw["rig_calibration"] = {
+        "type": "validated_multipose",
+        "artifact": str(deployment),
+    }
+    result = build_synthetic_rig(parse_rig_config(raw), scene).build(0)
+    _assert_scene_geometry(result)
+    for observation in result.depth_frame_set.observations:
+        assert observation.calibration_mode == "validated_multipose_deployment"
+        assert observation.rig_calibration_fingerprint == artifact[
+            "rig_calibration_fingerprint"
+        ]
+        assert observation.solution_fingerprint == "a" * 64
+        assert observation.camera_bundle_sha256 == cameras[observation.camera_name][
+            "camera_bundle_sha256"
+        ]
+    assert all(
+        value["production_applied"] is True
+        for value in result.per_camera_provenance.values()
+    )
 
 
 def test_analytic_renderer_produces_pose_specific_depth_images() -> None:

@@ -215,6 +215,66 @@ def test_camera_frustum_uses_active_geometry_override() -> None:
     assert packet.cameras[0].T_workspace_from_color[0, 3] == pytest.approx(0.9)
 
 
+def test_three_camera_rerun_entities_are_generated_dynamically() -> None:
+    names = ("camera_a", "camera_b", "camera_c")
+    cloud = torch.zeros((5, 6), dtype=torch.float32)
+    per_camera = []
+    envelopes = {}
+    runtimes = {}
+    for index, name in enumerate(names):
+        T_workspace_from_source = np.eye(4)
+        T_workspace_from_source[0, 3] = float(index)
+        calibration = SimpleNamespace(
+            intrinsic_frames={"color": f"{name}/color"},
+            intrinsics={
+                "color": CameraIntrinsics(
+                    width=6, height=4, fx=4.0, fy=4.0, cx=3.0, cy=2.0
+                )
+            },
+            transform=lambda source, target: FrameExplicitTransform(
+                source_frame=source,
+                target_frame=target,
+                matrix=np.eye(4),
+            ),
+        )
+        context = SimpleNamespace(
+            source_frame=f"{name}/color",
+            workspace_frame="workspace",
+            calibration=calibration,
+            T_workspace_from_source=FrameExplicitTransform(
+                source_frame=f"{name}/color",
+                target_frame="workspace",
+                matrix=T_workspace_from_source,
+            ),
+        )
+        per_camera.append(
+            SimpleNamespace(camera_name=name, cloud=SimpleNamespace(points=cloud))
+        )
+        envelopes[name] = SimpleNamespace(
+            frame=SimpleNamespace(
+                streams={
+                    "color": SimpleNamespace(
+                        data=np.zeros((4, 6, 3), dtype=np.uint8)
+                    )
+                }
+            )
+        )
+        runtimes[name] = SimpleNamespace(pipeline=SimpleNamespace(context=context))
+    result = SimpleNamespace(
+        frame_match=SimpleNamespace(
+            match_sequence_index=0,
+            match_timestamp_ns=1_000_000_000,
+            envelopes=envelopes,
+        ),
+        per_camera_workspace=tuple(per_camera),
+        concatenated=SimpleNamespace(points=cloud),
+        fused=SimpleNamespace(points=cloud),
+        sampled=SimpleNamespace(points=cloud),
+    )
+    packet = packet_from_rig_result(result, runtimes)
+    assert tuple(camera.camera_name for camera in packet.cameras) == names
+
+
 def test_map_mesh_packet_is_bounded_and_indices_remain_valid() -> None:
     vertices = np.arange(1800, dtype=np.float32).reshape(600, 3)
     triangles = np.arange(1500, dtype=np.int64).reshape(500, 3) % len(vertices)

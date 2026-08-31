@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 PATH = Path(__file__).parents[1] / "tools/mapping/check_usb_topology.py"
 SPEC = importlib.util.spec_from_file_location("check_usb_topology", PATH)
 assert SPEC and SPEC.loader
@@ -53,3 +52,43 @@ def test_changed_serial_set_fails_closed() -> None:
         MODULE.assign_camera_names(
             [_device("A", "/usb6/6-1/"), _device("C", "/usb6/6-2/")], existing
         )
+
+
+def test_three_camera_topology_is_generic(tmp_path: Path) -> None:
+    devices = [
+        {
+            "model": "RealSense D435I",
+            "serial": name,
+            "physical_port": f"/usb{index}/usb-{index}/",
+            "actual_link_speed_mbps": 5000,
+            "root_hub_bus": index,
+        }
+        for index, name in enumerate(("A", "B", "C"), start=4)
+    ]
+    report = MODULE.write_reports(
+        devices,
+        report_path=tmp_path / "topology.json",
+        identity_path=tmp_path / "identity.json",
+        expected_count=3,
+    )
+    assert report["status"] == "PASS"
+    assert sorted(report["devices"]) == ["camera_a", "camera_b", "camera_c"]
+
+
+def test_topology_expected_count_fails_closed(tmp_path: Path) -> None:
+    devices = [
+        {
+            "model": "RealSense D435I",
+            "serial": "A",
+            "physical_port": "/usb4/4-1/",
+            "actual_link_speed_mbps": 5000,
+            "root_hub_bus": 4,
+        }
+    ]
+    report = MODULE.write_reports(
+        devices,
+        report_path=tmp_path / "topology.json",
+        identity_path=tmp_path / "identity.json",
+        expected_count=3,
+    )
+    assert report["status"] == "FAIL"

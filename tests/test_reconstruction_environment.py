@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import yaml
-
 
 ROOT = Path(__file__).parents[1]
 DOCTOR_PATH = ROOT / "scripts/doctor_reconstruction_env.py"
@@ -44,6 +43,26 @@ def test_no_hardware_doctor_treats_absent_private_assets_as_warnings(tmp_path: P
     checks = DOCTOR._ffs_asset_checks(tmp_path, warning=True)
     assert checks
     assert all(item.status == "WARNING" for item in checks)
+
+
+def test_doctor_expected_camera_count_is_configurable_and_private(capsys) -> None:
+    status = DOCTOR.main(
+        [
+            "--no-hardware",
+            "--expected-env",
+            "not-active",
+            "--expected-d435i-count",
+            "3",
+            "--asset-root",
+            "/missing/private/assets",
+        ]
+    )
+    report = __import__("json").loads(capsys.readouterr().out)
+    assert status == 0
+    devices = next(
+        item for item in report["checks"] if item["name"] == "d435i_devices"
+    )
+    assert devices["detail"]["expected_count"] == 3
 
 
 def test_full_doctor_fails_closed_for_absent_private_assets(tmp_path: Path) -> None:

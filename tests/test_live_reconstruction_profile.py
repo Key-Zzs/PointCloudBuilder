@@ -38,6 +38,13 @@ def test_profile_mismatch_fails_before_hardware_access() -> None:
         MODULE._validate_profile_config(dense, "raw")
 
 
+def test_three_camera_dense_profile_is_not_rejected_by_camera_count() -> None:
+    config = load_rig_config(
+        ROOT / "configs/mapping/live_rig_three_camera_example.yaml"
+    )
+    MODULE._validate_profile_config(config, "dense")
+
+
 def test_rgb_metrics_and_exact_row_preservation() -> None:
     source = torch.tensor(
         [[0.0, 0.0, 1.0, 1.0, 0.2, 0.0], [1.0, 2.0, 3.0, 0.1, 0.2, 0.3]]
