@@ -8,10 +8,11 @@ fusion, optional crop/sampling, Rerun visualization, and persistent TSDF mapping
 
 ## 1. Overview
 
-The production route is two fixed Intel RealSense D435i cameras, a shared calibrated
-workspace, Fast-FoundationStereo (FFS) TensorRT-plugin FP16 depth, dense XYZRGB voxel
-fusion, and an independent Open3D TSDF mapper. Reconstruction tensors, visualization,
-and persistent maps remain separate outputs.
+The runtime supports `N >= 2` fixed Intel RealSense D435i cameras. The next validated
+deployment target is three fixed D435i cameras in one calibrated workspace, using
+Fast-FoundationStereo (FFS) TensorRT-plugin FP16 depth, dense XYZRGB voxel fusion, and
+an independent Open3D TSDF mapper. Reconstruction tensors, visualization, and
+persistent maps remain separate outputs.
 
 The 0.2.0 workflow was reproduced from a fresh clone and isolated environment through
 fixed-camera calibration, FFS, dual-camera RGB, Rerun, offline/live TSDF, and map
@@ -33,9 +34,9 @@ process queue and cannot change reconstruction tensors.
 
 ## 3. Supported hardware
 
-- Two fixed RealSense D435i cameras on USB 3 links.
+- `N >= 2` fixed RealSense D435i cameras on USB 3 links; the next deployment is three.
 - NVIDIA GPU compatible with the selected PyTorch, CUDA and TensorRT packages.
-- One known ChArUco target shared by both fixed-camera provisions.
+- One known ChArUco target shared by all fixed-camera provisions.
 - Linux is the validated deployment platform.
 
 ## 4. Coordinate conventions
@@ -73,12 +74,14 @@ which is required to deserialize the official FFS checkpoint metadata.
 
 ```bash
 python scripts/doctor_reconstruction_env.py --no-hardware
-python scripts/doctor_reconstruction_env.py --asset-root .local/ffs
+python scripts/doctor_reconstruction_env.py --expected-d435i-count 3 \
+  --asset-root .local/ffs
 ```
 
 The full doctor checks Python, Conda, Torch/CUDA/GPU, TensorRT, OpenCV/ArUco,
-pyrealsense2, Open3D, Rerun, CameraRig, two D435i devices, USB 3 descriptors, and the
-private FFS bundle. It never prints camera serial numbers.
+pyrealsense2, Open3D, Rerun, CameraRig, the configured D435i count, USB 3 descriptors,
+and the private FFS bundle. `--no-hardware` remains hardware-independent and the
+backward-compatible default expected count is two. The doctor never prints serials.
 
 ## 8. Camera discovery
 
@@ -87,6 +90,7 @@ camera-rig device list
 camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
 python tools/mapping/check_usb_topology.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
+  --expected-count 3 \
   --report .local/reports/usb-topology.json
 ```
 
@@ -94,7 +98,7 @@ Discover identities interactively, then write serials only to ignored `.local/` 
 
 ## 9. Calibration target
 
-Use one target specification for both cameras. The validated standard target is
+Use one target specification for every camera. The validated standard target is
 `charuco_a4_v1`: `DICT_5X5_100`, 7x5 squares, 30 mm squares, 22 mm markers, and
 `legacy_pattern=false`. Generate/inspect it with CameraRig, print at 100% scale, and
 preserve `target_spec.json` beside the physical target. Its frame has +X right, +Y up,
@@ -115,7 +119,7 @@ compare the resolved specification and print-scale rulers before preflight.
 ## 10. Fixed camera calibration
 
 For each camera, run pose-only preflight before provisioning; use the same workspace
-and target for camera A and B.
+and target for every camera.
 
 ```bash
 camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
@@ -129,7 +133,7 @@ camera-rig provision fixed \
 camera-rig provision validate --artifact .local/camera_a/provision
 ```
 
-Repeat those commands for camera B. Start private runtime YAML from
+Repeat those commands for every additional camera. Start private runtime YAML from
 `third_party/CameraRig/configs/examples/single_camera_contract.yaml` and provision YAML
 from `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml`; insert only
 the discovered serial under `.local/`, point both provisions at the same target, and
@@ -412,12 +416,16 @@ plugins, reports, maps, screenshots and RRD files belong under ignored `.local/`
 Public examples use placeholders. Do not use `PYTHONPATH` or symlinks into an older
 clone during reproduction.
 
-## 30. Future 500x700 deployment board
+## 30. Existing 500x700 deployment board
 
-The 500x700 mm board is `DEFERRED` and is not a clean-room gate. Do not infer its ArUco
-dictionary or `legacy_pattern` from dimensions or successful corner detection. Future
-deployment must use authoritative generator metadata/creator confirmation, or print a
-new board with a known specification and reprovision both cameras.
+The existing physical deployment board is 500 x 700 mm with a 5 x 7 square layout,
+100 mm squares, 75 mm markers, and authoritative dictionary `DICT_4X4_50`. This is an
+existing-board workflow, not a generated-board workflow; the public known metadata is
+in `configs/calibration/charuco_500x700_existing_board.yaml`. Dictionary identity is
+resolved, while `legacy_pattern`, `border_bits`, and canonical `squares_x` versus
+`squares_y` orientation remain evidence-gated. Physical rotation in a camera image
+does not change target geometry. CameraRig visual detection, marker-layout, corner-ID,
+and geometry-consistency gates must still pass and must not be weakened.
 
 ## 31. Projection models
 
@@ -436,3 +444,178 @@ solve/holdout validation, and explicit candidate-only export under
 `pointcloud_builder.rig_calibration`. The operator workflow, mathematics, artifact
 contracts, synthetic acceptance, and deferred real third-camera status are documented
 in [`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md).
+
+## 33. Calibration lifecycle and production precedence
+
+```text
+CameraRig fixed provision (initializer only)
+-> PCB multi-pose candidate
+-> exact 2D solve plus holdout validation
+-> candidate-only live preview
+-> physical N-camera pairwise acceptance
+-> promoted PCB rig-calibration deployment
+-> snapshot / recording / TSDF / Rerun production outputs
+```
+
+`rig_calibration` is optional in a rig YAML. When omitted, the legacy CameraRig fixed
+provision supplies workspace geometry. When configured, the PCB deployment is
+authoritative for `T_workspace_from_camera` and any identity, CameraBundle hash,
+camera-set, frame, or fingerprint mismatch fails without fallback. CameraRig remains
+authoritative for K/D, depth scale, stream frames, device identity, and internal stream
+extrinsics. For FFS, runtime composes
+`T_workspace_from_ir_left = T_workspace_from_color(deployed) @ T_color_from_ir_left`.
+The candidate viewer rejects a production-configured rig and always reports
+`candidate_only=true`, `production_applied=false`.
+
+Promotion requires exact solution, validation, passed holdout, and real physical 3D
+acceptance receipts; reprojection alone is insufficient:
+
+```bash
+python tools/calibration/promote_rig_calibration.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --validation .local/calibration/new-workspace/validation.json \
+  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```
+
+Recordings and TSDF map artifacts store calibration mode, deployment/solution
+fingerprints, camera set, workspace frame, and per-camera CameraBundle hashes. An
+`--initial-map` with a different deployment fingerprint fails closed; there is no
+implicit map migration.
+
+## 34. Existing-board identification and registration
+
+Capture independent target-identification evidence from every final camera, then run
+CameraRig's actual existing-board route. Do not pass values for unresolved fields:
+
+```bash
+camera-rig target identify-existing \
+  --artifact .local/captures/target-id/camera_a \
+  --artifact .local/captures/target-id/camera_b \
+  --artifact .local/captures/target-id/camera_c \
+  --board-width-mm 500 --board-height-mm 700 \
+  --square-length-mm 100 --marker-length-mm 75 \
+  --authoritative-source user-confirmed-deployment-metadata \
+  --authoritative-dictionary DICT_4X4_50 \
+  --output .local/target/charuco_500x700/identification.json
+camera-rig target register-existing \
+  --identification .local/target/charuco_500x700/identification.json \
+  --target-name charuco_500x700 --target-frame charuco_500x700 \
+  --output .local/target/charuco_500x700
+```
+
+If CameraRig still reports ambiguity in `legacy_pattern`, `border_bits`, or orientation,
+stop and resolve it from visual equivalence or authoritative source metadata. Never
+scan dictionary capacities or substitute `DICT_4X4_100`. After registration, run the
+unchanged `pose_validated` preflight for every camera.
+
+## 35. Generic N-camera acceptance
+
+The production acceptance layer enumerates all `N choose 2` unordered pairs without
+camera-name assumptions. It records overlap, symmetric NN, board/interior and plane
+metrics, diagnostic-only residual SE(3), per-camera contribution, overlap graph,
+fused count, surface thickness where measurable, and matcher/drop statistics.
+Diagnostic ICP is never written back into deployment extrinsics.
+
+```bash
+python tools/calibration/evaluate_ncamera_rig_alignment.py \
+  --rig-config .local/configs/live_rig_three_camera_candidate.yaml \
+  --candidate-solution .local/calibration/new-workspace/solution.json \
+  --candidate-validation .local/calibration/new-workspace/validation.json \
+  --thresholds configs/calibration/ncamera_physical_acceptance_strict_example.yaml \
+  --recording .local/recordings/new-workspace-physical-acceptance \
+  --mapping-config .local/configs/new-workspace-mapping.yaml \
+  --matched-sets 5 \
+  --output .local/reports/new-workspace-ncamera-acceptance.json
+```
+
+Candidate mode emits the formal physical-acceptance artifact consumed by promotion.
+Preregister/freeze the threshold file before inspecting new data. After promotion,
+replace the three candidate arguments with `--rig-calibration` to regression-test the
+deployed path; it reuses the exact accepted physical receipt thresholds.
+
+Prefer all A-B, A-C, and B-C pairs passing. A physically non-overlapping pair may be
+declared with `--declared-no-overlap camera_a:camera_c` only with physical
+justification and only when the remaining accepted-overlap graph stays connected. It
+is reported as `NOT_APPLICABLE_NO_OVERLAP`, not as invented NN metrics.
+
+## 36. Three-camera configuration and USB/FFS readiness
+
+Start from `configs/mapping/live_rig_three_camera_example.yaml`. Public files contain
+no serials. Each camera needs a private CameraRig runtime YAML and provision artifact;
+identical validated FFS profiles may share one FFS pipeline YAML. All three links must
+enumerate as USB 3.x. Inspect root hubs and distribute bandwidth across controllers
+where practical, without assuming any particular motherboard topology.
+For candidate preview/acceptance, copy the example but omit `rig_calibration`; add that
+section only after promotion and point it to the exact deployed artifact.
+
+```bash
+python scripts/doctor_reconstruction_env.py --no-hardware
+python scripts/doctor_reconstruction_env.py \
+  --expected-d435i-count 3 --asset-root .local/ffs
+python tools/mapping/check_usb_topology.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --expected-count 3 --report .local/reports/usb-topology.json
+```
+
+N-camera functionality is generic, but three-camera throughput is not inferred from
+dual-camera FPS. Benchmark capture FPS, match ratio, p50/p95 processing, GPU memory,
+RSS, viewer overhead, and TSDF mapper overhead on the final GPU and USB topology.
+
+## 37. New machine / new workspace checklist
+
+Follow this order; keep cameras fixed after step 12 and stop on every failed gate.
+
+1. Clone with `--recurse-submodules` and update submodules.
+2. Create the isolated `pcb-reconstruction` environment.
+3. Run the doctor with `--no-hardware`.
+4. Prepare or rebuild the FFS TensorRT-plugin assets.
+5. Connect three D435i cameras.
+6. Discover identities without copying serials into public files.
+7. Assign private logical names `camera_a`, `camera_b`, and `camera_c`.
+8. Validate USB topology with `--expected-count 3`.
+9. Create one private CameraRig runtime YAML per camera.
+10. Capture existing-board identity evidence from the 500 x 700 `DICT_4X4_50` board.
+11. Identify and register the existing board with the commands in section 34.
+12. Deliberately fixture the board at canonical workspace `pose_0`.
+13. Run CameraRig `pose_validated` target preflight for every camera.
+14. Create initial fixed provisions for every camera while `pose_0` is sufficiently visible.
+15. Validate every provision.
+16. Create the private three-camera rig config from the public example.
+17. Run projection-parity smoke if a profile/model changed.
+18. Capture about 24-30 diverse multi-pose target poses.
+19. Predeclare about 4-6 final poses as holdout.
+20. Solve PCB N-camera bundle adjustment.
+21. Validate the exact candidate on the reserved holdout.
+22. Run candidate-only live preview.
+23. Record and pass generic N-camera pairwise physical acceptance.
+24. Promote the exact candidate and acceptance receipts to production.
+25. Run raw RGB reconstruction.
+26. Run dense XYZRGB fusion with sampling off and 2.5 mm voxels.
+27. Measure and configure a new workspace crop.
+28. Benchmark real three-camera performance and viewer/mapper overhead.
+29. Record new fingerprint-bound depth data.
+30. Build a new fingerprint-bound TSDF map.
+31. Validate, save, and reload the map.
+32. Run interactive Rerun in production mode.
+
+The pose-0 board defines `T_workspace_from_target,pose0 = I`, hence workspace origin
+and +X/+Y/+Z. Use mechanical stops, a fixture, tape, or measured references rather
+than visual placement. After initial provisioning, move the board through pose 1..M,
+never the cameras. Later poses may have partial visibility such as A+B, B+C, A+C, and
+A+B+C, but the complete camera-pose graph must remain connected.
+
+## 38. Invalidation rules and deployment status
+
+Recalibrate when a camera moves, a mount loosens, camera set changes, workspace pose-0
+changes, physical target geometry changes, CameraBundle changes, or intrinsics/profile
+changes. A new physical workspace requires new provisions, observations, solution,
+validation, physical acceptance, production deployment, workspace crop, recordings,
+and TSDF map. Old artifacts cannot silently become production artifacts in the new
+workspace.
+
+Current status: N-camera implementation is `VALIDATED_SYNTHETICALLY` for 2/3/4
+cameras; real dual-camera multi-pose production is `VALIDATED`; real three-camera
+calibration/reconstruction is `DEFERRED` until camera C and the new workspace exist.
+Large-board metadata is `RESOLVED`; real registration is
+`DEFERRED_TO_NEW_WORKSPACE`.

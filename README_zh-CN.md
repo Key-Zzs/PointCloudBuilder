@@ -7,9 +7,10 @@ PointCloudBuilder 是固定多相机 RGB-D 三维重建系统，支持 CameraRig
 
 ## 1. 概览
 
-生产路线为两台固定 Intel RealSense D435i、同一标定 workspace、Fast-FoundationStereo
-（FFS）TensorRT-plugin FP16 深度、dense XYZRGB voxel fusion，以及独立 Open3D TSDF
-mapper。重建 tensor、可视化与持久地图是三种独立输出。
+Runtime 支持 `N >= 2` 台固定 Intel RealSense D435i。下一次经过验证的部署目标是同一
+标定 workspace 内的三台固定 D435i，采用 Fast-FoundationStereo（FFS）
+TensorRT-plugin FP16 深度、dense XYZRGB voxel fusion，以及独立 Open3D TSDF mapper。
+重建 tensor、可视化与持久地图是三种独立输出。
 
 0.2.0 工作流已从全新 clone 和隔离环境完成复现，覆盖固定相机标定、FFS、双相机 RGB、
 Rerun、offline/live TSDF 及地图 save/load。硬件 identity 与实体证据仍只保存在私有
@@ -31,9 +32,9 @@ tensor。
 
 ## 3. 支持硬件
 
-- 两台通过 USB 3 连接的固定 RealSense D435i。
+- `N >= 2` 台通过 USB 3 连接的固定 RealSense D435i；下一次部署目标为三台。
 - 与所选 PyTorch、CUDA、TensorRT 包兼容的 NVIDIA GPU。
-- 两台相机共用的一个已知 ChArUco target。
+- 全部固定相机共用的一个已知 ChArUco target。
 - 已验证部署平台为 Linux。
 
 ## 4. 坐标约定
@@ -71,12 +72,14 @@ Python/PyTorch/CUDA/TensorRT/OpenCV ABI，并只安装一个 `cv2` provider：
 
 ```bash
 python scripts/doctor_reconstruction_env.py --no-hardware
-python scripts/doctor_reconstruction_env.py --asset-root .local/ffs
+python scripts/doctor_reconstruction_env.py --expected-d435i-count 3 \
+  --asset-root .local/ffs
 ```
 
 完整 doctor 检查 Python、Conda、Torch/CUDA/GPU、TensorRT、OpenCV/ArUco、
-pyrealsense2、Open3D、Rerun、CameraRig、两台 D435i、USB 3 descriptor 和私有 FFS
-bundle，且绝不输出相机序列号。
+pyrealsense2、Open3D、Rerun、CameraRig、配置的 D435i 数量、USB 3 descriptor 和私有
+FFS bundle。`--no-hardware` 仍不接触硬件，向后兼容的默认期望数量为两台；doctor
+绝不输出序列号。
 
 ## 8. 相机发现
 
@@ -85,6 +88,7 @@ camera-rig device list
 camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
 python tools/mapping/check_usb_topology.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
+  --expected-count 3 \
   --report .local/reports/usb-topology.json
 ```
 
@@ -92,7 +96,7 @@ python tools/mapping/check_usb_topology.py \
 
 ## 9. 标定 target
 
-两台相机使用同一份 target spec。已验证标准 target 为 `charuco_a4_v1`：
+全部相机使用同一份 target spec。已验证标准 target 为 `charuco_a4_v1`：
 `DICT_5X5_100`、7x5 squares、30 mm square、22 mm marker、
 `legacy_pattern=false`。使用 CameraRig 生成/检查，按 100% 比例打印，并让
 `target_spec.json` 始终跟随实体板。target frame 的 +X 向右、+Y 向上、+Z 向板外。
@@ -111,7 +115,7 @@ camera-rig target inspect \
 
 ## 10. 固定相机标定
 
-每台相机 provision 前先执行仅验证姿态的 preflight；camera A/B 必须使用同一
+每台相机 provision 前先执行仅验证姿态的 preflight；全部相机必须使用同一
 workspace 和 target。
 
 ```bash
@@ -126,7 +130,7 @@ camera-rig provision fixed \
 camera-rig provision validate --artifact .local/camera_a/provision
 ```
 
-camera B 执行同样命令。私有 runtime YAML 从
+每台新增相机执行同样命令。私有 runtime YAML 从
 `third_party/CameraRig/configs/examples/single_camera_contract.yaml` 开始，provision YAML
 从 `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml` 开始；只在
 `.local/` 写入发现的序列号，让两份 provision 配置指向同一个 target，并设置
@@ -398,11 +402,14 @@ mapper 或 viewer child 错误都是 fatal。禁止放松标定/几何阈值来�
 report、map、截图与 RRD 必须位于已忽略的 `.local/`。Public example 使用 placeholder。
 复现时禁止用 `PYTHONPATH` 或 symlink 指向旧 clone。
 
-## 30. Future 500x700 deployment board
+## 30. Existing 500x700 deployment board
 
-500x700 mm board 状态为 `DEFERRED`，不是 clean-room gate。禁止根据尺寸或成功 corner
-detection 推断 ArUco dictionary/`legacy_pattern`。未来部署必须获得权威 generator metadata/
-制作者确认，或者打印已知 spec 的新板并重新 provision 两台相机。
+现有实体部署板为 500 x 700 mm、5 x 7 squares、100 mm square、75 mm marker，权威
+dictionary 为 `DICT_4X4_50`。这是 existing-board 流程，不是 generated-board 流程；公开
+已知元数据位于 `configs/calibration/charuco_500x700_existing_board.yaml`。Dictionary
+identity 已解决，但 `legacy_pattern`、`border_bits` 和 canonical `squares_x` / `squares_y`
+orientation 仍必须由证据决定。相机图像中的实体旋转不改变 target geometry。CameraRig
+视觉检测、marker layout、corner ID 与 geometry consistency gate 仍须全部通过，禁止放松。
 
 ## 31. Projection model
 
@@ -419,3 +426,169 @@ gauge-fixed robust multi-pose N-camera bundle adjustment、connected partial-vis
 graph、pose-diversity gate、solve/holdout validation 与显式 candidate-only export。Operator
 流程、数学模型、artifact contract、synthetic acceptance 及 real 第三相机 deferred 状态见
 [`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md)。
+
+## 33. Calibration lifecycle and production precedence
+
+```text
+CameraRig fixed provision（仅作 initializer）
+-> PCB multi-pose candidate
+-> 精确 2D solve + holdout validation
+-> candidate-only live preview
+-> 实体 N-camera pairwise acceptance
+-> promoted PCB rig-calibration deployment
+-> snapshot / recording / TSDF / Rerun production outputs
+```
+
+Rig YAML 中的 `rig_calibration` 可选。省略时保持旧 CameraRig fixed-provision workspace
+geometry；配置后 PCB deployment 对 `T_workspace_from_camera` 具有最高优先级，identity、
+CameraBundle hash、camera set、frame 或 fingerprint 任一不匹配都直接失败，绝不 fallback。
+CameraRig 继续负责 K/D、depth scale、stream frame、device identity 与内部 stream
+extrinsics。FFS runtime 组合：
+`T_workspace_from_ir_left = T_workspace_from_color(deployed) @ T_color_from_ir_left`。
+Candidate viewer 拒绝已配置 production deployment 的 rig，且始终报告
+`candidate_only=true`、`production_applied=false`。
+
+Promotion 必须精确绑定 solution、validation、通过的 holdout 与真实实体 3D acceptance；
+只有 reprojection PASS 不够：
+
+```bash
+python tools/calibration/promote_rig_calibration.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --validation .local/calibration/new-workspace/validation.json \
+  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```
+
+Recording 和 TSDF map artifact 保存 calibration mode、deployment/solution fingerprint、
+camera set、workspace frame 与逐相机 CameraBundle hash。`--initial-map` 的 deployment
+fingerprint 不同会 fail closed；不存在隐式 map migration。
+
+## 34. Existing-board identification and registration
+
+从每台最终相机分别采集 target identity 证据，再运行 CameraRig 的真实 existing-board
+路线。不得给未解决字段传值：
+
+```bash
+camera-rig target identify-existing \
+  --artifact .local/captures/target-id/camera_a \
+  --artifact .local/captures/target-id/camera_b \
+  --artifact .local/captures/target-id/camera_c \
+  --board-width-mm 500 --board-height-mm 700 \
+  --square-length-mm 100 --marker-length-mm 75 \
+  --authoritative-source user-confirmed-deployment-metadata \
+  --authoritative-dictionary DICT_4X4_50 \
+  --output .local/target/charuco_500x700/identification.json
+camera-rig target register-existing \
+  --identification .local/target/charuco_500x700/identification.json \
+  --target-name charuco_500x700 --target-frame charuco_500x700 \
+  --output .local/target/charuco_500x700
+```
+
+若 CameraRig 对 `legacy_pattern`、`border_bits` 或 orientation 仍报告 ambiguity，必须用
+视觉 equivalence 或权威 source metadata 解决后再继续。禁止扫描 dictionary capacity，
+也禁止替换成 `DICT_4X4_100`。注册后，每台相机运行未放松的 `pose_validated` preflight。
+
+## 35. Generic N-camera acceptance
+
+Production acceptance 层按 `N choose 2` 自动枚举全部无序 pair，不限制 camera name。报告
+overlap、symmetric NN、board/interior、plane、diagnostic-only residual SE(3)、逐相机贡献、
+overlap graph、fused count、可测 surface thickness，以及 matcher/drop statistics。
+Diagnostic ICP 永不写回 deployment extrinsics。
+
+```bash
+python tools/calibration/evaluate_ncamera_rig_alignment.py \
+  --rig-config .local/configs/live_rig_three_camera_candidate.yaml \
+  --candidate-solution .local/calibration/new-workspace/solution.json \
+  --candidate-validation .local/calibration/new-workspace/validation.json \
+  --thresholds configs/calibration/ncamera_physical_acceptance_strict_example.yaml \
+  --recording .local/recordings/new-workspace-physical-acceptance \
+  --mapping-config .local/configs/new-workspace-mapping.yaml \
+  --matched-sets 5 \
+  --output .local/reports/new-workspace-ncamera-acceptance.json
+```
+
+Candidate mode 输出 promotion 所消费的正式 physical-acceptance artifact。必须在查看新数据
+前 preregister/freeze threshold 文件。Promotion 后，用 `--rig-calibration` 替换三个
+candidate 参数，即可 regression-test deployed path；此时复用精确 accepted physical receipt
+中的 thresholds。
+
+优先要求 A-B、A-C、B-C 全部 PASS。只有在实体上确实无重叠且有说明时，才可使用
+`--declared-no-overlap camera_a:camera_c`；剩余 accepted-overlap graph 仍须 connected。
+该 pair 报 `NOT_APPLICABLE_NO_OVERLAP`，不能编造 NN metrics。
+
+## 36. Three-camera configuration and USB/FFS readiness
+
+从 `configs/mapping/live_rig_three_camera_example.yaml` 开始。Public 文件不得含 serial。
+每台相机需要私有 CameraRig runtime YAML 与 provision artifact；相同且已验证的 FFS profile
+可以共用一个 FFS pipeline YAML。三条链路都必须枚举为 USB 3.x。检查 root hub，并在可行
+时把带宽分散到不同 controller/root hub，但不得硬编码主板 topology。
+Candidate preview/acceptance 阶段复制 example 后须省略 `rig_calibration`；只有 promotion
+完成后才添加该 section，并指向精确 deployed artifact。
+
+```bash
+python scripts/doctor_reconstruction_env.py --no-hardware
+python scripts/doctor_reconstruction_env.py \
+  --expected-d435i-count 3 --asset-root .local/ffs
+python tools/mapping/check_usb_topology.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --expected-count 3 --report .local/reports/usb-topology.json
+```
+
+N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。必须在最终 GPU/USB topology
+上重新测 capture FPS、match ratio、p50/p95 processing、GPU memory、RSS、viewer overhead
+与 TSDF mapper overhead。
+
+## 37. New machine / new workspace checklist
+
+严格按以下顺序执行；第 12 步后相机保持固定，任一 gate 失败就停止。
+
+1. 使用 `--recurse-submodules` clone，并更新 submodule。
+2. 创建隔离的 `pcb-reconstruction` 环境。
+3. 使用 `--no-hardware` 运行 doctor。
+4. 准备或重建 FFS TensorRT-plugin assets。
+5. 连接三台 D435i。
+6. 发现 identity，不把 serial 写入 public 文件。
+7. 分配私有逻辑名 `camera_a`、`camera_b`、`camera_c`。
+8. 用 `--expected-count 3` 验证 USB topology。
+9. 为每台相机创建私有 CameraRig runtime YAML。
+10. 从 500 x 700 `DICT_4X4_50` 现有板采集 identity 证据。
+11. 使用第 34 节命令 identify/register existing board。
+12. 把板精确 fixture 在 canonical workspace `pose_0`。
+13. 对每台相机运行 CameraRig `pose_validated` target preflight。
+14. 在所有相机充分看到 `pose_0` 时创建逐相机 initial fixed provision。
+15. 验证每份 provision。
+16. 从 public example 创建私有三相机 rig config。
+17. 若 profile/model 有变化，运行 projection-parity smoke。
+18. 采集约 24-30 个 diverse multi-pose target pose。
+19. 预先指定最后约 4-6 个 pose 为 holdout。
+20. 求解 PCB N-camera bundle adjustment。
+21. 用保留 holdout 验证精确 candidate。
+22. 运行 candidate-only live preview。
+23. 记录并通过 generic N-camera pairwise physical acceptance。
+24. 把精确 candidate 与 acceptance receipts promote 到 production。
+25. 运行 raw RGB reconstruction。
+26. 在 sampling off、2.5 mm voxel 下运行 dense XYZRGB fusion。
+27. 测量并配置新的 workspace crop。
+28. Benchmark 真实三相机性能及 viewer/mapper overhead。
+29. 记录新的 fingerprint-bound depth data。
+30. 构建新的 fingerprint-bound TSDF map。
+31. 验证、保存并重新加载 map。
+32. 在 production mode 下运行 interactive Rerun。
+
+Pose-0 board 定义 `T_workspace_from_target,pose0 = I`，即 workspace origin 与
++X/+Y/+Z。应使用 mechanical stop、fixture、tape 或测量基准，不依赖目测。Initial
+provision 完成后，只移动 pose 1..M 的板，绝不移动相机。后续 pose 可为 A+B、B+C、A+C、
+A+B+C 等 partial visibility，但完整 camera-pose graph 必须 connected。
+
+## 38. Invalidation rules and deployment status
+
+相机移动、mount 松动、camera set 改变、workspace pose-0 改变、实体 target geometry 改变、
+CameraBundle 改变或 intrinsics/profile 改变时必须重标定。新的实体 workspace 必须重新生成
+provision、observation、solution、validation、physical acceptance、production deployment、
+workspace crop、recording 与 TSDF map。旧 artifact 不能静默成为新 workspace 的 production
+artifact。
+
+当前状态：N-camera implementation 已对 2/3/4 cameras `VALIDATED_SYNTHETICALLY`；真实
+dual-camera multi-pose production 为 `VALIDATED`；real three-camera calibration/
+reconstruction 在 camera C 和新 workspace 可用前为 `DEFERRED`。Large-board metadata 为
+`RESOLVED`；real registration 为 `DEFERRED_TO_NEW_WORKSPACE`。

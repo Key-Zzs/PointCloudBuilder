@@ -20,6 +20,11 @@ REQUIRED_PATHS = (
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
     "configs/mapping/raw_rgb_concatenation_example.yaml",
+    "configs/mapping/live_rig_three_camera_example.yaml",
+    "configs/calibration/charuco_500x700_existing_board.yaml",
+    "configs/calibration/ncamera_physical_acceptance_strict_example.yaml",
+    "tools/calibration/promote_rig_calibration.py",
+    "tools/calibration/evaluate_ncamera_rig_alignment.py",
     "tools/mapping/run_live_reconstruction_profile.py",
     "tools/mapping/run_live_tsdf_mapping.py",
     "tools/mapping/record_live_rig_depth.py",
@@ -41,6 +46,26 @@ INTERACTIVE_FLAGS = (
 LIVE_RIG_FLAGS = ("--acceptance-scope",)
 PROFILE_FLAGS = ("--profile", "--matched-sets", "--viewer", "--rerun-record")
 BENCHMARK_FLAGS = ("--input-mode", "--frames", "--warmup", "--report")
+DOCTOR_FLAGS = ("--no-hardware", "--expected-d435i-count", "--asset-root")
+USB_FLAGS = ("--identity-map", "--expected-count", "--report")
+PROMOTION_FLAGS = (
+    "--solution",
+    "--validation",
+    "--physical-acceptance",
+    "--output",
+)
+NCAMERA_FLAGS = (
+    "--rig-config",
+    "--rig-calibration",
+    "--candidate-solution",
+    "--candidate-validation",
+    "--thresholds",
+    "--recording",
+    "--mapping-config",
+    "--matched-sets",
+    "--declared-no-overlap",
+    "--output",
+)
 
 
 def main() -> int:
@@ -89,6 +114,18 @@ def main() -> int:
             "tools/mapping/benchmark_world_reconstruction.py",
             BENCHMARK_FLAGS,
         ),
+        ("doctor", "scripts/doctor_reconstruction_env.py", DOCTOR_FLAGS),
+        ("usb_topology", "tools/mapping/check_usb_topology.py", USB_FLAGS),
+        (
+            "rig_calibration_promotion",
+            "tools/calibration/promote_rig_calibration.py",
+            PROMOTION_FLAGS,
+        ),
+        (
+            "ncamera_acceptance",
+            "tools/calibration/evaluate_ncamera_rig_alignment.py",
+            NCAMERA_FLAGS,
+        ),
     ):
         result = subprocess.run(
             [sys.executable, str(ROOT / relative), "--help"],
@@ -112,8 +149,20 @@ def main() -> int:
             checks[f"{readme.name}:flag:{flag}"] = flag in text
         for flag in LIVE_RIG_FLAGS:
             checks[f"{readme.name}:flag:{flag}"] = flag in text
-        for flag in PROFILE_FLAGS + BENCHMARK_FLAGS:
+        for flag in (
+            PROFILE_FLAGS
+            + BENCHMARK_FLAGS
+            + DOCTOR_FLAGS
+            + USB_FLAGS
+            + PROMOTION_FLAGS
+            + NCAMERA_FLAGS
+        ):
             checks[f"{readme.name}:flag:{flag}"] = flag in text
+        checks[f"{readme.name}:board:dictionary"] = "DICT_4X4_50" in text
+        checks[f"{readme.name}:board:size"] = "500 x 700" in text
+        checks[f"{readme.name}:board:layout"] = "5 x 7" in text
+        checks[f"{readme.name}:board:square"] = "100 mm" in text
+        checks[f"{readme.name}:board:marker"] = "75 mm" in text
         for command_path in re.findall(
             r"(?:python\s+|\./)([A-Za-z0-9_./-]+\.(?:py|sh))", text
         ):
