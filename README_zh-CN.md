@@ -465,6 +465,30 @@ smoke 配置中编造这些值。
 
 ## 12. 单相机 XYZ/XYZRGB
 
+首次进入本节前，用已确认的 identity map、三份 passed provision 和第 11 节生成的 RGB
+plugin 配置创建 workspace mapping 与 live rig 私有配置：
+
+```bash
+python scripts/prepare_live_reconstruction_configs.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --camera-rig-root .local/camera_rig \
+  --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
+  --output-dir .local/configs \
+  --expected-camera-count 3
+```
+
+它生成 `.local/configs/mapping.yaml`、`mapping_acceptance.yaml`、
+`live_rig_ffs_rgb.yaml`、`live_rig_ffs_rgb_raw.yaml` 和
+`live_rig_ffs_rgb_compact.yaml`。如果 workspace 专属的 `mapping.yaml` 已存在，默认保留它；
+其余已有文件只有内容完全一致才接受，禁止用 `--force` 静默覆盖测量过的 crop、plane ROI 或
+rig 配置。这里故意不写 `rig_calibration`：当前只使用三份 fixed provision；只有完成后续
+multi-pose validation 与 promotion 后才能添加正式 deployment。
+
+下面的命令打开 `camera_a`，用 production TensorRT plugin 从左右 IR 推理 300 帧 FFS
+深度，使用 provision 中的内参、双目 baseline、IR→color 和 workspace 变换生成 XYZRGB，
+检查标定板 `z=0` 平面、帧连续性、超时和 open/close/reopen lifecycle，并保存 PLY、PNG 和
+JSON evidence。标定板必须继续固定在 provision 时的 workspace pose-0：
+
 ```bash
 python tools/mapping/run_live_single_camera.py \
   --camera-config .local/camera_rig/camera_a/configs/runtime.yaml \
@@ -477,9 +501,18 @@ python tools/mapping/run_live_single_camera.py \
 ```
 
 `pointcloud.use_rgb: true` 输出 Nx6。落在 color imager 视场外的 depth 点使用显式黑色，
-不会伪造颜色。
+不会伪造颜色。该命令不会弹出交互窗口，也不需要连接实体显示器；Matplotlib 使用 `Agg`，
+Open3D 使用 offscreen renderer 写 PNG。SSH/headless 主机仍需可用的 NVIDIA EGL/OpenGL
+runtime；若出现 EGL/OpenGL context 错误，应修复 headless rendering 环境，不能把它误判成
+相机或几何 PASS。
 
 ## 13. 多相机采集
+
+下面的命令同时打开 `camera_a/b/c`，每台使用自己的 runtime、passed provision 和共享的
+FFS plugin 配置。它采集并交付 1000 个按 `host_receive_timestamp_ns` 匹配的 frame sets，
+然后重新打开全部相机再验证 60 帧。`capture_matching` scope 正式执行相机采集、时间匹配、
+无帧复用以及 worker/buffer lifecycle gates；它会记录几何和 FFS 性能，但此时不把它们作为
+正式通过条件，也不等价于后续 multi-pose 跨相机标定。
 
 ```bash
 python tools/mapping/run_live_rig.py \
@@ -494,7 +527,9 @@ python tools/mapping/run_live_rig.py \
 Camera session 由 worker 独占，open/capture/close 始终在同一 worker thread。
 `capture_matching` 是 CR7 scope：强制并发采集、完整交付 matched sets、host-time
 skew、无帧复用和干净 lifecycle。它仍记录 geometry 与 FFS performance，但其正式
-benchmark 解释由 CR18 负责。
+benchmark 解释由 CR18 负责。该命令只用 Matplotlib `Agg` 保存 PLY、PNG 和 JSON，不启动
+Open3D/Rerun 交互查看器，不需要实体显示器；通过 SSH 可直接运行。后续明确带
+`--viewer rerun --rerun-spawn` 或 `--interactive` 的命令才会启动交互 viewer。
 
 ## 14. 帧匹配
 

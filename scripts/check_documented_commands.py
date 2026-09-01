@@ -19,6 +19,7 @@ REQUIRED_PATHS = (
     "scripts/prepare_camera_rig_calibration.py",
     "scripts/prepare_ffs_assets.py",
     "scripts/prepare_ffs_pipeline_configs.py",
+    "scripts/prepare_live_reconstruction_configs.py",
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
     "configs/mapping/raw_rgb_concatenation_example.yaml",
@@ -65,6 +66,14 @@ FFS_PIPELINE_CONFIG_FLAGS = (
     "--asset-root",
     "--output-dir",
     "--camera-name",
+    "--force",
+)
+LIVE_RECONSTRUCTION_CONFIG_FLAGS = (
+    "--identity-map",
+    "--camera-rig-root",
+    "--ffs-config",
+    "--output-dir",
+    "--expected-camera-count",
     "--force",
 )
 PROMOTION_FLAGS = (
@@ -144,6 +153,11 @@ def main() -> int:
             "scripts/prepare_ffs_pipeline_configs.py",
             FFS_PIPELINE_CONFIG_FLAGS,
         ),
+        (
+            "live_reconstruction_configs",
+            "scripts/prepare_live_reconstruction_configs.py",
+            LIVE_RECONSTRUCTION_CONFIG_FLAGS,
+        ),
         ("usb_topology", "tools/mapping/check_usb_topology.py", USB_FLAGS),
         (
             "rig_calibration_promotion",
@@ -184,6 +198,7 @@ def main() -> int:
             + DOCTOR_FLAGS
             + CAMERA_RIG_PREPARATION_FLAGS
             + FFS_PIPELINE_CONFIG_FLAGS
+            + LIVE_RECONSTRUCTION_CONFIG_FLAGS
             + USB_FLAGS
             + PROMOTION_FLAGS
             + NCAMERA_FLAGS

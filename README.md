@@ -507,6 +507,34 @@ config.
 
 ## 12. Single-camera XYZ/XYZRGB
 
+Before first entering this section, generate the private workspace mapping and live-rig
+configs from the confirmed identity map, three passed provisions, and the RGB plugin
+config created in Section 11:
+
+```bash
+python scripts/prepare_live_reconstruction_configs.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --camera-rig-root .local/camera_rig \
+  --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
+  --output-dir .local/configs \
+  --expected-camera-count 3
+```
+
+It creates `.local/configs/mapping.yaml`, `mapping_acceptance.yaml`,
+`live_rig_ffs_rgb.yaml`, `live_rig_ffs_rgb_raw.yaml`, and
+`live_rig_ffs_rgb_compact.yaml`. An existing workspace-specific `mapping.yaml` is
+preserved by default; every other existing file is accepted only when its content is
+identical. Never use `--force` to silently replace a measured crop, plane ROI, or rig
+config. `rig_calibration` is deliberately omitted here: these commands use the three
+fixed provisions. Add a production deployment only after later multi-pose validation
+and promotion.
+
+The command below opens `camera_a`, infers 300 FFS depth frames from stereo IR with the
+production TensorRT plugin, and obtains intrinsics, stereo baseline, IR-to-color, and
+workspace transforms from its provision. It builds XYZRGB, checks the target's `z=0`
+plane, frame continuity, timeouts, and open/close/reopen lifecycle, then writes PLY,
+PNG, and JSON evidence. Keep the target fixed at the provisioned workspace pose 0:
+
 ```bash
 python tools/mapping/run_live_single_camera.py \
   --camera-config .local/camera_rig/camera_a/configs/runtime.yaml \
@@ -519,9 +547,21 @@ python tools/mapping/run_live_single_camera.py \
 ```
 
 Set `pointcloud.use_rgb: true` for Nx6. Depth points outside the color imager are
-explicit black RGB, never fabricated colors.
+explicit black RGB, never fabricated colors. This command opens no interactive window
+and needs no physical monitor: Matplotlib uses `Agg`, while Open3D writes PNG through
+an offscreen renderer. An SSH/headless host still needs a working NVIDIA EGL/OpenGL
+runtime. Treat an EGL/OpenGL context error as a headless-rendering environment failure,
+not as camera or geometry PASS.
 
 ## 13. Multi-camera acquisition
+
+The command below opens `camera_a/b/c` concurrently, with each camera using its own
+runtime and passed provision plus the shared FFS plugin config. It delivers 1,000 frame
+sets matched by `host_receive_timestamp_ns`, then reopens every camera for another 60
+frames. The `capture_matching` scope formally enforces camera capture, timestamp
+matching, no frame reuse, and worker/buffer lifecycle gates. It records geometry and
+FFS performance but does not enforce them here, and it is not a replacement for later
+multi-pose cross-camera calibration.
 
 ```bash
 python tools/mapping/run_live_rig.py \
@@ -536,7 +576,11 @@ python tools/mapping/run_live_rig.py \
 Camera sessions are worker-owned; open/capture/close stay on the same worker thread.
 `capture_matching` is the CR7 scope: it enforces concurrent capture, complete delivered
 matched sets, host-time skew, no frame reuse, and clean lifecycle. It still records
-geometry and FFS performance, but CR18 owns their formal benchmark interpretation.
+geometry and FFS performance, but CR18 owns their formal benchmark interpretation. It
+uses only Matplotlib `Agg` to save PLY, PNG, and JSON and starts no Open3D/Rerun
+interactive viewer, so it can run directly over SSH without a physical monitor. Later
+commands with `--viewer rerun --rerun-spawn` or `--interactive` explicitly start an
+interactive viewer.
 
 ## 14. Frame matching
 
