@@ -98,7 +98,7 @@ Run one private report per physical camera:
 ```bash
 python tools/calibration/audit_projection_parity.py \
   --bundle .local/camera_rig/camera_a/provision/camera_bundle.json \
-  --runtime-config .local/camera_rig/camera_a/runtime.yaml \
+  --runtime-config .local/camera_rig/camera_a/configs/runtime.yaml \
   --camera-label camera_a \
   --output .local/reports/projection-parity-camera-a.json
 ```

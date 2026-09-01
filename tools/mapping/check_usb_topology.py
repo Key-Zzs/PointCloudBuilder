@@ -41,16 +41,15 @@ def discover() -> list[dict[str, Any]]:
 
     result = []
     for device in rs.context().query_devices():
-        value = lambda field: device.get_info(field)  # noqa: E731
-        physical_port = value(rs.camera_info.physical_port)
+        physical_port = device.get_info(rs.camera_info.physical_port)
         bus, node = usb_coordinates(physical_port)
         result.append(
             {
-                "model": value(rs.camera_info.name),
-                "serial": value(rs.camera_info.serial_number),
+                "model": device.get_info(rs.camera_info.name),
+                "serial": device.get_info(rs.camera_info.serial_number),
                 "physical_port": physical_port,
-                "usb_descriptor": value(rs.camera_info.usb_type_descriptor),
-                "firmware_version": value(rs.camera_info.firmware_version),
+                "usb_descriptor": device.get_info(rs.camera_info.usb_type_descriptor),
+                "firmware_version": device.get_info(rs.camera_info.firmware_version),
                 "actual_link_speed_mbps": _read_speed(Path(f"/sys/bus/usb/devices/{node}/speed")),
                 "root_hub_bus": bus,
                 "root_hub_nominal_speed_mbps": _read_speed(
@@ -115,9 +114,10 @@ def write_reports(
         "status": "PASS" if passed else "FAIL",
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    identity_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    identity_path.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+    if passed:
+        identity_path.parent.mkdir(parents=True, exist_ok=True)
+        identity_path.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     return report
 
 

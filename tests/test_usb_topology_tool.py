@@ -73,6 +73,7 @@ def test_three_camera_topology_is_generic(tmp_path: Path) -> None:
     )
     assert report["status"] == "PASS"
     assert sorted(report["devices"]) == ["camera_a", "camera_b", "camera_c"]
+    assert (tmp_path / "identity.json").is_file()
 
 
 def test_topology_expected_count_fails_closed(tmp_path: Path) -> None:
@@ -92,3 +93,5 @@ def test_topology_expected_count_fails_closed(tmp_path: Path) -> None:
         expected_count=3,
     )
     assert report["status"] == "FAIL"
+    assert (tmp_path / "topology.json").is_file()
+    assert not (tmp_path / "identity.json").exists()

@@ -182,16 +182,27 @@ FFS bundle。`--no-hardware` 仍不接触硬件，向后兼容的默认期望数
 
 ## 8. 相机发现
 
+新 clone 不包含被 Git 忽略的 `.local/` 配置。先只连接属于当前 rig 的三台 D435i；若主机
+还连接着其他 RealSense，先断开它们，不得从五台设备中自动挑选三台。只读列出设备：
+
 ```bash
-camera-rig device list
-camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+camera-rig device list --driver realsense
+```
+
+确认三台设备的物理 identity 后生成私有 identity map。首次建立时按 USB physical port 的
+稳定排序命名为 `camera_a/b/c`；命令只在数量、型号和 USB 3 link 全部 PASS 时才写 identity
+map，失败报告不会建立新的身份绑定：
+
+```bash
 python tools/mapping/check_usb_topology.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --expected-count 3 \
   --report .local/reports/usb-topology.json
 ```
 
-交互确认 identity 后，只把序列号写进已忽略的 `.local/` YAML。
+若之前误用五台设备建立过 identity map，先人工核对，再把错误文件移动到私有备份位置，
+断开非 rig 设备并重新运行上面的命令；不要在未确认物理相机身份时覆盖映射。序列号只保留
+在 `.local/camera_rig/camera_identity_map.json` 和稍后自动生成的私有 YAML 中。
 
 ## 9. 标定 target
 
@@ -201,42 +212,116 @@ python tools/mapping/check_usb_topology.py \
 `target_spec.json` 始终跟随实体板。target frame 的 +X 向右、+Y 向上、+Z 向板外。
 
 ```bash
-mkdir -p .local/target
+mkdir -p .local/camera_rig/shared_target
 camera-rig target generate \
   --config third_party/CameraRig/configs/targets/charuco_a4_v1.yaml \
-  --output .local/target/charuco_a4_v1
+  --output .local/camera_rig/shared_target/charuco_a4_v1
 camera-rig target inspect \
-  --target .local/target/charuco_a4_v1/target_spec.json
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
+printf '%s  %s\n' \
+  56fbd157f9553e7e78c6868e86841c37d1799af1ca0be5a8cc69efa64b845ce1 \
+  .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  | sha256sum -c -
 ```
 
 若已打印实体板未改变，只需重新生成 artifact；preflight 前须核对 resolved spec 与打印
-比例尺。
+比例尺。preflight 会校验 `target_spec.json` 所在目录的全部 companion 文件和
+`checksums.sha256`，因此从旧电脑迁移时必须复制整个 `charuco_a4_v1/` artifact 目录，
+不能只复制 JSON。若实体板不是由上述标准配置生成的，不得用该命令伪造匹配关系；应迁移
+原 artifact，或按 CameraRig 的 existing-target 流程重新识别并注册实体板。
 
 ## 10. 固定相机标定
 
-每台相机 provision 前先执行仅验证姿态的 preflight；全部相机必须使用同一
-workspace 和 target。
+以下流程假设三台固定相机使用同一实体板，并且把 `workspace` 明确定义为
+`charuco_target` 坐标系；CameraRig fixed-provision 契约要求
+`T_workspace_from_target` 为单位矩阵。若你的 workspace 不是实体板坐标系，不能使用此
+流程伪造变换，必须先建立正确的 workspace/target 合同。
+
+### 10.1 自动生成每台相机的私有配置
+
+脚本从第 8 节确认过的 identity map 读取序列号，不在终端或报告中输出序列号；它校验第 9
+节完整 target artifact，并为每台相机生成 `configs/runtime.yaml` 和
+`configs/fixed_provision.yaml`：
 
 ```bash
-camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
-  --target .local/target/charuco_a4_v1/target_spec.json \
-  --frames 60 --policy pose_validated \
-  --report .local/reports/camera_a-preflight.json \
-  --overlays .local/overlays/camera_a
-camera-rig provision fixed \
-  --config .local/camera_a/fixed_provision.yaml \
-  --output .local/camera_a/provision
-camera-rig provision validate --artifact .local/camera_a/provision
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --workspace-equals-target \
+  --report .local/reports/camera-rig-calibration-preparation.json
 ```
 
-每台新增相机执行同样命令。私有 runtime YAML 从
-`third_party/CameraRig/configs/examples/single_camera_contract.yaml` 开始，provision YAML
-从 `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml` 开始；只在
-`.local/` 写入发现的序列号，让两份 provision 配置指向同一个 target，并设置
-`target.detection_policy: pose_validated`，使 provision 使用与必做 preflight 相同的
-当前实体板策略。标定残差与姿态稳定性阈值保持不变。
+若之前手工创建的 YAML 与自动合同不同，脚本默认停止且不覆盖。核对差异后，可在同一命令
+追加 `--update-existing`；脚本会先在原目录生成 `*.bak-<UTC>` 私有备份，再替换冲突文件。
+随后执行配置只读检查（除写入指定 report 外，不修改私有配置）：
 
-实体 coverage gate 失败后禁止复用旧 extrinsics。
+```bash
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --workspace-equals-target \
+  --check \
+  --report .local/reports/camera-rig-calibration-check.json
+```
+
+### 10.2 配置与非硬件输入检查
+
+逐台确认 runtime 绑定的设备和 profiles，再让 CameraRig 校验完整 provision 输入。dry-run
+不打开相机，也不写 provision artifact：
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig device inspect \
+    --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
+  camera-rig provision fixed \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --output ".local/camera_rig/${camera}/provision" \
+    --dry-run
+done
+```
+
+### 10.3 实体板 preflight
+
+保持相机、workspace 和实体板固定，让同一实体板清晰出现在每台相机的 color 画面中。逐台
+采集严格的 60 帧 pose-validated preflight；任一相机失败就停止，不要降低阈值：
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig target preflight \
+    --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
+    --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+    --frames 60 --policy pose_validated \
+    --report ".local/reports/${camera}-preflight.json" \
+    --overlays ".local/overlays/${camera}"
+done
+```
+
+### 10.4 Provision 与验证
+
+全部 preflight PASS 后，在相机、workspace 和实体板均未移动的情况下逐台 provision：
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig provision fixed \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --output ".local/camera_rig/${camera}/provision"
+  camera-rig provision validate \
+    --artifact ".local/camera_rig/${camera}/provision"
+done
+```
+
+脚本生成的 provision YAML 使用可移植相对路径
+`../../shared_target/charuco_a4_v1/target_spec.json`、实际 target SHA-256 和
+`target.detection_policy: pose_validated`。实体 coverage、残差或姿态稳定性 gate 失败后
+禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个已存在
+且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
 
 ## 11. FFS 设置
 
@@ -298,8 +383,8 @@ standalone smoke 配置中编造外参。
 
 ```bash
 python tools/mapping/run_live_single_camera.py \
-  --camera-config .local/camera_a/runtime.yaml \
-  --provision .local/camera_a/provision \
+  --camera-config .local/camera_rig/camera_a/configs/runtime.yaml \
+  --provision .local/camera_rig/camera_a/provision \
   --mapping-config .local/configs/mapping.yaml \
   --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
   --depth-source ffs_stereo --frames 300 \

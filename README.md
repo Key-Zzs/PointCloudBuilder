@@ -195,16 +195,31 @@ backward-compatible default expected count is two. The doctor never prints seria
 
 ## 8. Camera discovery
 
+A fresh clone does not contain the Git-ignored `.local/` configuration. Connect only
+the three D435i units that belong to this rig. If other RealSense devices are attached,
+disconnect them first; never auto-select three devices from a visible set of five.
+List devices without opening them:
+
 ```bash
-camera-rig device list
-camera-rig device inspect --config .local/camera_a/runtime.yaml --show-profiles
+camera-rig device list --driver realsense
+```
+
+After confirming the three physical identities, create the private identity map. On its
+first successful run, the tool assigns `camera_a/b/c` by stable USB physical-port order.
+It writes the identity map only when count, model, and USB 3 link checks all PASS; a
+failed report does not establish a new identity binding:
+
+```bash
 python tools/mapping/check_usb_topology.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --expected-count 3 \
   --report .local/reports/usb-topology.json
 ```
 
-Discover identities interactively, then write serials only to ignored `.local/` YAML.
+If an earlier five-device run created a wrong identity map, verify it manually, move it
+to a private backup location, disconnect non-rig devices, and rerun the command. Never
+replace an identity map before confirming the physical camera binding. Serials remain
+only in `.local/camera_rig/camera_identity_map.json` and the private YAML generated later.
 
 ## 9. Calibration target
 
@@ -215,43 +230,125 @@ preserve `target_spec.json` beside the physical target. Its frame has +X right, 
 and +Z out of the board.
 
 ```bash
-mkdir -p .local/target
+mkdir -p .local/camera_rig/shared_target
 camera-rig target generate \
   --config third_party/CameraRig/configs/targets/charuco_a4_v1.yaml \
-  --output .local/target/charuco_a4_v1
+  --output .local/camera_rig/shared_target/charuco_a4_v1
 camera-rig target inspect \
-  --target .local/target/charuco_a4_v1/target_spec.json
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
+printf '%s  %s\n' \
+  56fbd157f9553e7e78c6868e86841c37d1799af1ca0be5a8cc69efa64b845ce1 \
+  .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  | sha256sum -c -
 ```
 
 Regenerating this artifact is sufficient when the already printed board is unchanged;
-compare the resolved specification and print-scale rulers before preflight.
+compare the resolved specification and print-scale rulers before preflight. Preflight
+validates every companion file and `checksums.sha256` in the directory containing
+`target_spec.json`; when transferring from an old computer, copy the complete
+`charuco_a4_v1/` artifact directory, not only the JSON. If the physical board was not
+generated from the standard config above, do not fabricate a match: transfer its
+original artifact or identify and register it through CameraRig's existing-target flow.
 
 ## 10. Fixed camera calibration
 
-For each camera, run pose-only preflight before provisioning; use the same workspace
-and target for every camera.
+This workflow assumes all three fixed cameras use the same physical board and explicitly
+defines `workspace` as the `charuco_target` frame. The CameraRig fixed-provision contract
+requires identity `T_workspace_from_target`. If the workspace is not the physical target
+frame, do not fabricate a transform with this workflow; establish the correct
+workspace/target contract first.
+
+### 10.1 Generate private per-camera configs
+
+The preparation script reads serials from the confirmed Section 8 identity map without
+printing them in the terminal or report. It validates the complete Section 9 target
+artifact and generates `configs/runtime.yaml` plus `configs/fixed_provision.yaml` for
+every camera:
 
 ```bash
-camera-rig target preflight --camera-config .local/camera_a/runtime.yaml \
-  --target .local/target/charuco_a4_v1/target_spec.json \
-  --frames 60 --policy pose_validated \
-  --report .local/reports/camera_a-preflight.json \
-  --overlays .local/overlays/camera_a
-camera-rig provision fixed \
-  --config .local/camera_a/fixed_provision.yaml \
-  --output .local/camera_a/provision
-camera-rig provision validate --artifact .local/camera_a/provision
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --workspace-equals-target \
+  --report .local/reports/camera-rig-calibration-preparation.json
 ```
 
-Repeat those commands for every additional camera. Start private runtime YAML from
-`third_party/CameraRig/configs/examples/single_camera_contract.yaml` and provision YAML
-from `third_party/CameraRig/configs/examples/fixed_provision_contract.yaml`; insert only
-the discovered serial under `.local/`, point both provisions at the same target, and
-set `target.detection_policy: pose_validated` so provisioning uses the same current-board
-policy as the required preflight. Calibration residual and pose-stability thresholds
-remain unchanged.
+If manually created YAML already differs from the prepared contract, the script stops
+without overwriting it. After reviewing the difference, append `--update-existing` to
+the same command; the script creates a private `*.bak-<UTC>` backup beside each changed
+file before replacement. Then run the config read-only check, which changes no private
+config and writes only the requested report:
 
-Never reuse extrinsics after a failed physical coverage gate.
+```bash
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --workspace-equals-target \
+  --check \
+  --report .local/reports/camera-rig-calibration-check.json
+```
+
+### 10.2 Config and non-hardware input checks
+
+Confirm the configured device and profiles for each camera, then validate the complete
+fixed-provision inputs. Dry-run does not open a camera or write a provision artifact:
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig device inspect \
+    --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
+  camera-rig provision fixed \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --output ".local/camera_rig/${camera}/provision" \
+    --dry-run
+done
+```
+
+### 10.3 Physical-board preflight
+
+Keep the cameras, workspace, and board fixed, with the same board clearly visible in
+each color image. Capture the strict 60-frame pose-validated preflight for every camera;
+stop on any failure and do not relax thresholds:
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig target preflight \
+    --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
+    --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+    --frames 60 --policy pose_validated \
+    --report ".local/reports/${camera}-preflight.json" \
+    --overlays ".local/overlays/${camera}"
+done
+```
+
+### 10.4 Provision and validate
+
+After every preflight passes, provision each camera without moving any camera,
+workspace, or board:
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig provision fixed \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --output ".local/camera_rig/${camera}/provision"
+  camera-rig provision validate \
+    --artifact ".local/camera_rig/${camera}/provision"
+done
+```
+
+Generated provision YAML uses portable
+`../../shared_target/charuco_a4_v1/target_spec.json`, the actual target SHA-256, and
+`target.detection_policy: pose_validated`. Never reuse old extrinsics after a physical
+coverage, residual, or pose-stability failure, and never use `--force` to hide a failed
+gate. `--force` is only for explicitly replacing an existing CameraRig-owned artifact,
+which must still pass complete validation.
 
 ## 11. FFS setup
 
@@ -315,8 +412,8 @@ smoke config.
 
 ```bash
 python tools/mapping/run_live_single_camera.py \
-  --camera-config .local/camera_a/runtime.yaml \
-  --provision .local/camera_a/provision \
+  --camera-config .local/camera_rig/camera_a/configs/runtime.yaml \
+  --provision .local/camera_rig/camera_a/provision \
   --mapping-config .local/configs/mapping.yaml \
   --ffs-config .local/configs/ffs_tensorrt_plugin_rgb.yaml \
   --depth-source ffs_stereo --frames 300 \

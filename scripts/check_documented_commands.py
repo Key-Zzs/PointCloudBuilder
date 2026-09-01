@@ -16,6 +16,7 @@ REQUIRED_PATHS = (
     "environment.reconstruction.yml",
     "scripts/bootstrap_reconstruction_env.sh",
     "scripts/doctor_reconstruction_env.py",
+    "scripts/prepare_camera_rig_calibration.py",
     "scripts/prepare_ffs_assets.py",
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
@@ -48,6 +49,16 @@ PROFILE_FLAGS = ("--profile", "--matched-sets", "--viewer", "--rerun-record")
 BENCHMARK_FLAGS = ("--input-mode", "--frames", "--warmup", "--report")
 DOCTOR_FLAGS = ("--no-hardware", "--expected-d435i-count", "--asset-root")
 USB_FLAGS = ("--identity-map", "--expected-count", "--report")
+CAMERA_RIG_PREPARATION_FLAGS = (
+    "--identity-map",
+    "--target",
+    "--asset-root",
+    "--expected-camera-count",
+    "--workspace-equals-target",
+    "--update-existing",
+    "--check",
+    "--report",
+)
 PROMOTION_FLAGS = (
     "--solution",
     "--validation",
@@ -115,6 +126,11 @@ def main() -> int:
             BENCHMARK_FLAGS,
         ),
         ("doctor", "scripts/doctor_reconstruction_env.py", DOCTOR_FLAGS),
+        (
+            "camera_rig_preparation",
+            "scripts/prepare_camera_rig_calibration.py",
+            CAMERA_RIG_PREPARATION_FLAGS,
+        ),
         ("usb_topology", "tools/mapping/check_usb_topology.py", USB_FLAGS),
         (
             "rig_calibration_promotion",
@@ -153,6 +169,7 @@ def main() -> int:
             PROFILE_FLAGS
             + BENCHMARK_FLAGS
             + DOCTOR_FLAGS
+            + CAMERA_RIG_PREPARATION_FLAGS
             + USB_FLAGS
             + PROMOTION_FLAGS
             + NCAMERA_FLAGS
