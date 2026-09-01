@@ -289,12 +289,19 @@ camera-rig target inspect \
 `camera-rig target inspect` 加 artifact 自带的 `checksums.sha256`。迁移时必须复制整个
 target artifact 目录，不能只复制 JSON。
 
-## 10. 固定相机标定
+## 10. 每相机 fixed provision（multi-pose 的必需 bootstrap）
 
 以下流程假设三台固定相机使用同一实体板，并且把 `workspace` 明确定义为所选 artifact 的
 `target_frame`（第 9.1 节为 `charuco_500x700`，第 9.2 节为 `charuco_target`）；CameraRig
 fixed-provision 契约要求 `T_workspace_from_target` 为单位矩阵。若你的 workspace 不是实体板
 坐标系，不能使用此流程伪造变换，必须先建立正确的 workspace/target 合同。
+
+本节不能被 PCB multi-pose N-camera calibration 直接删除或替代。后者的采集和 production
+部署会强制读取这里产生的 passed CameraBundle，以获得每台相机的 K/D、depth scale、设备
+身份、内部 IR/depth/color 外参和不可变 bundle hash。本节单板求得的
+`T_workspace_from_camera` 是 multi-pose 的初始值；它不是最终优化约束。对于 production
+三相机外参，推荐在第 11 节生成私有 rig 配置后，先完成第 32–35 节的 multi-pose solve、
+holdout、实体 acceptance 和 promotion，再返回第 12 节开始重建。
 
 ### 10.1 自动生成每台相机的私有配置
 
@@ -388,6 +395,21 @@ SHA-256 和 `target.detection_policy: pose_validated`。实体 coverage、残差
 失败后禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个
 已存在且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
 
+### 10.5 与 multi-pose production 外参的职责边界
+
+```text
+CameraRig fixed provision
+  = 每相机内参/畸变/内部 stream 外参/depth scale/身份 + bootstrap workspace pose
+
+PCB validated multi-pose deployment
+  = 最终 production T_workspace_from_camera
+```
+
+相机在 10.4 后必须保持固定。Multi-pose 的 `pose_0` 仍把同一实体板放在 canonical
+workspace，之后只移动标定板采集 diverse poses，绝不移动相机。Promotion 后 PCB deployment
+覆盖 workspace 外参，但不会修改 CameraBundle；identity、bundle hash、camera set、frame 或
+fingerprint 不匹配都会 fail closed，不会退回 bootstrap 外参。
+
 ## 11. FFS 设置
 
 FFS 资产是外部私有文件。把官方 `20-30-48` checkpoint 与 `cfg.yaml` 放到
@@ -463,10 +485,8 @@ done
 provision bundle 提供权威 IR 内参、双目 baseline 和 IR→color 外参，不得在 standalone
 smoke 配置中编造这些值。
 
-## 12. 单相机 XYZ/XYZRGB
-
-首次进入本节前，用已确认的 identity map、三份 passed provision 和第 11 节生成的 RGB
-plugin 配置创建 workspace mapping 与 live rig 私有配置：
+最后，用已确认的 identity map、三份 passed provision 和 RGB plugin 配置创建 workspace
+mapping、live rig 与 frozen TSDF 私有配置：
 
 ```bash
 python scripts/prepare_live_reconstruction_configs.py \
@@ -478,11 +498,18 @@ python scripts/prepare_live_reconstruction_configs.py \
 ```
 
 它生成 `.local/configs/mapping.yaml`、`mapping_acceptance.yaml`、
-`live_rig_ffs_rgb.yaml`、`live_rig_ffs_rgb_raw.yaml` 和
-`live_rig_ffs_rgb_compact.yaml`。如果 workspace 专属的 `mapping.yaml` 已存在，默认保留它；
-其余已有文件只有内容完全一致才接受，禁止用 `--force` 静默覆盖测量过的 crop、plane ROI 或
-rig 配置。这里故意不写 `rig_calibration`：当前只使用三份 fixed provision；只有完成后续
-multi-pose validation 与 promotion 后才能添加正式 deployment。
+`live_rig_ffs_rgb.yaml`、`live_rig_ffs_rgb_raw.yaml`、
+`live_rig_ffs_rgb_compact.yaml` 和 `tsdf_frozen_ffs.yaml`；最后一项来自已跟踪模板
+`configs/mapping/tsdf_example.yaml`。如果 workspace 专属的
+`mapping.yaml` 已存在，默认保留它；其余已有文件只有内容完全一致才接受，禁止用 `--force`
+静默覆盖测量过的 crop、plane ROI、rig 或 TSDF 配置。
+
+生成的三个 live rig YAML 故意不含 `rig_calibration`。若最终目标是 production 多相机几何，
+此时先执行第 32–35 节完成 multi-pose validation、实体 acceptance 与 promotion，把
+deployment 配置到三个 live rig YAML 并验证；之后再进入第 12 节。只有明确接受 bootstrap
+fixed-provision workspace 外参的诊断运行，才可直接继续第 12 节。
+
+## 12. 单相机 XYZ/XYZRGB
 
 下面的命令打开 `camera_a`，用 production TensorRT plugin 从左右 IR 推理 300 帧 FFS
 深度，使用 provision 中的内参、双目 baseline、IR→color 和 workspace 变换生成 XYZRGB，
@@ -570,17 +597,34 @@ python tools/mapping/run_live_reconstruction_profile.py \
   --output .local/evidence/dense-rgb --report .local/reports/dense-rgb.json
 ```
 
+`surface_quality` 只在 `mapping_acceptance.yaml.expected_plane` 的 `x/y` ROI 和
+`z_search_range_m` 内评估。运行时必须让该平面区域无遮挡；木块、手或其他物体落入 ROI 会
+把 `p95_abs_z_m` 推高并正确产生 FAIL。不要通过放宽 40 mm gate 制造 PASS；移开遮挡，或在
+看数据前依据实体 workspace 测量并冻结一个确实无遮挡的 plane ROI。失败输出/report 不会被
+覆盖，复跑时使用新的 evidence/report 名称。
+
 ## 17. Crop
 
 生产顺序是：可选 camera-frame local crop、workspace transform、逐相机唯一一次 workspace
 crop、canonical concatenate、voxel fusion、可选全局 sampling。Crop 仅按 XYZ 判断并保留
-RGB 列。
+RGB 列。Live reconstruction 的 crop 位于三个 `.local/configs/live_rig_ffs_rgb*.yaml`：
+
+- `cameras[].local_crop`：在单相机 source frame 中裁剪，默认关闭；只有测量过每台相机的
+  独立范围时才开启。
+- 顶层 `workspace_crop`：变换到 `workspace` 后对每台相机执行一次；`x/y/z` 单位均为米。
+
+先在 raw profile/Rerun 中测量 workspace bounds，再同步修改 dense/raw/compact 三份私有 rig
+YAML。不要照抄另一台机器或旧 workspace 的边界。`mapping.yaml` 中的 `workspace_crop` 用于
+单相机检查；`mapping_acceptance.yaml.expected_plane` 是平面验收 ROI，不是通用场景 crop。
 
 ## 18. 可选 sampling
 
 `configs/mapping/compact_rgb_reconstruction_example.yaml` 在 fusion 后执行一次全局
 30,000 点 FPS，并保留所选点的 RGB。`voxel_fps` 与 `voxel_random` 作为显式高级兼容模式
-保留，但不是已 voxel-fused cloud 的默认值。
+保留，但不是已 voxel-fused cloud 的默认值。三个 profile 的正式合同为：raw 与 dense 的
+顶层 `sampling.enabled: false`；compact 为 `enabled: true`、`mode: fps`、
+`num_points: 30000`。改变这些值后不要再把结果称为对应 profile 的 acceptance；如需自定义
+policy 输入，复制一个新的私有 YAML 并明确命名。
 
 ```bash
 python tools/mapping/run_live_reconstruction_profile.py \
@@ -595,9 +639,62 @@ Rerun 展示相机 RGB/frustum、逐相机 workspace、concatenated/fused/sample
 entity 和 scalar metric。Nx6 使用真实 RGB；Nx3 使用默认颜色。`viewer_point_budget` 只限制
 发给 Rerun 的 packet，绝不修改重建 tensor。
 
-## 20. Interactive 无限模式
+## 20. Frozen static map 与 Interactive 无限模式
 
-日常 operator 命令：
+Interactive 的 `frozen_static` 模式不能凭空启动：它必须先有 private TSDF config 和已验证
+的 initial map。第 11 节的配置生成命令会创建
+`.local/configs/tsdf_frozen_ffs.yaml`；下面的 recording → offline build → validate 是
+Interactive 的必需前置，必须按顺序执行。开始前应已有通过的 dense reconstruction，并让
+静态场景保持无人、无遮挡；希望以后作为动态 overlay 的物体不要写入 frozen background。
+
+### 20.1 修改 TSDF crop / sampling
+
+编辑 `.local/configs/tsdf_frozen_ffs.yaml` 的 `postprocess`，例如：
+
+```yaml
+postprocess:
+  crop:
+    enabled: true
+    frame: workspace
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.05, 1.0]
+  sampling:
+    enabled: true
+    mode: voxel_fps
+    num_points: 4096
+    voxel_size: 0.005
+    seed: 42
+    deterministic: true
+    pad_mode: repeat
+```
+
+这些 `postprocess` 参数只影响 TSDF extraction/viewer 输出，不改变逐相机 depth ray 的 TSDF
+integration。`crop.frame` 必须为 `workspace`，边界单位为米；关闭 crop 或 sampling 时只改
+相应 `enabled`。`volume`、`depth`、`integration.source` 和
+`extraction.weight_threshold` 属于 map 兼容合同，修改后必须重建 initial map，不能加载旧
+map。不要用 `--force` 覆盖已经测量过的私有配置。
+
+### 20.2 录制静态 depth
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/rig-depth-static-v1
+```
+
+### 20.3 构建并验证 initial map
+
+```bash
+python tools/mapping/build_tsdf_offline.py \
+  --recording .local/recordings/rig-depth-static-v1 \
+  --config .local/configs/tsdf_frozen_ffs.yaml \
+  --output .local/maps/static_ffs
+python tools/mapping/validate_tsdf_map.py --map .local/maps/static_ffs
+```
+
+只有 validate PASS 后才运行日常 operator 命令：
 
 ```bash
 python tools/mapping/run_live_tsdf_mapping.py \
@@ -610,32 +707,27 @@ python tools/mapping/run_live_tsdf_mapping.py \
 它自动启动 Rerun，不要求 `--report`，没有 matched-set 上限，统计窗口有界，并在
 Ctrl+C/SIGTERM 清理后以 0 退出。可用 `--rerun-connect`、`--rerun-record` 或
 `--viewer-point-budget 200000` 覆盖默认。Interactive 不是正式 acceptance；finite mode
-继续支持 `--matched-sets 300 --report ...`。
+继续支持 `--matched-sets 300 --report ...`。SSH/headless 主机若不启动 GUI，可追加
+`--rerun-record .local/evidence/live-tsdf.rrd`，稍后在有显示环境的机器查看。
 
 ## 21. Depth recording
 
-```bash
-python tools/mapping/record_live_rig_depth.py \
-  --config .local/configs/live_rig_ffs_rgb.yaml \
-  --matched-sets 300 --depth-source ffs_stereo \
-  --output .local/recordings/rig-depth
-```
-
-Recording 保存 same-pass matched 逐相机 depth、intrinsics、transform 与 backend
-provenance，不会再次运行 FFS。
+第 20.2 节的 recording 是 Interactive initial map 的必需输入。它保存 same-pass matched
+逐相机 depth、intrinsics、transform、CameraBundle/deployment fingerprint 与 backend
+provenance；offline builder 不会再次运行 FFS。相机、provision 或 production deployment
+变化后必须新录，不能复用旧 recording。
 
 ## 22. Offline TSDF
 
+第 20.3 节先构建并验证 authoritative initial map。需要单独导出 point cloud/mesh 时运行：
+
 ```bash
-python tools/mapping/build_tsdf_offline.py \
-  --recording .local/recordings/rig-depth \
-  --config configs/mapping/tsdf_example.yaml \
-  --output .local/maps/static-ffs
 python tools/mapping/extract_tsdf_geometry.py \
-  --map .local/maps/static-ffs --output .local/evidence/static-ffs
+  --map .local/maps/static_ffs --output .local/evidence/static_ffs
 ```
 
-Extraction 支持 raw point cloud、可选 crop/sampling 与 mesh。
+Extraction 使用 map artifact 内保存的 resolved config，支持 raw point cloud、可选
+postprocess crop/sampling 与 mesh。
 
 ## 23. Live TSDF
 
@@ -730,6 +822,44 @@ graph、pose-diversity gate、solve/holdout validation 与显式 candidate-only 
 流程、数学模型、artifact contract、synthetic acceptance 及 real 第三相机 deferred 状态见
 [`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md)。
 
+这是 passed per-camera provision 之后推荐的 production N-camera 外参主方法，不是第 10 节
+CameraBundle bootstrap 的替代品。`capture_multicamera_target_poses.py` 会强制加载每份
+provision，并把其中的相机身份、projection model、bundle hash 和 bootstrap pose 绑定到
+observations。`pose_0` 保持在 canonical workspace；相机始终固定，只移动后续标定板 pose。
+
+先固定 `pose_0`，并在开始采集前声明最后 4 个 pose 为 holdout。每次提示后只移动标定板，
+覆盖 center/left/right/top/bottom、near/far、正负 yaw/pitch 和组合旋转，停稳后按 Enter：
+
+```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+python tools/calibration/capture_multicamera_target_poses.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --target "$PCB_TARGET_SPEC" \
+  --pose-count 24 --holdout-pose-count 4 \
+  --min-corners-per-observation 6 \
+  --output .local/calibration/new-workspace/observations.json
+
+python tools/calibration/solve_multicamera_multipose.py \
+  --observations .local/calibration/new-workspace/observations.json \
+  --config configs/calibration/multipose_rig_example.yaml \
+  --output .local/calibration/new-workspace/solution.json
+
+python tools/calibration/validate_multicamera_multipose.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --observations .local/calibration/new-workspace/observations.json \
+  --output .local/calibration/new-workspace/validation.json
+```
+
+Solve 和 holdout 都 PASS 后，可先只读预览 candidate；它只在内存中应用外参，按 Ctrl+C
+退出，不修改 provision 或 production YAML：
+
+```bash
+python tools/mapping/view_live_candidate_calibration.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --candidate-solution .local/calibration/new-workspace/solution.json \
+  --candidate-validation .local/calibration/new-workspace/validation.json
+```
+
 ## 33. Calibration lifecycle and production precedence
 
 ```text
@@ -751,16 +881,22 @@ extrinsics。FFS runtime 组合：
 Candidate viewer 拒绝已配置 production deployment 的 rig，且始终报告
 `candidate_only=true`、`production_applied=false`。
 
-Promotion 必须精确绑定 solution、validation、通过的 holdout 与真实实体 3D acceptance；
-只有 reprojection PASS 不够：
+第 35 节生成 passed `physical_acceptance.json` 后才能执行 promotion；不要在此处提前运行。
+Promotion PASS 后，在 `.local/configs/live_rig_ffs_rgb.yaml`、
+`live_rig_ffs_rgb_raw.yaml` 和 `live_rig_ffs_rgb_compact.yaml` 顶层加入同一 deployment；路径
+相对于每个 YAML 所在的 `.local/configs/`：
 
-```bash
-python tools/calibration/promote_rig_calibration.py \
-  --solution .local/calibration/new-workspace/solution.json \
-  --validation .local/calibration/new-workspace/validation.json \
-  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
-  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```yaml
+rig_calibration:
+  type: validated_multipose
+  artifact: ../calibration/deployment/new-workspace/rig_calibration.json
 ```
+
+不得在 candidate capture/preview/acceptance 之前添加此段，也不得只更新三个 profile 中的
+一部分。加载任一 rig 配置即会验证 schema；真正运行时还会绑定 exact CameraBundle 集合。
+
+Promotion 必须精确绑定 solution、validation、通过的 holdout 与真实实体 3D acceptance；
+只有 reprojection PASS 不够。完整 promotion 命令在第 35 节，紧跟实体 acceptance。
 
 Recording 和 TSDF map artifact 保存 calibration mode、deployment/solution fingerprint、
 camera set、workspace frame 与逐相机 CameraBundle hash。`--initial-map` 的 deployment
@@ -781,20 +917,43 @@ overlap、symmetric NN、board/interior、plane、diagnostic-only residual SE(3)
 overlap graph、fused count、可测 surface thickness，以及 matcher/drop statistics。
 Diagnostic ICP 永不写回 deployment extrinsics。
 
+把标定板放回未移动相机所定义的 `pose_0`，保持验收场景静止。先记录一份 immutable
+same-pass FFS depth artifact，再用预先冻结的 thresholds 对 candidate 求解的所有相机 pair
+做实体检查：
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/new-workspace-physical-acceptance
+```
+
 ```bash
 python tools/calibration/evaluate_ncamera_rig_alignment.py \
-  --rig-config .local/configs/live_rig_three_camera_candidate.yaml \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --candidate-solution .local/calibration/new-workspace/solution.json \
   --candidate-validation .local/calibration/new-workspace/validation.json \
   --thresholds configs/calibration/ncamera_physical_acceptance_strict_example.yaml \
   --recording .local/recordings/new-workspace-physical-acceptance \
-  --mapping-config .local/configs/new-workspace-mapping.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml \
   --matched-sets 5 \
-  --output .local/reports/new-workspace-ncamera-acceptance.json
+  --output .local/calibration/new-workspace/physical_acceptance.json
 ```
 
 Candidate mode 输出 promotion 所消费的正式 physical-acceptance artifact。必须在查看新数据
-前 preregister/freeze threshold 文件。Promotion 后，用 `--rig-calibration` 替换三个
+前 preregister/freeze threshold 文件。只有上一个命令 PASS 后才 promotion：
+
+```bash
+python tools/calibration/promote_rig_calibration.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --validation .local/calibration/new-workspace/validation.json \
+  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```
+
+然后按第 33 节把同一 deployment 配置到三份 live rig YAML，再从第 12 节继续到第 20 节；
+不要使用仍缺少 `rig_calibration` 的 candidate 配置生成 production evidence。Promotion 后，
+用 `--rig-calibration` 替换三个
 candidate 参数，即可 regression-test deployed path；此时复用精确 accepted physical receipt
 中的 thresholds。
 
@@ -843,7 +1002,7 @@ N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。�
 13. 对每台相机运行 CameraRig `pose_validated` target preflight。
 14. 在所有相机充分看到 `pose_0` 时创建逐相机 initial fixed provision。
 15. 验证每份 provision。
-16. 从 public example 创建私有三相机 rig config。
+16. 用第 11 节自动化脚本生成不含 deployment 的私有三相机 candidate rig configs。
 17. 若 profile/model 有变化，运行 projection-parity smoke。
 18. 采集约 24-30 个 diverse multi-pose target pose。
 19. 预先指定最后约 4-6 个 pose 为 holdout。
@@ -851,10 +1010,11 @@ N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。�
 21. 用保留 holdout 验证精确 candidate。
 22. 运行 candidate-only live preview。
 23. 记录并通过 generic N-camera pairwise physical acceptance。
-24. 把精确 candidate 与 acceptance receipts promote 到 production。
+24. 把精确 candidate 与 acceptance receipts promote 到 production，并把同一 deployment
+    配置到三份 live rig profile。
 25. 运行 raw RGB reconstruction。
 26. 在 sampling off、2.5 mm voxel 下运行 dense XYZRGB fusion。
-27. 测量并配置新的 workspace crop。
+27. 按第 17、18 与 20.1 节测量并配置 live/TSDF crop 与 sampling；自定义 profile 单独命名。
 28. Benchmark 真实三相机性能及 viewer/mapper overhead。
 29. 记录新的 fingerprint-bound depth data。
 30. 构建新的 fingerprint-bound TSDF map。

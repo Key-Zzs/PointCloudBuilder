@@ -4,18 +4,18 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
 import json
 import os
-from pathlib import Path
 import re
+from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from pointcloud_builder.config import load_config
+from pointcloud_builder.mapping.config import load_tsdf_config
 from pointcloud_builder.rig import load_rig_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAPPING_TEMPLATE = REPO_ROOT / "configs/mapping/native_workspace_example.yaml"
@@ -27,10 +27,12 @@ PROFILE_TEMPLATES = {
     "live_rig_ffs_rgb_compact.yaml": REPO_ROOT
     / "configs/mapping/compact_rgb_reconstruction_example.yaml",
 }
+TSDF_TEMPLATE = REPO_ROOT / "configs/mapping/tsdf_example.yaml"
 OUTPUT_NAMES = (
     "mapping.yaml",
     "mapping_acceptance.yaml",
     *PROFILE_TEMPLATES,
+    "tsdf_frozen_ffs.yaml",
 )
 IDENTITY_SCHEMA = "pointcloud-builder.camera-identity-map.v1"
 CAMERA_NAME = re.compile(r"camera_[a-z][a-z0-9_]*\Z")
@@ -170,6 +172,7 @@ def render_configs(
     rendered = {
         "mapping.yaml": deepcopy(mapping),
         "mapping_acceptance.yaml": deepcopy(mapping),
+        "tsdf_frozen_ffs.yaml": _load_yaml(TSDF_TEMPLATE),
     }
     for output_name, template_path in PROFILE_TEMPLATES.items():
         config = _load_yaml(template_path)
@@ -232,6 +235,8 @@ def write_configs(
             temporary.chmod(0o600)
             if name.startswith("live_rig_"):
                 load_rig_config(temporary)
+            elif name.startswith("tsdf_"):
+                load_tsdf_config(temporary)
             else:
                 validate_mapping(_load_yaml(temporary), configs[name]["expected_plane"]["frame"])
             staged.append((temporary, destination))
@@ -248,7 +253,7 @@ def write_configs(
 def validate_mapping(value: dict[str, Any], workspace_frame: str) -> None:
     plane = value.get("expected_plane")
     if not isinstance(plane, dict):
-        raise ValueError("mapping config must contain expected_plane")
+        raise TypeError("mapping config must contain expected_plane")
     if plane.get("frame") != workspace_frame:
         raise ValueError("mapping expected_plane.frame must match provision workspace")
     for key in ("x", "y", "z_search_range_m"):
@@ -267,7 +272,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         raise ValueError(f"could not load YAML {path}: {error}") from error
     if not isinstance(value, dict):
-        raise ValueError(f"YAML root must be a mapping: {path}")
+        raise TypeError(f"YAML root must be a mapping: {path}")
     return value
 
 

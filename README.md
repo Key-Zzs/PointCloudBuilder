@@ -315,7 +315,7 @@ valid environments can produce different spec SHA values. The authoritative chec
 `camera-rig target inspect` and the artifact's own `checksums.sha256`. Transfer the
 complete target artifact directory, never only the JSON.
 
-## 10. Fixed camera calibration
+## 10. Per-camera fixed provision (required multi-pose bootstrap)
 
 This workflow assumes all three fixed cameras use the same physical board and explicitly
 defines `workspace` as that selected artifact's `target_frame` (`charuco_500x700` for
@@ -323,6 +323,15 @@ Section 9.1 and `charuco_target` for Section 9.2). The CameraRig fixed-provision
 requires identity `T_workspace_from_target`. If the workspace is not the physical target
 frame, do not fabricate a transform with this workflow; establish the correct
 workspace/target contract first.
+
+PCB multi-pose N-camera calibration cannot remove or directly replace this section.
+Its capture and production deployment paths require the passed CameraBundles created
+here for each camera's K/D, depth scale, device identity, internal IR/depth/color
+extrinsics, and immutable bundle hash. The single-board `T_workspace_from_camera`
+from this section is a multi-pose initializer, not a final optimization constraint.
+For production three-camera extrinsics, finish Sections 32–35 (multi-pose solve,
+holdout, physical acceptance, and promotion) after Section 11 creates the private rig
+configs, then return to Section 12 for reconstruction.
 
 ### 10.1 Generate private per-camera configs
 
@@ -423,6 +432,23 @@ extrinsics after a physical coverage, residual, or pose-stability failure, and n
 use `--force` to hide a failed gate. `--force` is only for explicitly replacing an
 existing CameraRig-owned artifact, which must still pass complete validation.
 
+### 10.5 Responsibility boundary with multi-pose production extrinsics
+
+```text
+CameraRig fixed provision
+  = per-camera intrinsics/distortion/internal stream extrinsics/depth scale/identity
+    plus a bootstrap workspace pose
+
+PCB validated multi-pose deployment
+  = final production T_workspace_from_camera
+```
+
+Keep every camera fixed after Section 10.4. Multi-pose still places the same board at
+the canonical workspace for `pose_0`; move only the board through later diverse poses,
+never a camera. After promotion, the PCB deployment overrides workspace extrinsics but
+does not modify any CameraBundle. Identity, bundle-hash, camera-set, frame, or
+fingerprint mismatch fails closed instead of falling back to bootstrap extrinsics.
+
 ## 11. FFS setup
 
 FFS assets are external and private. Place the official `20-30-48` checkpoint and
@@ -505,11 +531,8 @@ supplies authoritative IR intrinsics, stereo baseline, and IR-to-color extrinsic
 the validated provision bundle; never invent those values in a standalone smoke
 config.
 
-## 12. Single-camera XYZ/XYZRGB
-
-Before first entering this section, generate the private workspace mapping and live-rig
-configs from the confirmed identity map, three passed provisions, and the RGB plugin
-config created in Section 11:
+Finally, create the private workspace mapping, live-rig, and frozen-TSDF configs from
+the confirmed identity map, three passed provisions, and the RGB plugin config:
 
 ```bash
 python scripts/prepare_live_reconstruction_configs.py \
@@ -521,13 +544,21 @@ python scripts/prepare_live_reconstruction_configs.py \
 ```
 
 It creates `.local/configs/mapping.yaml`, `mapping_acceptance.yaml`,
-`live_rig_ffs_rgb.yaml`, `live_rig_ffs_rgb_raw.yaml`, and
-`live_rig_ffs_rgb_compact.yaml`. An existing workspace-specific `mapping.yaml` is
-preserved by default; every other existing file is accepted only when its content is
-identical. Never use `--force` to silently replace a measured crop, plane ROI, or rig
-config. `rig_calibration` is deliberately omitted here: these commands use the three
-fixed provisions. Add a production deployment only after later multi-pose validation
-and promotion.
+`live_rig_ffs_rgb.yaml`, `live_rig_ffs_rgb_raw.yaml`,
+`live_rig_ffs_rgb_compact.yaml`, and `tsdf_frozen_ffs.yaml`; the last file comes from
+the tracked `configs/mapping/tsdf_example.yaml` template. An existing
+workspace-specific `mapping.yaml` is preserved by default; every other existing file
+is accepted only when its content is identical. Never use `--force` to silently
+replace a measured crop, plane ROI, rig, or TSDF config.
+
+The three generated live-rig YAML files deliberately omit `rig_calibration`. For
+production multi-camera geometry, complete Sections 32–35 for multi-pose validation,
+physical acceptance, and promotion now; configure and validate the deployment in all
+three live-rig YAML files, then continue with Section 12. Continue directly with
+Section 12 only for a diagnostic run that explicitly accepts bootstrap
+fixed-provision workspace extrinsics.
+
+## 12. Single-camera XYZ/XYZRGB
 
 The command below opens `camera_a`, infers 300 FFS depth frames from stereo IR with the
 production TensorRT plugin, and obtains intrinsics, stereo baseline, IR-to-color, and
@@ -623,18 +654,42 @@ python tools/mapping/run_live_reconstruction_profile.py \
   --output .local/evidence/dense-rgb --report .local/reports/dense-rgb.json
 ```
 
+`surface_quality` evaluates only the `x/y` ROI and `z_search_range_m` under
+`mapping_acceptance.yaml.expected_plane`. Keep that plane region unobstructed during
+the run: a block, hand, or other object inside the ROI raises `p95_abs_z_m` and
+correctly causes FAIL. Do not weaken the 40 mm gate to manufacture PASS. Remove the
+occlusion, or measure and freeze a genuinely clear plane ROI before inspecting the
+acceptance data. Failed outputs/reports are immutable; use fresh evidence/report names
+for a rerun.
+
 ## 17. Crop
 
 The production order is optional camera-frame local crop, workspace transform, one
 workspace crop per camera, canonical concatenate, voxel fusion, then optional global
-sampling. Crop uses XYZ and preserves RGB columns.
+sampling. Crop uses XYZ and preserves RGB columns. Live-reconstruction crop settings
+are in all three `.local/configs/live_rig_ffs_rgb*.yaml` files:
+
+- `cameras[].local_crop` crops in each camera's source frame and is disabled by
+  default; enable it only with independently measured per-camera bounds.
+- top-level `workspace_crop` runs once per camera after the workspace transform;
+  `x/y/z` are in metres.
+
+Measure workspace bounds in the raw profile/Rerun first, then update the private
+dense/raw/compact rig YAML files consistently. Never copy bounds from another host or
+old workspace. `mapping.yaml.workspace_crop` is used by single-camera checks, while
+`mapping_acceptance.yaml.expected_plane` is a plane-acceptance ROI, not a general
+scene crop.
 
 ## 18. Optional sampling
 
 `configs/mapping/compact_rgb_reconstruction_example.yaml` applies one global
 30,000-point FPS after fusion. It preserves each selected point's RGB. `voxel_fps` and
 `voxel_random` remain explicit advanced compatibility modes, but are not defaults for
-an already voxel-fused cloud.
+an already voxel-fused cloud. Formal profile contracts are top-level
+`sampling.enabled: false` for raw and dense, and `enabled: true`, `mode: fps`,
+`num_points: 30000` for compact. After changing these values, do not call the output
+that profile's acceptance result; create a separately named private YAML for a custom
+policy input.
 
 ```bash
 python tools/mapping/run_live_reconstruction_profile.py \
@@ -650,9 +705,64 @@ sampled clouds, TSDF entities and scalar metrics. Nx6 uses real RGB; Nx3 uses th
 default visualization color. `viewer_point_budget` limits only the packet sent to
 Rerun and never modifies the reconstruction tensor.
 
-## 20. Interactive infinite mode
+## 20. Frozen static map and Interactive infinite mode
 
-Daily operator command:
+Interactive `frozen_static` mode cannot start without a private TSDF config and a
+validated initial map. The Section 11 config generator creates
+`.local/configs/tsdf_frozen_ffs.yaml`; the recording, offline build, and validation
+below are mandatory Interactive prerequisites and must run in this order. Start only
+after dense reconstruction passes, with a static, unoccluded scene. Do not bake an
+object intended for later dynamic overlay into the frozen background.
+
+### 20.1 Adjust TSDF crop and sampling
+
+Edit `postprocess` in `.local/configs/tsdf_frozen_ffs.yaml`, for example:
+
+```yaml
+postprocess:
+  crop:
+    enabled: true
+    frame: workspace
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [-0.05, 1.0]
+  sampling:
+    enabled: true
+    mode: voxel_fps
+    num_points: 4096
+    voxel_size: 0.005
+    seed: 42
+    deterministic: true
+    pad_mode: repeat
+```
+
+These `postprocess` settings affect only TSDF extraction/viewer output, not integration
+of per-camera depth rays. `crop.frame` must be `workspace`, and bounds are in metres;
+disable crop or sampling only through its corresponding `enabled`. `volume`, `depth`,
+`integration.source`, and `extraction.weight_threshold` are map-compatibility fields:
+changing one requires rebuilding the initial map rather than loading an old map. Do
+not use `--force` to replace a measured private config.
+
+### 20.2 Record static depth
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/rig-depth-static-v1
+```
+
+### 20.3 Build and validate the initial map
+
+```bash
+python tools/mapping/build_tsdf_offline.py \
+  --recording .local/recordings/rig-depth-static-v1 \
+  --config .local/configs/tsdf_frozen_ffs.yaml \
+  --output .local/maps/static_ffs
+python tools/mapping/validate_tsdf_map.py --map .local/maps/static_ffs
+```
+
+Run the daily operator command only after validation passes:
 
 ```bash
 python tools/mapping/run_live_tsdf_mapping.py \
@@ -665,32 +775,29 @@ python tools/mapping/run_live_tsdf_mapping.py \
 It spawns Rerun, requires no `--report`, has no matched-set limit, keeps bounded rolling
 statistics, and exits 0 after Ctrl+C/SIGTERM cleanup. Override with `--rerun-connect`,
 `--rerun-record`, or `--viewer-point-budget 200000`. Interactive mode is not formal
-acceptance. Finite mode remains available with `--matched-sets 300 --report ...`.
+acceptance. Finite mode remains available with `--matched-sets 300 --report ...`. On
+an SSH/headless host, append `--rerun-record .local/evidence/live-tsdf.rrd` to avoid
+spawning a GUI and inspect the RRD later on a machine with a display.
 
 ## 21. Depth recording
 
-```bash
-python tools/mapping/record_live_rig_depth.py \
-  --config .local/configs/live_rig_ffs_rgb.yaml \
-  --matched-sets 300 --depth-source ffs_stereo \
-  --output .local/recordings/rig-depth
-```
-
-The recording contains matched per-camera depth, intrinsics, transforms and backend
-provenance from the same pass; it does not rerun FFS.
+The Section 20.2 recording is a mandatory Interactive initial-map input. It stores
+same-pass matched per-camera depth, intrinsics, transforms, CameraBundle/deployment
+fingerprints, and backend provenance; the offline builder does not rerun FFS. Record
+a new artifact after any camera, provision, or production deployment change.
 
 ## 22. Offline TSDF
 
+Section 20.3 first builds and validates the authoritative initial map. To export a
+separate point cloud or mesh, run:
+
 ```bash
-python tools/mapping/build_tsdf_offline.py \
-  --recording .local/recordings/rig-depth \
-  --config configs/mapping/tsdf_example.yaml \
-  --output .local/maps/static-ffs
 python tools/mapping/extract_tsdf_geometry.py \
-  --map .local/maps/static-ffs --output .local/evidence/static-ffs
+  --map .local/maps/static_ffs --output .local/evidence/static_ffs
 ```
 
-Extraction supports raw point cloud, optional crop/sampling, and mesh.
+Extraction uses the resolved config stored inside the map artifact and supports raw
+point cloud, optional postprocess crop/sampling, and mesh.
 
 ## 23. Live TSDF
 
@@ -793,6 +900,49 @@ solve/holdout validation, and explicit candidate-only export under
 contracts, synthetic acceptance, and deferred real third-camera status are documented
 in [`docs/multi-pose-multi-camera-calibration.md`](docs/multi-pose-multi-camera-calibration.md).
 
+This is the recommended production N-camera extrinsic method after passed per-camera
+provisions; it is not a replacement for the Section 10 CameraBundle bootstrap.
+`capture_multicamera_target_poses.py` requires every provision and binds its camera
+identity, projection model, bundle hash, and bootstrap pose into the observations.
+Keep `pose_0` at the canonical workspace, keep every camera fixed, and move only the
+board for later poses.
+
+Fixture `pose_0` first and predeclare the final four poses as holdout before capture.
+At each prompt, move only the board through center/left/right/top/bottom, near/far,
+positive and negative yaw/pitch, and combined rotations; let it settle before pressing
+Enter:
+
+```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+python tools/calibration/capture_multicamera_target_poses.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --target "$PCB_TARGET_SPEC" \
+  --pose-count 24 --holdout-pose-count 4 \
+  --min-corners-per-observation 6 \
+  --output .local/calibration/new-workspace/observations.json
+
+python tools/calibration/solve_multicamera_multipose.py \
+  --observations .local/calibration/new-workspace/observations.json \
+  --config configs/calibration/multipose_rig_example.yaml \
+  --output .local/calibration/new-workspace/solution.json
+
+python tools/calibration/validate_multicamera_multipose.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --observations .local/calibration/new-workspace/observations.json \
+  --output .local/calibration/new-workspace/validation.json
+```
+
+After solve and holdout both pass, preview the candidate read-only. It applies the
+extrinsics only in memory and exits on Ctrl+C without modifying a provision or
+production YAML:
+
+```bash
+python tools/mapping/view_live_candidate_calibration.py \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
+  --candidate-solution .local/calibration/new-workspace/solution.json \
+  --candidate-validation .local/calibration/new-workspace/validation.json
+```
+
 ## 33. Calibration lifecycle and production precedence
 
 ```text
@@ -815,16 +965,25 @@ extrinsics. For FFS, runtime composes
 The candidate viewer rejects a production-configured rig and always reports
 `candidate_only=true`, `production_applied=false`.
 
-Promotion requires exact solution, validation, passed holdout, and real physical 3D
-acceptance receipts; reprojection alone is insufficient:
+Do not promote yet: Section 35 must first produce a passed
+`physical_acceptance.json`. After promotion passes, add the same deployment at the top level of
+`.local/configs/live_rig_ffs_rgb.yaml`, `live_rig_ffs_rgb_raw.yaml`, and
+`live_rig_ffs_rgb_compact.yaml`. The artifact path is relative to each YAML under
+`.local/configs/`:
 
-```bash
-python tools/calibration/promote_rig_calibration.py \
-  --solution .local/calibration/new-workspace/solution.json \
-  --validation .local/calibration/new-workspace/validation.json \
-  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
-  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```yaml
+rig_calibration:
+  type: validated_multipose
+  artifact: ../calibration/deployment/new-workspace/rig_calibration.json
 ```
+
+Do not add this block before candidate capture/preview/acceptance, and do not update
+only a subset of the three profiles. Loading a rig config validates its schema;
+runtime additionally binds the exact CameraBundle set.
+
+Promotion requires exact solution, validation, passed holdout, and real physical 3D
+acceptance receipts; reprojection alone is insufficient. The complete promotion
+command follows physical acceptance in Section 35.
 
 Recordings and TSDF map artifacts store calibration mode, deployment/solution
 fingerprints, camera set, workspace frame, and per-camera CameraBundle hashes. An
@@ -849,20 +1008,44 @@ metrics, diagnostic-only residual SE(3), per-camera contribution, overlap graph,
 fused count, surface thickness where measurable, and matcher/drop statistics.
 Diagnostic ICP is never written back into deployment extrinsics.
 
+Return the board to `pose_0` without moving any camera and keep the acceptance scene
+static. Record one immutable same-pass FFS depth artifact, then evaluate every camera
+pair under thresholds frozen before inspecting that data:
+
+```bash
+python tools/mapping/record_live_rig_depth.py \
+  --config .local/configs/live_rig_ffs_rgb.yaml \
+  --matched-sets 300 --depth-source ffs_stereo \
+  --output .local/recordings/new-workspace-physical-acceptance
+```
+
 ```bash
 python tools/calibration/evaluate_ncamera_rig_alignment.py \
-  --rig-config .local/configs/live_rig_three_camera_candidate.yaml \
+  --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --candidate-solution .local/calibration/new-workspace/solution.json \
   --candidate-validation .local/calibration/new-workspace/validation.json \
   --thresholds configs/calibration/ncamera_physical_acceptance_strict_example.yaml \
   --recording .local/recordings/new-workspace-physical-acceptance \
-  --mapping-config .local/configs/new-workspace-mapping.yaml \
+  --mapping-config .local/configs/mapping_acceptance.yaml \
   --matched-sets 5 \
-  --output .local/reports/new-workspace-ncamera-acceptance.json
+  --output .local/calibration/new-workspace/physical_acceptance.json
 ```
 
 Candidate mode emits the formal physical-acceptance artifact consumed by promotion.
-Preregister/freeze the threshold file before inspecting new data. After promotion,
+Preregister/freeze the threshold file before inspecting new data. Promote only after
+the preceding command passes:
+
+```bash
+python tools/calibration/promote_rig_calibration.py \
+  --solution .local/calibration/new-workspace/solution.json \
+  --validation .local/calibration/new-workspace/validation.json \
+  --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --output .local/calibration/deployment/new-workspace/rig_calibration.json
+```
+
+Then configure the same deployment in all three live-rig YAML files as described in
+Section 33 and continue from Section 12 through Section 20. Do not create production
+evidence with a candidate config that still omits `rig_calibration`. After promotion,
 replace the three candidate arguments with `--rig-calibration` to regression-test the
 deployed path; it reuses the exact accepted physical receipt thresholds.
 
@@ -913,7 +1096,8 @@ Follow this order; keep cameras fixed after step 12 and stop on every failed gat
 13. Run CameraRig `pose_validated` target preflight for every camera.
 14. Create initial fixed provisions for every camera while `pose_0` is sufficiently visible.
 15. Validate every provision.
-16. Create the private three-camera rig config from the public example.
+16. Use the Section 11 automation to generate private three-camera candidate rig configs
+    without a deployment.
 17. Run projection-parity smoke if a profile/model changed.
 18. Capture about 24-30 diverse multi-pose target poses.
 19. Predeclare about 4-6 final poses as holdout.
@@ -921,10 +1105,12 @@ Follow this order; keep cameras fixed after step 12 and stop on every failed gat
 21. Validate the exact candidate on the reserved holdout.
 22. Run candidate-only live preview.
 23. Record and pass generic N-camera pairwise physical acceptance.
-24. Promote the exact candidate and acceptance receipts to production.
+24. Promote the exact candidate and acceptance receipts to production, then configure
+    the same deployment in all three live-rig profiles.
 25. Run raw RGB reconstruction.
 26. Run dense XYZRGB fusion with sampling off and 2.5 mm voxels.
-27. Measure and configure a new workspace crop.
+27. Measure and configure live/TSDF crop and sampling per Sections 17, 18, and 20.1;
+    give any custom profile a distinct name.
 28. Benchmark real three-camera performance and viewer/mapper overhead.
 29. Record new fingerprint-bound depth data.
 30. Build a new fingerprint-bound TSDF map.

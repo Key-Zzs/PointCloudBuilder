@@ -23,6 +23,7 @@ REQUIRED_PATHS = (
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
     "configs/mapping/raw_rgb_concatenation_example.yaml",
+    "configs/mapping/tsdf_example.yaml",
     "configs/mapping/live_rig_three_camera_example.yaml",
     "configs/calibration/charuco_500x700_existing_board.yaml",
     "configs/calibration/ncamera_physical_acceptance_strict_example.yaml",

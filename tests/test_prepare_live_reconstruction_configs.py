@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from pointcloud_builder.mapping.config import load_tsdf_config
 from pointcloud_builder.rig import load_rig_config
-
 
 ROOT = Path(__file__).parents[1]
 SCRIPT_PATH = ROOT / "scripts/prepare_live_reconstruction_configs.py"
@@ -62,6 +62,7 @@ def test_render_configs_creates_fixed_provision_three_camera_profiles(
 
     assert set(configs) == set(MODULE.OUTPUT_NAMES)
     assert configs["mapping_acceptance.yaml"] == mapping
+    assert configs["tsdf_frozen_ffs.yaml"]["dynamic"]["mode"] == "frozen_static"
     for name in MODULE.PROFILE_TEMPLATES:
         config = configs[name]
         assert "rig_calibration" not in config
@@ -96,6 +97,9 @@ def test_write_configs_preserves_workspace_mapping_and_refuses_other_drift(
     assert all(status == "written" for status in statuses.values())
     for name in MODULE.PROFILE_TEMPLATES:
         assert len(load_rig_config(output / name).cameras) == 3
+    assert load_tsdf_config(output / "tsdf_frozen_ffs.yaml").dynamic.mode == (
+        "frozen_static"
+    )
 
     custom = yaml.safe_load((output / "mapping.yaml").read_text(encoding="utf-8"))
     custom["workspace_crop"]["x"] = [-0.5, 0.5]
