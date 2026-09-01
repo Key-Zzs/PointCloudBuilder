@@ -123,6 +123,36 @@ def test_transform_resolver_inverse_multihop_direction_and_determinism() -> None
     np.testing.assert_allclose(permuted.matrix, forward.matrix)
 
 
+def test_transform_resolver_stabilizes_float32_rotation_drift() -> None:
+    quaternion = np.asarray(
+        [0.5368779909627033, -0.6948665078322008, -0.475508479354158, 0.053049459707235735]
+    )
+    w, x, y, z = quaternion
+    rotation = np.asarray(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float32,
+    ).astype(np.float64)
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation
+    source_from = RigidTransform("source", "intermediate", matrix)
+    workspace_from = RigidTransform("source", "workspace", matrix)
+
+    resolved = resolve_transform(
+        [source_from, workspace_from], "intermediate", "workspace"
+    )
+
+    np.testing.assert_allclose(
+        resolved.matrix[:3, :3].T @ resolved.matrix[:3, :3],
+        np.eye(3),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(resolved.matrix, np.eye(4), atol=1e-7, rtol=1e-7)
+
+
 def test_transform_resolver_rejects_duplicate_conflict_and_missing_path() -> None:
     edge = _transform("a", "b", (1.0, 0.0, 0.0))
     with pytest.raises(TransformResolutionError, match="duplicate"):

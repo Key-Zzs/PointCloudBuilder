@@ -49,7 +49,7 @@ def resolve_transform(
                         f"conflicting transform cycle returning to source frame {source_frame!r}"
                     )
                 continue
-            T_neighbor_from_source = edge.compose(T_frame_from_source)
+            T_neighbor_from_source = _compose_stable(edge, T_frame_from_source)
             previous = resolved.get(neighbor)
             if previous is not None:
                 if not np.allclose(
@@ -95,3 +95,32 @@ def _validate_unique_edges(transforms: Sequence[RigidTransform]) -> None:
                     f"{label} transform edge {candidate.target_frame}<-{candidate.source_frame}"
                 )
         accepted.append(candidate)
+
+
+def _compose_stable(left: RigidTransform, right: RigidTransform) -> RigidTransform:
+    """Compose accepted SE(3) edges without amplifying float32 rotation drift.
+
+    Camera SDK rotations commonly originate as float32 values.  Each edge can
+    satisfy CameraRig's rigid-transform tolerance while a transpose/inverse and
+    a subsequent matrix product exceeds it by a few ulps.  Projecting only the
+    composed rotation to the closest proper rotation keeps the graph on SO(3)
+    without modifying the authoritative input artifacts.
+    """
+
+    if left.source_frame != right.target_frame:
+        raise TransformResolutionError(
+            "cannot compose transforms: "
+            f"{left.source_frame!r} != {right.target_frame!r} at the intermediate frame"
+        )
+    matrix = np.asarray(left.matrix @ right.matrix, dtype=np.float64)
+    u, _singular_values, vt = np.linalg.svd(matrix[:3, :3])
+    rotation = u @ vt
+    if np.linalg.det(rotation) < 0.0:
+        u[:, -1] *= -1.0
+        rotation = u @ vt
+    matrix[:3, :3] = rotation
+    return RigidTransform(
+        source_frame=right.source_frame,
+        target_frame=left.target_frame,
+        matrix=matrix,
+    )
