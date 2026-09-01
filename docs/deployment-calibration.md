@@ -34,7 +34,9 @@ CameraRig now proves render/geometry equivalence before folding candidates that 
 only in `legacy_pattern`; it still fails closed for non-equivalent candidates, wrong
 authoritative dictionaries, orientation conflicts, or marker-layout mismatch.
 
-For the current M9 closure, camera A/B continue to use their already validated legacy
-ChArUco target and provisions. The 500 x 700 mm `DICT_4X4_100` board definition is a
-future deployment preset with status `DEFERRED`. No current real-camera PASS is claimed
-for that preset, and it is not a reason to reprovision or block current deployment.
+The current 500 x 700 mm physical board has authoritative known metadata
+`DICT_4X4_50`, 5 x 7 squares, 100 mm squares, and 75 mm markers. It must use the
+existing-board identification and registration route; it is not the generated A4
+target. Legacy layout, border bits, and orientation remain evidence-gated, and no
+real-camera PASS exists until every camera completes the unchanged `pose_validated`
+preflight and fixed provisioning against the same resolved artifact.

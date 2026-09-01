@@ -68,7 +68,11 @@ conda activate pcb-reconstruction
 Set `PCB_ENV_NAME=my-env` to choose another isolated name. The environment pins the
 critical Python/PyTorch/CUDA/TensorRT/OpenCV ABI and installs exactly one `cv2`
 provider: `opencv-contrib-python-headless==4.14.0.94`. It also pins OmegaConf,
-which is required to deserialize the official FFS checkpoint metadata.
+which is required to deserialize the official FFS checkpoint metadata. The bootstrap
+persists `PYTHONNOUSERSITE=1` in the named Conda environment so packages under
+`~/.local` cannot silently override these pins. Reactivate the environment after
+rerunning bootstrap. Doctor fails if `cv2` still comes from the user site or its module
+version disagrees with the installed wheel.
 
 ### 6.1 Moving the same D435i rig to a new computer
 
@@ -221,13 +225,80 @@ to a private backup location, disconnect non-rig devices, and rerun the command.
 replace an identity map before confirming the physical camera binding. Serials remain
 only in `.local/camera_rig/camera_identity_map.json` and the private YAML generated later.
 
+When an existing physical board has not yet been registered, first generate only the
+runtime YAML needed for capture and preflight. This phase needs no target and creates no
+provision YAML:
+
+```bash
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --runtime-only \
+  --report .local/reports/camera-rig-runtime-preparation.json
+```
+
 ## 9. Calibration target
 
-Use one target specification for every camera. The validated standard target is
-`charuco_a4_v1`: `DICT_5X5_100`, 7x5 squares, 30 mm squares, 22 mm markers, and
-`legacy_pattern=false`. Generate/inspect it with CameraRig, print at 100% scale, and
-preserve `target_spec.json` beside the physical target. Its frame has +X right, +Y up,
-and +Z out of the board.
+Every camera must use a resolved target artifact that exactly matches the same physical
+board. The existing 500 x 700 mm deployment board and a newly generated A4 board are
+mutually exclusive routes and must never be mixed.
+
+### 9.1 Existing 500 x 700 deployment board (current rig)
+
+The authoritative known metadata is `DICT_4X4_50`, 5 x 7 squares, 100 mm squares, and
+75 mm markers. It is not `charuco_a4_v1`; never calibrate this physical board using a
+spec from the A4 `target generate` command. `legacy_pattern`, `border_bits`, and
+canonical orientation remain evidence-gated.
+
+Use the Section 8 runtime YAML to capture an independent eight-frame artifact from each
+final camera. Each output directory must not already exist, and the board must be
+clearly visible:
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig capture snapshot \
+    --config ".local/camera_rig/${camera}/configs/runtime.yaml" \
+    --frames 8 \
+    --output ".local/captures/target-id/${camera}"
+done
+```
+
+Constrain only the dictionary supported by authoritative evidence. Do not guess
+`legacy_pattern`, `border_bits`, or orientation, and never substitute `DICT_4X4_100`:
+
+```bash
+camera-rig target identify-existing \
+  --artifact .local/captures/target-id/camera_a \
+  --artifact .local/captures/target-id/camera_b \
+  --artifact .local/captures/target-id/camera_c \
+  --board-width-mm 500 --board-height-mm 700 \
+  --square-length-mm 100 --marker-length-mm 75 \
+  --maximum-artifact-frames 8 \
+  --authoritative-dictionary DICT_4X4_50 \
+  --output .local/reports/charuco_500x700-identification.json
+
+camera-rig target register-existing \
+  --identification .local/reports/charuco_500x700-identification.json \
+  --target-name charuco_500x700 \
+  --target-frame charuco_500x700 \
+  --output .local/camera_rig/shared_target/charuco_500x700
+
+camera-rig target inspect \
+  --target .local/camera_rig/shared_target/charuco_500x700/target_spec.json
+(cd .local/camera_rig/shared_target/charuco_500x700 && sha256sum -c checksums.sha256)
+```
+
+If identification returns ambiguity/`PAUSED_FOR_USER_VALIDATION`, resolve it from the
+original PDF, generator metadata, or real board-owner evidence before registration.
+Never relax the detection gates or select a merely favorable candidate.
+
+### 9.2 Newly generated standard A4 board (only when physically switching boards)
+
+The standard `charuco_a4_v1` is `DICT_5X5_100`, 7 x 5 squares, 30 mm squares, 22 mm
+markers, and `legacy_pattern=false`. Run this only when actually printing at 100% scale
+and using that new board:
 
 ```bash
 mkdir -p .local/camera_rig/shared_target
@@ -236,24 +307,20 @@ camera-rig target generate \
   --output .local/camera_rig/shared_target/charuco_a4_v1
 camera-rig target inspect \
   --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
-printf '%s  %s\n' \
-  56fbd157f9553e7e78c6868e86841c37d1799af1ca0be5a8cc69efa64b845ce1 \
-  .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
-  | sha256sum -c -
+(cd .local/camera_rig/shared_target/charuco_a4_v1 && sha256sum -c checksums.sha256)
 ```
 
-Regenerating this artifact is sufficient when the already printed board is unchanged;
-compare the resolved specification and print-scale rulers before preflight. Preflight
-validates every companion file and `checksums.sha256` in the directory containing
-`target_spec.json`; when transferring from an old computer, copy the complete
-`charuco_a4_v1/` artifact directory, not only the JSON. If the physical board was not
-generated from the standard config above, do not fabricate a match: transfer its
-original artifact or identify and register it through CameraRig's existing-target flow.
+Do not compare `target_spec.json` against a hash hard-coded on another computer. The
+resolved spec includes CameraRig/OpenCV versions and generated-file hashes, so different
+valid environments can produce different spec SHA values. The authoritative checks are
+`camera-rig target inspect` and the artifact's own `checksums.sha256`. Transfer the
+complete target artifact directory, never only the JSON.
 
 ## 10. Fixed camera calibration
 
 This workflow assumes all three fixed cameras use the same physical board and explicitly
-defines `workspace` as the `charuco_target` frame. The CameraRig fixed-provision contract
+defines `workspace` as that selected artifact's `target_frame` (`charuco_500x700` for
+Section 9.1 and `charuco_target` for Section 9.2). The CameraRig fixed-provision contract
 requires identity `T_workspace_from_target`. If the workspace is not the physical target
 frame, do not fabricate a transform with this workflow; establish the correct
 workspace/target contract first.
@@ -266,14 +333,19 @@ artifact and generates `configs/runtime.yaml` plus `configs/fixed_provision.yaml
 every camera:
 
 ```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
-  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --target "$PCB_TARGET_SPEC" \
   --asset-root .local/camera_rig \
   --expected-camera-count 3 \
   --workspace-equals-target \
   --report .local/reports/camera-rig-calibration-preparation.json
 ```
+
+If actually using the newly printed Section 9.2 A4 board, change only
+`PCB_TARGET_SPEC` to
+`.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`.
 
 If manually created YAML already differs from the prepared contract, the script stops
 without overwriting it. After reviewing the difference, append `--update-existing` to
@@ -282,9 +354,10 @@ file before replacement. Then run the config read-only check, which changes no p
 config and writes only the requested report:
 
 ```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
-  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --target "$PCB_TARGET_SPEC" \
   --asset-root .local/camera_rig \
   --expected-camera-count 3 \
   --workspace-equals-target \
@@ -299,6 +372,7 @@ fixed-provision inputs. Dry-run does not open a camera or write a provision arti
 
 ```bash
 set -euo pipefail
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig device inspect \
     --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
@@ -317,10 +391,11 @@ stop on any failure and do not relax thresholds:
 
 ```bash
 set -euo pipefail
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
-    --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+    --target "$PCB_TARGET_SPEC" \
     --frames 60 --policy pose_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
@@ -343,12 +418,11 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-Generated provision YAML uses portable
-`../../shared_target/charuco_a4_v1/target_spec.json`, the actual target SHA-256, and
-`target.detection_policy: pose_validated`. Never reuse old extrinsics after a physical
-coverage, residual, or pose-stability failure, and never use `--force` to hide a failed
-gate. `--force` is only for explicitly replacing an existing CameraRig-owned artifact,
-which must still pass complete validation.
+Generated provision YAML uses a portable path to the selected target artifact, its
+actual SHA-256, and `target.detection_policy: pose_validated`. Never reuse old
+extrinsics after a physical coverage, residual, or pose-stability failure, and never
+use `--force` to hide a failed gate. `--force` is only for explicitly replacing an
+existing CameraRig-owned artifact, which must still pass complete validation.
 
 ## 11. FFS setup
 
@@ -692,29 +766,13 @@ implicit map migration.
 
 ## 34. Existing-board identification and registration
 
-Capture independent target-identification evidence from every final camera, then run
-CameraRig's actual existing-board route. Do not pass values for unresolved fields:
-
-```bash
-camera-rig target identify-existing \
-  --artifact .local/captures/target-id/camera_a \
-  --artifact .local/captures/target-id/camera_b \
-  --artifact .local/captures/target-id/camera_c \
-  --board-width-mm 500 --board-height-mm 700 \
-  --square-length-mm 100 --marker-length-mm 75 \
-  --authoritative-source user-confirmed-deployment-metadata \
-  --authoritative-dictionary DICT_4X4_50 \
-  --output .local/target/charuco_500x700/identification.json
-camera-rig target register-existing \
-  --identification .local/target/charuco_500x700/identification.json \
-  --target-name charuco_500x700 --target-frame charuco_500x700 \
-  --output .local/target/charuco_500x700
-```
-
-If CameraRig still reports ambiguity in `legacy_pattern`, `border_bits`, or orientation,
-stop and resolve it from visual equivalence or authoritative source metadata. Never
-scan dictionary capacities or substitute `DICT_4X4_100`. After registration, run the
-unchanged `pose_validated` preflight for every camera.
+Section 9.1 is the canonical, executable procedure for the current 500 x 700 mm
+`DICT_4X4_50` board, including three-camera evidence capture, identification,
+registration, and artifact-owned checksum validation. Do not duplicate or relocate
+its private paths here. If CameraRig still reports ambiguity in `legacy_pattern`,
+`border_bits`, or orientation, stop and resolve it from visual equivalence or a real
+authoritative source file. Never pass a descriptive label to `--authoritative-source`,
+scan dictionary capacities, or substitute `DICT_4X4_100`.
 
 ## 35. Generic N-camera acceptance
 

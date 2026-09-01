@@ -54,6 +54,7 @@ CAMERA_RIG_PREPARATION_FLAGS = (
     "--target",
     "--asset-root",
     "--expected-camera-count",
+    "--runtime-only",
     "--workspace-equals-target",
     "--update-existing",
     "--check",

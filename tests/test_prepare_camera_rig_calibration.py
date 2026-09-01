@@ -12,9 +12,11 @@ ROOT = Path(__file__).parents[1]
 SCRIPT_PATH = ROOT / "scripts/prepare_camera_rig_calibration.py"
 CAMERA_RIG_SRC = ROOT / "third_party/CameraRig/src"
 sys.path.insert(0, str(CAMERA_RIG_SRC))
-from camera_rig.provision.config import load_provision_config
+from camera_rig.provision.config import load_provision_config  # noqa: E402
 
-SPEC = importlib.util.spec_from_file_location("prepare_camera_rig_calibration", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "prepare_camera_rig_calibration", SCRIPT_PATH
+)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -29,7 +31,10 @@ def _write_identity(path: Path, serials: tuple[str, ...] = ("A", "B", "C")) -> N
     value = {
         "schema_version": "pointcloud-builder.camera-identity-map.v1",
         **{
-            f"camera_{chr(97 + index)}": {"serial": serial, "physical_port": f"port-{index}"}
+            f"camera_{chr(97 + index)}": {
+                "serial": serial,
+                "physical_port": f"port-{index}",
+            }
             for index, serial in enumerate(serials)
         },
     }
@@ -141,8 +146,10 @@ def test_prepare_is_idempotent_and_check_mode_is_read_only(tmp_path: Path) -> No
     assert MODULE.main(_arguments(tmp_path, extra=("--check",))) == 0
 
     assert runtime.read_bytes() == before
-    report = json.loads((tmp_path / "reports/preparation.json").read_text(encoding="utf-8"))
-    assert report["mode"] == "check"
+    report = json.loads(
+        (tmp_path / "reports/preparation.json").read_text(encoding="utf-8")
+    )
+    assert report["mode"] == "full_check"
     assert all(
         config["status"] == "UNCHANGED"
         for camera in report["prepared"].values()
@@ -199,3 +206,32 @@ def test_prepare_requires_explicit_workspace_equals_target(tmp_path: Path) -> No
     args.remove("--workspace-equals-target")
     assert MODULE.main(args) == 2
     assert not (tmp_path / "camera_rig/camera_a/configs/runtime.yaml").exists()
+
+
+def test_runtime_only_breaks_existing_target_capture_dependency(
+    tmp_path: Path, capsys
+) -> None:
+    identity = tmp_path / "camera_rig/camera_identity_map.json"
+    _write_identity(identity)
+    args = [
+        "--identity-map",
+        str(identity),
+        "--asset-root",
+        str(tmp_path / "camera_rig"),
+        "--expected-camera-count",
+        "3",
+        "--runtime-only",
+        "--report",
+        str(tmp_path / "reports/runtime-only.json"),
+    ]
+
+    assert MODULE.main(args) == 0
+
+    assert (tmp_path / "camera_rig/camera_a/configs/runtime.yaml").is_file()
+    assert not (tmp_path / "camera_rig/camera_a/configs/fixed_provision.yaml").exists()
+    report = json.loads(
+        (tmp_path / "reports/runtime-only.json").read_text(encoding="utf-8")
+    )
+    assert report["mode"] == "runtime_only_prepare"
+    assert report["target_spec_sha256"] is None
+    assert "target_spec_sha256" not in capsys.readouterr().out

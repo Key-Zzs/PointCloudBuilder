@@ -57,7 +57,9 @@ def load_identity_map(path: Path, expected_count: int) -> dict[str, str]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise PreparationError(f"could not load camera identity map {path}: {error}") from error
+        raise PreparationError(
+            f"could not load camera identity map {path}: {error}"
+        ) from error
     if not isinstance(value, dict) or value.get("schema_version") != IDENTITY_SCHEMA:
         raise PreparationError(f"identity map must use schema {IDENTITY_SCHEMA}")
     cameras: dict[str, str] = {}
@@ -65,7 +67,9 @@ def load_identity_map(path: Path, expected_count: int) -> dict[str, str]:
         if not CAMERA_LABEL.fullmatch(label):
             continue
         if not isinstance(entry, dict) or not isinstance(entry.get("serial"), str):
-            raise PreparationError(f"identity entry {label!r} must contain a serial string")
+            raise PreparationError(
+                f"identity entry {label!r} must contain a serial string"
+            )
         serial = entry["serial"].strip()
         if not serial:
             raise PreparationError(f"identity entry {label!r} has an empty serial")
@@ -155,7 +159,9 @@ def validate_target_artifact(path: Path) -> dict[str, str]:
     actual_files: set[str] = set()
     for candidate in root.iterdir():
         if candidate.is_symlink():
-            raise PreparationError(f"target artifact contains a symlink: {candidate.name}")
+            raise PreparationError(
+                f"target artifact contains a symlink: {candidate.name}"
+            )
         if candidate.is_file():
             actual_files.add(candidate.name)
     if actual_files != expected_files:
@@ -164,15 +170,21 @@ def validate_target_artifact(path: Path) -> dict[str, str]:
         if sha256_file(root / name) != expected:
             raise PreparationError(f"target artifact checksum mismatch: {name}")
 
-    report_names = {"generation_report.json", "registration_report.json"} & set(checksums)
+    report_names = {"generation_report.json", "registration_report.json"} & set(
+        checksums
+    )
     if len(report_names) != 1:
-        raise PreparationError("target artifact must contain exactly one provenance report")
+        raise PreparationError(
+            "target artifact must contain exactly one provenance report"
+        )
     report = _load_json_mapping(root / report_names.pop(), "target provenance report")
     if report.get("status") != "PASS":
         raise PreparationError("target provenance report status is not PASS")
     target_sha256 = checksums["target_spec.json"]
     if report.get("target_spec_sha256") != target_sha256:
-        raise PreparationError("target provenance report has a different target SHA-256")
+        raise PreparationError(
+            "target provenance report has a different target SHA-256"
+        )
     return {"sha256": target_sha256, "target_frame": target_frame}
 
 
@@ -183,7 +195,9 @@ def _camera_section(config: dict[str, Any], path: Path) -> dict[str, Any]:
     return value
 
 
-def build_runtime_config(template: dict[str, Any], label: str, serial: str) -> dict[str, Any]:
+def build_runtime_config(
+    template: dict[str, Any], label: str, serial: str
+) -> dict[str, Any]:
     config = deepcopy(template)
     camera = _camera_section(config, RUNTIME_TEMPLATE)
     camera["name"] = label
@@ -208,7 +222,9 @@ def build_provision_config(
     target = config.get("target")
     workspace = config.get("workspace")
     if not isinstance(target, dict) or not isinstance(workspace, dict):
-        raise PreparationError("fixed provision template has no target/workspace mapping")
+        raise PreparationError(
+            "fixed provision template has no target/workspace mapping"
+        )
     target["artifact"] = Path(
         os.path.relpath(
             target_path.resolve(strict=False),
@@ -294,7 +310,9 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
     try:
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -305,35 +323,49 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise PreparationError("--expected-camera-count must be positive")
     if args.check and args.update_existing:
         raise PreparationError("--check and --update-existing cannot be used together")
-    if not args.workspace_equals_target:
+    if args.runtime_only and args.target is not None:
+        raise PreparationError("--runtime-only does not accept --target")
+    if args.runtime_only and args.workspace_equals_target:
+        raise PreparationError(
+            "--runtime-only does not accept --workspace-equals-target"
+        )
+    if not args.runtime_only and args.target is None:
+        raise PreparationError("full preparation requires --target")
+    if not args.runtime_only and not args.workspace_equals_target:
         raise PreparationError(
             "fixed provisioning requires an explicit --workspace-equals-target acknowledgement"
         )
     cameras = load_identity_map(args.identity_map, args.expected_camera_count)
-    target = validate_target_artifact(args.target)
+    target = None if args.runtime_only else validate_target_artifact(args.target)
     runtime_template = load_yaml_mapping(RUNTIME_TEMPLATE)
-    provision_template = load_yaml_mapping(PROVISION_TEMPLATE)
+    provision_template = (
+        None if args.runtime_only else load_yaml_mapping(PROVISION_TEMPLATE)
+    )
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     desired_configs: dict[str, dict[str, tuple[Path, dict[str, Any]]]] = {}
     plans: dict[str, dict[str, str]] = {}
     for label, serial in cameras.items():
         config_root = args.asset_root / label / "configs"
         runtime_path = config_root / "runtime.yaml"
-        provision_path = config_root / "fixed_provision.yaml"
         runtime = build_runtime_config(runtime_template, label, serial)
-        provision = build_provision_config(
-            provision_template,
-            label=label,
-            serial=serial,
-            config_path=provision_path,
-            target_path=args.target,
-            target_sha256=target["sha256"],
-            target_frame=target["target_frame"],
-        )
-        desired_configs[label] = {
-            "runtime": (runtime_path, runtime),
-            "fixed_provision": (provision_path, provision),
-        }
+        desired_configs[label] = {"runtime": (runtime_path, runtime)}
+        if not args.runtime_only:
+            assert (
+                provision_template is not None
+                and target is not None
+                and args.target is not None
+            )
+            provision_path = config_root / "fixed_provision.yaml"
+            provision = build_provision_config(
+                provision_template,
+                label=label,
+                serial=serial,
+                config_path=provision_path,
+                target_path=args.target,
+                target_sha256=target["sha256"],
+                target_frame=target["target_frame"],
+            )
+            desired_configs[label]["fixed_provision"] = (provision_path, provision)
         plans[label] = {
             name: plan_yaml(
                 path,
@@ -357,12 +389,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA,
         "passed": True,
-        "mode": "check" if args.check else "prepare",
+        "mode": (
+            "runtime_only_check"
+            if args.runtime_only and args.check
+            else "runtime_only_prepare"
+            if args.runtime_only
+            else "full_check"
+            if args.check
+            else "full_prepare"
+        ),
         "camera_count": len(cameras),
         "camera_labels": list(cameras),
         "identity_map_sha256": sha256_file(args.identity_map),
-        "target_spec_sha256": target["sha256"],
-        "workspace_equals_target": True,
+        "target_spec_sha256": None if target is None else target["sha256"],
+        "workspace_equals_target": False if args.runtime_only else True,
         "prepared": prepared,
     }
     _atomic_write_json(args.report, report)
@@ -377,9 +417,14 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--identity-map", type=Path, required=True)
-    parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--target", type=Path)
     parser.add_argument("--asset-root", type=Path, default=Path(".local/camera_rig"))
     parser.add_argument("--expected-camera-count", type=int, required=True)
+    parser.add_argument(
+        "--runtime-only",
+        action="store_true",
+        help="prepare runtime YAML before an existing physical target has been registered",
+    )
     parser.add_argument(
         "--workspace-equals-target",
         action="store_true",
@@ -390,7 +435,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="back up and replace conflicting private configs with the prepared contract",
     )
-    parser.add_argument("--check", action="store_true", help="verify without changing configs")
+    parser.add_argument(
+        "--check", action="store_true", help="verify without changing configs"
+    )
     parser.add_argument("--report", type=Path, required=True)
     return parser
 
@@ -403,18 +450,15 @@ def main(argv: list[str] | None = None) -> int:
     except PreparationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    print(
-        json.dumps(
-            {
-                "passed": report["passed"],
-                "mode": report["mode"],
-                "camera_count": report["camera_count"],
-                "camera_labels": report["camera_labels"],
-                "target_spec_sha256": report["target_spec_sha256"],
-            },
-            indent=2,
-        )
-    )
+    summary = {
+        "passed": report["passed"],
+        "mode": report["mode"],
+        "camera_count": report["camera_count"],
+        "camera_labels": report["camera_labels"],
+    }
+    if report["target_spec_sha256"] is not None:
+        summary["target_spec_sha256"] = report["target_spec_sha256"]
+    print(json.dumps(summary, indent=2))
     return 0
 
 

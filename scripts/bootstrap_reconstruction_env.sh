@@ -26,6 +26,7 @@ else
   "${CONDA_EXE}" env create --name "${ENV_NAME}" --file "${ENV_FILE}"
 fi
 
+"${CONDA_EXE}" env config vars set --name "${ENV_NAME}" PYTHONNOUSERSITE=1
 "${CONDA_EXE}" run --name "${ENV_NAME}" python -m pip install \
   -e "${REPO_ROOT}/third_party/CameraRig[provision]" \
   -e "${REPO_ROOT}[dev,reconstruction]"

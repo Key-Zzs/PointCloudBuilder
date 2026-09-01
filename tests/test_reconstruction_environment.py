@@ -39,7 +39,9 @@ def test_doctor_never_reads_or_reports_realsense_serial_numbers() -> None:
     assert "camera_info.serial" not in text
 
 
-def test_no_hardware_doctor_treats_absent_private_assets_as_warnings(tmp_path: Path) -> None:
+def test_no_hardware_doctor_treats_absent_private_assets_as_warnings(
+    tmp_path: Path,
+) -> None:
     checks = DOCTOR._ffs_asset_checks(tmp_path, warning=True)
     assert checks
     assert all(item.status == "WARNING" for item in checks)
@@ -59,9 +61,7 @@ def test_doctor_expected_camera_count_is_configurable_and_private(capsys) -> Non
     )
     report = __import__("json").loads(capsys.readouterr().out)
     assert status == 0
-    devices = next(
-        item for item in report["checks"] if item["name"] == "d435i_devices"
-    )
+    devices = next(item for item in report["checks"] if item["name"] == "d435i_devices")
     assert devices["detail"]["expected_count"] == 3
 
 
@@ -71,12 +71,26 @@ def test_full_doctor_fails_closed_for_absent_private_assets(tmp_path: Path) -> N
     assert all(item.status == "FAIL" for item in checks)
 
 
+def test_doctor_detects_opencv_wheel_version_or_user_site_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    assert DOCTOR._opencv_versions_match("4.14.0", "4.14.0.94")
+    assert not DOCTOR._opencv_versions_match("4.13.0", "4.14.0.94")
+    user_site = tmp_path / ".local/lib/python3.10/site-packages"
+    monkeypatch.setattr(DOCTOR.site, "getusersitepackages", lambda: str(user_site))
+    assert DOCTOR._path_is_in_user_site(str(user_site / "cv2/__init__.py"))
+    assert not DOCTOR._path_is_in_user_site(str(tmp_path / "conda/cv2/__init__.py"))
+
+
 def test_bootstrap_is_scoped_to_named_env_and_never_installs_into_base() -> None:
     text = (ROOT / "scripts/bootstrap_reconstruction_env.sh").read_text(
         encoding="utf-8"
     )
     assert "PCB_ENV_NAME" in text
+    assert 'env config vars set --name "${ENV_NAME}" PYTHONNOUSERSITE=1' in text
     assert 'run --name "${ENV_NAME}" python -m pip install' in text
     assert "pip install" not in "\n".join(
-        line for line in text.splitlines() if "ENV_NAME" not in line and "REPO_ROOT" not in line
+        line
+        for line in text.splitlines()
+        if "ENV_NAME" not in line and "REPO_ROOT" not in line
     )

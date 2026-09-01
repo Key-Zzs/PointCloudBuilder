@@ -66,7 +66,9 @@ conda activate pcb-reconstruction
 可通过 `PCB_ENV_NAME=my-env` 使用另一个隔离名称。环境固定关键
 Python/PyTorch/CUDA/TensorRT/OpenCV ABI，并只安装一个 `cv2` provider：
 `opencv-contrib-python-headless==4.14.0.94`。环境还固定安装 OmegaConf，用于反序列化
-官方 FFS checkpoint 元数据。
+官方 FFS checkpoint 元数据。bootstrap 会把 `PYTHONNOUSERSITE=1` 持久写入指定 Conda
+环境，避免 `~/.local` 中的包静默覆盖上述版本；重新运行 bootstrap 后要重新激活环境。
+若 `cv2` 仍来自 user site，或模块版本与已安装 wheel 不一致，Doctor 会直接 FAIL。
 
 ### 6.1 同一批 D435i 迁移到新电脑
 
@@ -204,12 +206,74 @@ python tools/mapping/check_usb_topology.py \
 断开非 rig 设备并重新运行上面的命令；不要在未确认物理相机身份时覆盖映射。序列号只保留
 在 `.local/camera_rig/camera_identity_map.json` 和稍后自动生成的私有 YAML 中。
 
+现有实体板尚未注册时，先只生成 capture/preflight 所需的 runtime YAML；该阶段不需要
+target，也不会生成 provision YAML：
+
+```bash
+python scripts/prepare_camera_rig_calibration.py \
+  --identity-map .local/camera_rig/camera_identity_map.json \
+  --asset-root .local/camera_rig \
+  --expected-camera-count 3 \
+  --runtime-only \
+  --report .local/reports/camera-rig-runtime-preparation.json
+```
+
 ## 9. 标定 target
 
-全部相机使用同一份 target spec。已验证标准 target 为 `charuco_a4_v1`：
-`DICT_5X5_100`、7x5 squares、30 mm square、22 mm marker、
-`legacy_pattern=false`。使用 CameraRig 生成/检查，按 100% 比例打印，并让
-`target_spec.json` 始终跟随实体板。target frame 的 +X 向右、+Y 向上、+Z 向板外。
+全部相机必须使用与同一实体板精确匹配的 resolved target artifact。现有 500 x 700 mm
+部署板和新生成的 A4 板是两条互斥路线，不得混用。
+
+### 9.1 现有 500 x 700 部署板（当前 rig 使用）
+
+该实体板的权威已知元数据是 `DICT_4X4_50`、5 x 7 squares、100 mm square、75 mm
+marker。它不是 `charuco_a4_v1`，禁止运行 A4 `target generate` 后拿生成的 spec 标定该
+实体板。`legacy_pattern`、`border_bits` 和 canonical orientation 仍由多相机图像证据决定。
+
+使用第 8 节生成的 runtime YAML，从每台最终相机采集独立的 8 帧证据；输出目录必须尚不
+存在，实体板应清晰可见：
+
+```bash
+set -euo pipefail
+for camera in camera_a camera_b camera_c; do
+  camera-rig capture snapshot \
+    --config ".local/camera_rig/${camera}/configs/runtime.yaml" \
+    --frames 8 \
+    --output ".local/captures/target-id/${camera}"
+done
+```
+
+只把已有证据支持的 dictionary 作为权威约束；不要猜 `legacy_pattern`、`border_bits` 或
+orientation，也不要把 `DICT_4X4_50` 换成 `DICT_4X4_100`：
+
+```bash
+camera-rig target identify-existing \
+  --artifact .local/captures/target-id/camera_a \
+  --artifact .local/captures/target-id/camera_b \
+  --artifact .local/captures/target-id/camera_c \
+  --board-width-mm 500 --board-height-mm 700 \
+  --square-length-mm 100 --marker-length-mm 75 \
+  --maximum-artifact-frames 8 \
+  --authoritative-dictionary DICT_4X4_50 \
+  --output .local/reports/charuco_500x700-identification.json
+
+camera-rig target register-existing \
+  --identification .local/reports/charuco_500x700-identification.json \
+  --target-name charuco_500x700 \
+  --target-frame charuco_500x700 \
+  --output .local/camera_rig/shared_target/charuco_500x700
+
+camera-rig target inspect \
+  --target .local/camera_rig/shared_target/charuco_500x700/target_spec.json
+(cd .local/camera_rig/shared_target/charuco_500x700 && sha256sum -c checksums.sha256)
+```
+
+若 identify 返回 ambiguity/`PAUSED_FOR_USER_VALIDATION`，必须用原 PDF、生成器元数据或板主
+提供的真实证据解决后再注册；不能降低检测门槛或选择“看起来能过”的候选。
+
+### 9.2 新生成的标准 A4 板（仅在实际改用并打印新板时）
+
+标准 `charuco_a4_v1` 是 `DICT_5X5_100`、7 x 5 squares、30 mm square、22 mm marker、
+`legacy_pattern=false`。只有实际按 100% 比例打印并使用该新板时才运行：
 
 ```bash
 mkdir -p .local/camera_rig/shared_target
@@ -218,24 +282,20 @@ camera-rig target generate \
   --output .local/camera_rig/shared_target/charuco_a4_v1
 camera-rig target inspect \
   --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
-printf '%s  %s\n' \
-  56fbd157f9553e7e78c6868e86841c37d1799af1ca0be5a8cc69efa64b845ce1 \
-  .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
-  | sha256sum -c -
+(cd .local/camera_rig/shared_target/charuco_a4_v1 && sha256sum -c checksums.sha256)
 ```
 
-若已打印实体板未改变，只需重新生成 artifact；preflight 前须核对 resolved spec 与打印
-比例尺。preflight 会校验 `target_spec.json` 所在目录的全部 companion 文件和
-`checksums.sha256`，因此从旧电脑迁移时必须复制整个 `charuco_a4_v1/` artifact 目录，
-不能只复制 JSON。若实体板不是由上述标准配置生成的，不得用该命令伪造匹配关系；应迁移
-原 artifact，或按 CameraRig 的 existing-target 流程重新识别并注册实体板。
+不得把 `target_spec.json` 与旧电脑写死的哈希比较。resolved spec 包含 CameraRig/OpenCV
+版本和生成文件哈希；不同的有效环境可能得到不同 spec SHA。权威检查是
+`camera-rig target inspect` 加 artifact 自带的 `checksums.sha256`。迁移时必须复制整个
+target artifact 目录，不能只复制 JSON。
 
 ## 10. 固定相机标定
 
-以下流程假设三台固定相机使用同一实体板，并且把 `workspace` 明确定义为
-`charuco_target` 坐标系；CameraRig fixed-provision 契约要求
-`T_workspace_from_target` 为单位矩阵。若你的 workspace 不是实体板坐标系，不能使用此
-流程伪造变换，必须先建立正确的 workspace/target 合同。
+以下流程假设三台固定相机使用同一实体板，并且把 `workspace` 明确定义为所选 artifact 的
+`target_frame`（第 9.1 节为 `charuco_500x700`，第 9.2 节为 `charuco_target`）；CameraRig
+fixed-provision 契约要求 `T_workspace_from_target` 为单位矩阵。若你的 workspace 不是实体板
+坐标系，不能使用此流程伪造变换，必须先建立正确的 workspace/target 合同。
 
 ### 10.1 自动生成每台相机的私有配置
 
@@ -244,23 +304,28 @@ printf '%s  %s\n' \
 `configs/fixed_provision.yaml`：
 
 ```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
-  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --target "$PCB_TARGET_SPEC" \
   --asset-root .local/camera_rig \
   --expected-camera-count 3 \
   --workspace-equals-target \
   --report .local/reports/camera-rig-calibration-preparation.json
 ```
 
+若实际改用第 9.2 节新打印的 A4 板，只把 `PCB_TARGET_SPEC` 改成
+`.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`。
+
 若之前手工创建的 YAML 与自动合同不同，脚本默认停止且不覆盖。核对差异后，可在同一命令
 追加 `--update-existing`；脚本会先在原目录生成 `*.bak-<UTC>` 私有备份，再替换冲突文件。
 随后执行配置只读检查（除写入指定 report 外，不修改私有配置）：
 
 ```bash
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
-  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --target "$PCB_TARGET_SPEC" \
   --asset-root .local/camera_rig \
   --expected-camera-count 3 \
   --workspace-equals-target \
@@ -275,6 +340,7 @@ python scripts/prepare_camera_rig_calibration.py \
 
 ```bash
 set -euo pipefail
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig device inspect \
     --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
@@ -292,10 +358,11 @@ done
 
 ```bash
 set -euo pipefail
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
-    --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+    --target "$PCB_TARGET_SPEC" \
     --frames 60 --policy pose_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
@@ -317,11 +384,10 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-脚本生成的 provision YAML 使用可移植相对路径
-`../../shared_target/charuco_a4_v1/target_spec.json`、实际 target SHA-256 和
-`target.detection_policy: pose_validated`。实体 coverage、残差或姿态稳定性 gate 失败后
-禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个已存在
-且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
+脚本生成的 provision YAML 使用指向所选 target artifact 的可移植相对路径、实际 target
+SHA-256 和 `target.detection_policy: pose_validated`。实体 coverage、残差或姿态稳定性 gate
+失败后禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个
+已存在且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
 
 ## 11. FFS 设置
 
@@ -649,28 +715,11 @@ fingerprint 不同会 fail closed；不存在隐式 map migration。
 
 ## 34. Existing-board identification and registration
 
-从每台最终相机分别采集 target identity 证据，再运行 CameraRig 的真实 existing-board
-路线。不得给未解决字段传值：
-
-```bash
-camera-rig target identify-existing \
-  --artifact .local/captures/target-id/camera_a \
-  --artifact .local/captures/target-id/camera_b \
-  --artifact .local/captures/target-id/camera_c \
-  --board-width-mm 500 --board-height-mm 700 \
-  --square-length-mm 100 --marker-length-mm 75 \
-  --authoritative-source user-confirmed-deployment-metadata \
-  --authoritative-dictionary DICT_4X4_50 \
-  --output .local/target/charuco_500x700/identification.json
-camera-rig target register-existing \
-  --identification .local/target/charuco_500x700/identification.json \
-  --target-name charuco_500x700 --target-frame charuco_500x700 \
-  --output .local/target/charuco_500x700
-```
-
-若 CameraRig 对 `legacy_pattern`、`border_bits` 或 orientation 仍报告 ambiguity，必须用
-视觉 equivalence 或权威 source metadata 解决后再继续。禁止扫描 dictionary capacity，
-也禁止替换成 `DICT_4X4_100`。注册后，每台相机运行未放松的 `pose_validated` preflight。
+第 9.1 节是当前 500 x 700 mm `DICT_4X4_50` 实体板的唯一规范可执行流程，已经包含三相机
+证据采集、identify、register 和 artifact 自带校验和验证；这里不再复制命令或另设私有路径。
+若 CameraRig 对 `legacy_pattern`、`border_bits` 或 orientation 仍报告 ambiguity，必须用视觉
+equivalence 或真实权威 source 文件解决后再继续。不得把描述性标签传给
+`--authoritative-source`，禁止扫描 dictionary capacity，也禁止替换成 `DICT_4X4_100`。
 
 ## 35. Generic N-camera acceptance
 

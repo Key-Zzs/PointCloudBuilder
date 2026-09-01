@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import platform
+import site
 import sys
 from dataclasses import asdict, dataclass
 from importlib import metadata
@@ -131,14 +132,25 @@ def _opencv_check(*, no_hardware: bool) -> Check:
                 pass
             else:
                 conflicts.append(name)
-        passed = hasattr(cv2, "aruco") and not conflicts
+        module_version = str(cv2.__version__)
+        module_file = str(getattr(cv2, "__file__", ""))
+        version_matches = _opencv_versions_match(module_version, contrib)
+        from_user_site = _path_is_in_user_site(module_file)
+        passed = (
+            hasattr(cv2, "aruco")
+            and not conflicts
+            and version_matches
+            and not from_user_site
+        )
         return Check(
             "opencv",
             "PASS" if passed else "FAIL",
             {
-                "cv2_version": cv2.__version__,
+                "cv2_version": module_version,
                 "distribution": "opencv-contrib-python-headless",
                 "distribution_version": contrib,
+                "module_version_matches_distribution": version_matches,
+                "module_from_user_site": from_user_site,
                 "aruco": hasattr(cv2, "aruco"),
                 "conflicting_wheels": conflicts,
             },
@@ -149,6 +161,29 @@ def _opencv_check(*, no_hardware: bool) -> Check:
             "WARNING" if no_hardware else "FAIL",
             {"error": f"{type(error).__name__}: {str(error)[:300]}"},
         )
+
+
+def _opencv_versions_match(module_version: str, distribution_version: str) -> bool:
+    """Compare OpenCV's three-part module ABI version with its wheel version."""
+    return distribution_version == module_version or distribution_version.startswith(
+        f"{module_version}."
+    )
+
+
+def _path_is_in_user_site(module_file: str) -> bool:
+    """Return whether an imported module came from Python's per-user site directory."""
+    if not module_file:
+        return False
+    module_path = Path(module_file).resolve(strict=False)
+    user_sites = site.getusersitepackages()
+    roots = (user_sites,) if isinstance(user_sites, str) else tuple(user_sites)
+    for root in roots:
+        try:
+            module_path.relative_to(Path(root).resolve(strict=False))
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def _torch_checks(*, no_hardware: bool) -> list[Check]:
@@ -250,11 +285,16 @@ def _device_checks(expected_count: int = 2) -> list[Check]:
         ]
     except Exception as error:
         detail = {"error": f"{type(error).__name__}: {str(error)[:300]}"}
-        return [Check("d435i_devices", "FAIL", detail), Check("usb3_links", "FAIL", detail)]
+        return [
+            Check("d435i_devices", "FAIL", detail),
+            Check("usb3_links", "FAIL", detail),
+        ]
 
 
 def _check(name: str, value: str, passed: bool, *, warning: bool = False) -> Check:
-    return Check(name, "PASS" if passed else ("WARNING" if warning else "FAIL"), {"value": value})
+    return Check(
+        name, "PASS" if passed else ("WARNING" if warning else "FAIL"), {"value": value}
+    )
 
 
 def _version(distribution: str, imported: Any) -> str:
