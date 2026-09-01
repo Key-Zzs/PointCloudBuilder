@@ -18,6 +18,7 @@ REQUIRED_PATHS = (
     "scripts/doctor_reconstruction_env.py",
     "scripts/prepare_camera_rig_calibration.py",
     "scripts/prepare_ffs_assets.py",
+    "scripts/prepare_ffs_pipeline_configs.py",
     "configs/mapping/dense_rgb_reconstruction_example.yaml",
     "configs/mapping/compact_rgb_reconstruction_example.yaml",
     "configs/mapping/raw_rgb_concatenation_example.yaml",
@@ -59,6 +60,12 @@ CAMERA_RIG_PREPARATION_FLAGS = (
     "--update-existing",
     "--check",
     "--report",
+)
+FFS_PIPELINE_CONFIG_FLAGS = (
+    "--asset-root",
+    "--output-dir",
+    "--camera-name",
+    "--force",
 )
 PROMOTION_FLAGS = (
     "--solution",
@@ -132,6 +139,11 @@ def main() -> int:
             "scripts/prepare_camera_rig_calibration.py",
             CAMERA_RIG_PREPARATION_FLAGS,
         ),
+        (
+            "ffs_pipeline_configs",
+            "scripts/prepare_ffs_pipeline_configs.py",
+            FFS_PIPELINE_CONFIG_FLAGS,
+        ),
         ("usb_topology", "tools/mapping/check_usb_topology.py", USB_FLAGS),
         (
             "rig_calibration_promotion",
@@ -171,6 +183,7 @@ def main() -> int:
             + BENCHMARK_FLAGS
             + DOCTOR_FLAGS
             + CAMERA_RIG_PREPARATION_FLAGS
+            + FFS_PIPELINE_CONFIG_FLAGS
             + USB_FLAGS
             + PROMOTION_FLAGS
             + NCAMERA_FLAGS

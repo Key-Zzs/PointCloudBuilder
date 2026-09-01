@@ -161,12 +161,11 @@ python scripts/prepare_ffs_assets.py --build-tensorrt \
 python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
 ```
 
-生产使用生成的 FP16 `tensorrt_plugin` route。新建 pipeline YAML 时，从
-`configs/mapping/ffs_workspace_example.yaml` 复制到 `.local/configs/`，并让其中的
-Engine、plugin、manifest 和 backend config 指向刚生成的 `.local/ffs/` 文件；从
-`.local/configs/` 声明时可使用 `../ffs/...` 相对路径。相机序列号和 CameraRig 标定不属于
+生产使用生成的 FP16 `tensorrt_plugin` route。不要手工抄写 Engine、plugin、manifest 或
+backend-config 路径；第 11 节的 `prepare_ffs_pipeline_configs.py` 会从已检查的
+`.local/ffs/` bundle 自动生成全部私有 pipeline YAML。相机序列号和 CameraRig 标定不属于
 FFS asset bundle，继续由迁移并验证过的 runtime/provision/rig 配置提供。按第 11 节完成
-PyTorch、三条 TensorRT route 和同一新鲜 CameraRig NPZ frame 的 smoke 后，再运行下方
+PyTorch、三条 TensorRT route 和同一个全新 CameraRig NPZ frame 的 smoke 后，再运行下方
 Doctor；资产检查 PASS 不能替代实际 Engine 加载和相机 smoke。
 
 ## 7. Doctor
@@ -410,40 +409,59 @@ git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
 git -C .local/third_party/TensorRT sparse-checkout set include
 ```
 
-使用以下入口检查或构建全部 route：
+先检查全部 route：
 
 ```bash
 python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
-python scripts/prepare_ffs_assets.py --build-tensorrt \
-  --asset-root .local/ffs \
-  --checkpoint path/to/20-30-48/model_best_bp2_serialize.pth \
-  --model-config path/to/20-30-48/cfg.yaml \
-  --tensorrt-root .local/third_party/TensorRT
 ```
 
+若顶层 `passed` 为 `true`，资产已经完整，禁止紧接着再次运行 `--build-tensorrt`，也不要加
+`--force`。只有全新主机尚未生成派生资产或明确决定完整重建时，才按第 6.1.3 节使用真实的
+`.local/ffs/artifacts/model_best_bp2_serialize.pth`、`.local/ffs/artifacts/cfg.yaml` 和自动检测
+的 `FFS_CUDA_ARCH` 构建；`path/to/...` 只是占位文本，不能原样执行。构建脚本默认拒绝覆盖
+已有 ONNX、Engine 和 manifest，这是保护已有有效资产，不是构建故障。
+
 依次 smoke `pytorch`、`tensorrt_single`、`tensorrt_two_stage`、
-`tensorrt_plugin`；生产只使用 FP16 `tensorrt_plugin`。Smoke CLI 支持
-`--artifact-dir .local/ffs/artifacts` 和
-`--plugin-library .local/ffs/build/libffs_gwc_plugin.so`。每个 backend 从
-`configs/mapping/ffs_workspace_example.yaml` 创建私有 pipeline YAML，写入该 backend
-及已检查的资产路径。Standalone smoke 配置必须保持 `pointcloud.use_rgb: false`，
-因为它没有权威 IR→color 外参。然后对同一个全新 CameraRig NPZ frame 运行：
-共享 offline loader 会把 CameraRig snapshot 的 `ir_left`、`ir_right`、`color`
-规范化为 PCB canonical `left_ir`、`right_ir`、`rgb` 键。
+`tensorrt_plugin`；生产只使用 FP16 `tensorrt_plugin`。资产检查 PASS 后，自动生成四份
+standalone smoke YAML 和 live RGB plugin YAML：
 
 ```bash
+python scripts/prepare_ffs_pipeline_configs.py \
+  --asset-root .local/ffs \
+  --output-dir .local/configs \
+  --camera-name camera_a
+```
+
+命令生成 `.local/configs/ffs_{pytorch,tensorrt_single,tensorrt_two_stage,tensorrt_plugin}.yaml`
+以及 `.local/configs/ffs_tensorrt_plugin_rgb.yaml`，并以相对于声明 YAML 的 `../ffs/...`
+路径绑定已经检查的资产。默认拒绝覆盖已有配置；只有明确要重新生成这五个私有 YAML 时才可
+加 `--force`。四份 standalone smoke 配置保持 `pointcloud.use_rgb: false`，因为它们没有
+权威 IR→color 外参；RGB 配置只供读取 provision bundle 的 live CameraRig 集成使用。
+
+第 9.1 节已采集的同一新鲜 CameraRig snapshot 位于
+`.local/captures/target-id/camera_a/frames/frame_000000.npz`。先确认输入存在，再运行四条
+route；共享 offline loader 会把 snapshot 的 `ir_left`、`ir_right`、`color` 规范化为 PCB
+canonical `left_ir`、`right_ir`、`rgb` 键：
+
+```bash
+test -f .local/captures/target-id/camera_a/frames/frame_000000.npz
+
 for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
-  python scripts/run_ffs_stereo_frame.py \
-    --config ".local/configs/ffs_${backend}.yaml" \
-    --input .local/captures/camera_a/frames/frame_000000.npz \
-    --output-dir ".local/evidence/ffs-${backend}" --no-show
+  if ! python scripts/run_ffs_stereo_frame.py \
+      --config ".local/configs/ffs_${backend}.yaml" \
+      --input .local/captures/target-id/camera_a/frames/frame_000000.npz \
+      --output-dir ".local/evidence/ffs-${backend}" --no-show; then
+    echo "${backend}: FFS smoke FAIL"
+    break
+  fi
 done
 ```
 
-Live RGB 重建应从已检查的 plugin route 单独创建
-`.local/configs/ffs_tensorrt_plugin_rgb.yaml`，设置 `pointcloud.use_rgb: true` 和
-`output_format: xyzrgb`。Live CameraRig 集成会提供权威 IR→color 外参；不得在
-standalone smoke 配置中编造外参。
+这些 standalone 输出只证明对应模型 route 能在当前 GPU 上加载和推理，不构成标定、尺度
+或实体几何验收。生成的 `.local/configs/ffs_tensorrt_plugin_rgb.yaml` 已设置
+`pointcloud.use_rgb: true` 和 `output_format: xyzrgb`；live CameraRig 集成会从已验证的
+provision bundle 提供权威 IR 内参、双目 baseline 和 IR→color 外参，不得在 standalone
+smoke 配置中编造这些值。
 
 ## 12. 单相机 XYZ/XYZRGB
 

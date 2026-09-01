@@ -174,15 +174,14 @@ python scripts/prepare_ffs_assets.py --build-tensorrt \
 python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
 ```
 
-Production uses the generated FP16 `tensorrt_plugin` route. To create a pipeline YAML,
-copy `configs/mapping/ffs_workspace_example.yaml` under `.local/configs/` and point its
-Engine, plugin, manifest, and backend-config fields at the new `.local/ffs/` files;
-paths declared from `.local/configs/` can use relative `../ffs/...` paths. Camera
-serials and CameraRig calibration are not part of the FFS asset bundle: they continue
-to come from the transferred and validated runtime, provision, and rig configuration.
-Complete the PyTorch, all three TensorRT-route, and same-fresh-CameraRig-NPZ smokes in
-Section 11 before running Doctor below. An asset-check PASS does not replace actual
-Engine loading and a camera smoke.
+Production uses the generated FP16 `tensorrt_plugin` route. Do not hand-copy Engine,
+plugin, manifest, or backend-config paths: Section 11 uses
+`prepare_ffs_pipeline_configs.py` to generate every private pipeline YAML from the
+checked `.local/ffs/` bundle. Camera serials and CameraRig calibration are not part of
+the FFS asset bundle: they continue to come from the transferred and validated
+runtime, provision, and rig configuration. Complete the PyTorch, all three
+TensorRT-route, and same-fresh-CameraRig-NPZ smokes in Section 11 before running Doctor
+below. An asset-check PASS does not replace actual Engine loading and a camera smoke.
 
 ## 7. Doctor
 
@@ -445,42 +444,66 @@ git clone --depth 1 --branch v10.16 --filter=blob:none --sparse \
 git -C .local/third_party/TensorRT sparse-checkout set include
 ```
 
-Check or build all routes without importing a sibling repository at runtime:
+Check every route first:
 
 ```bash
 python scripts/prepare_ffs_assets.py --check --asset-root .local/ffs
-python scripts/prepare_ffs_assets.py --build-tensorrt \
-  --asset-root .local/ffs \
-  --checkpoint path/to/20-30-48/model_best_bp2_serialize.pth \
-  --model-config path/to/20-30-48/cfg.yaml \
-  --tensorrt-root .local/third_party/TensorRT
 ```
 
+If the top-level `passed` value is `true`, the bundle is complete. Do not immediately
+run `--build-tensorrt` again and do not add `--force`. Build only when a fresh host has
+no derived assets or when an explicit complete rebuild is intended; follow Section
+6.1.3 with the real `.local/ffs/artifacts/model_best_bp2_serialize.pth`,
+`.local/ffs/artifacts/cfg.yaml`, and detected `FFS_CUDA_ARCH`. `path/to/...` is only
+placeholder text and must never be pasted literally. Refusal to overwrite existing
+ONNX, Engine, and manifest files is protection for valid assets, not a build failure.
+
 Smoke `pytorch`, `tensorrt_single`, `tensorrt_two_stage`, then
-`tensorrt_plugin`; production uses only `tensorrt_plugin` FP16. The smoke CLI accepts
-`--artifact-dir .local/ffs/artifacts` and
-`--plugin-library .local/ffs/build/libffs_gwc_plugin.so`. For each backend, create a
-private pipeline YAML from `configs/mapping/ffs_workspace_example.yaml` with that
-backend and its checked asset paths. Keep these standalone smoke configs at
-`pointcloud.use_rgb: false`; they do not have an authoritative IR-to-color transform.
-Then run the same fresh CameraRig NPZ frame:
-CameraRig snapshot keys `ir_left`, `ir_right`, and `color` are normalized by the
-shared offline loader to PCB's canonical `left_ir`, `right_ir`, and `rgb` keys.
+`tensorrt_plugin`; production uses only `tensorrt_plugin` FP16. After the asset check
+passes, generate all four standalone smoke YAML files and the live RGB plugin YAML:
 
 ```bash
+python scripts/prepare_ffs_pipeline_configs.py \
+  --asset-root .local/ffs \
+  --output-dir .local/configs \
+  --camera-name camera_a
+```
+
+This creates `.local/configs/ffs_{pytorch,tensorrt_single,tensorrt_two_stage,tensorrt_plugin}.yaml`
+and `.local/configs/ffs_tensorrt_plugin_rgb.yaml`, binding the checked assets with
+paths relative to the declaring YAML. Existing files are not overwritten by default;
+use `--force` only when explicit regeneration of these five private YAML files is
+intended. The four standalone smoke configs keep `pointcloud.use_rgb: false` because
+they have no authoritative IR-to-color transform. The RGB config is only for live
+CameraRig integration that loads a provision bundle.
+
+The same fresh CameraRig snapshot already captured in Section 9.1 is
+`.local/captures/target-id/camera_a/frames/frame_000000.npz`. Check that it exists and
+then run all four routes. The shared offline loader normalizes CameraRig snapshot keys
+`ir_left`, `ir_right`, and `color` to PCB's canonical `left_ir`, `right_ir`, and `rgb`
+keys:
+
+```bash
+test -f .local/captures/target-id/camera_a/frames/frame_000000.npz
+
 for backend in pytorch tensorrt_single tensorrt_two_stage tensorrt_plugin; do
-  python scripts/run_ffs_stereo_frame.py \
-    --config ".local/configs/ffs_${backend}.yaml" \
-    --input .local/captures/camera_a/frames/frame_000000.npz \
-    --output-dir ".local/evidence/ffs-${backend}" --no-show
+  if ! python scripts/run_ffs_stereo_frame.py \
+      --config ".local/configs/ffs_${backend}.yaml" \
+      --input .local/captures/target-id/camera_a/frames/frame_000000.npz \
+      --output-dir ".local/evidence/ffs-${backend}" --no-show; then
+    echo "${backend}: FFS smoke FAIL"
+    break
+  fi
 done
 ```
 
-For live RGB reconstruction, create a separate
-`.local/configs/ffs_tensorrt_plugin_rgb.yaml` from the checked plugin route and set
-`pointcloud.use_rgb: true` plus `output_format: xyzrgb`. The live CameraRig integration
-supplies the authoritative IR-to-color transform; do not invent one in a standalone
-smoke config.
+These standalone outputs prove only that each model route loads and runs on the
+current GPU; they are not calibration, scale, or physical-geometry acceptance. The
+generated `.local/configs/ffs_tensorrt_plugin_rgb.yaml` already sets
+`pointcloud.use_rgb: true` and `output_format: xyzrgb`. Live CameraRig integration
+supplies authoritative IR intrinsics, stereo baseline, and IR-to-color extrinsics from
+the validated provision bundle; never invent those values in a standalone smoke
+config.
 
 ## 12. Single-camera XYZ/XYZRGB
 
