@@ -1,21 +1,18 @@
-#!/usr/bin/env python3
 """Generate private FFS smoke and live-RGB pipeline configurations."""
 
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
-
-from pointcloud_builder.config import load_config
-
 from prepare_ffs_assets import check_assets
 
+from pointcloud_builder.config import load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = REPO_ROOT / "configs/mapping/ffs_workspace_example.yaml"
@@ -45,11 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--asset-root", default=".local/ffs")
     parser.add_argument("--output-dir", default=".local/configs")
     parser.add_argument("--camera-name", default="camera_a")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Explicitly replace existing generated private pipeline YAML files.",
-    )
     args = parser.parse_args(argv)
 
     asset_root = _private_path(args.asset_root, label="asset root")
@@ -70,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         camera_name=args.camera_name,
     )
-    written = write_configs(configs, output_dir=output_dir, force=args.force)
+    written = write_configs(configs, output_dir=output_dir)
     print(
         json.dumps(
             {
@@ -166,23 +158,13 @@ def render_configs(
     return rendered
 
 
-def write_configs(
-    configs: dict[str, dict[str, Any]], *, output_dir: Path, force: bool
-) -> list[Path]:
+def write_configs(configs: dict[str, dict[str, Any]], *, output_dir: Path) -> list[Path]:
     unexpected = sorted(set(configs) - set(OUTPUT_NAMES))
     missing = sorted(set(OUTPUT_NAMES) - set(configs))
     if unexpected or missing:
         raise ValueError(
             f"generated FFS config set mismatch; missing={missing}, unexpected={unexpected}"
         )
-    existing = [output_dir / name for name in OUTPUT_NAMES if (output_dir / name).exists()]
-    if existing and not force:
-        raise FileExistsError(
-            "FFS pipeline configs already exist; refusing to overwrite them. Pass "
-            "--force only when explicit regeneration is intended: "
-            + ", ".join(str(path) for path in existing)
-        )
-
     output_dir.mkdir(parents=True, exist_ok=True)
     temporary: list[tuple[Path, Path]] = []
     try:
@@ -208,7 +190,7 @@ def write_configs(
 def _load_template(path: Path) -> dict[str, Any]:
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise ValueError(f"FFS template must be a YAML mapping: {path}")
+        raise TypeError(f"FFS template must be a YAML mapping: {path}")
     return value
 
 

@@ -355,11 +355,10 @@ If actually using the newly printed Section 9.2 A4 board, change only
 `PCB_TARGET_SPEC` to
 `.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`.
 
-If manually created YAML already differs from the prepared contract, the script stops
-without overwriting it. After reviewing the difference, append `--update-existing` to
-the same command; the script creates a private `*.bak-<UTC>` backup beside each changed
-file before replacement. Then run the config read-only check, which changes no private
-config and writes only the requested report:
+The script always atomically replaces the generated runtime and provision YAML at the
+same private paths. Back up any local edits that must be retained before rerunning it.
+Then run the config read-only check, which changes no private config and writes only
+the requested report:
 
 ```bash
 PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
@@ -497,9 +496,8 @@ python scripts/prepare_ffs_pipeline_configs.py \
 
 This creates `.local/configs/ffs_{pytorch,tensorrt_single,tensorrt_two_stage,tensorrt_plugin}.yaml`
 and `.local/configs/ffs_tensorrt_plugin_rgb.yaml`, binding the checked assets with
-paths relative to the declaring YAML. Existing files are not overwritten by default;
-use `--force` only when explicit regeneration of these five private YAML files is
-intended. The four standalone smoke configs keep `pointcloud.use_rgb: false` because
+paths relative to the declaring YAML. Each invocation atomically replaces the same five
+private YAML files. The four standalone smoke configs keep `pointcloud.use_rgb: false` because
 they have no authoritative IR-to-color transform. The RGB config is only for live
 CameraRig integration that loads a provision bundle.
 
@@ -546,10 +544,10 @@ python scripts/prepare_live_reconstruction_configs.py \
 It creates `.local/configs/mapping.yaml`, `mapping_acceptance.yaml`,
 `live_rig_ffs_rgb.yaml`, `live_rig_ffs_rgb_raw.yaml`,
 `live_rig_ffs_rgb_compact.yaml`, and `tsdf_frozen_ffs.yaml`; the last file comes from
-the tracked `configs/mapping/tsdf_example.yaml` template. An existing
-workspace-specific `mapping.yaml` is preserved by default; every other existing file
-is accepted only when its content is identical. Never use `--force` to silently
-replace a measured crop, plane ROI, rig, or TSDF config.
+the tracked `configs/mapping/tsdf_example.yaml` template. Each invocation atomically
+replaces these same private filenames from the current tracked templates and validated
+local inputs. Back up and reapply any measured crop, plane ROI, rig, or TSDF edits that
+must be retained before regeneration.
 
 The three generated live-rig YAML files deliberately omit `rig_calibration`. For
 production multi-camera geometry, complete Sections 32–35 for multi-pose validation,
@@ -740,8 +738,8 @@ These `postprocess` settings affect only TSDF extraction/viewer output, not inte
 of per-camera depth rays. `crop.frame` must be `workspace`, and bounds are in metres;
 disable crop or sampling only through its corresponding `enabled`. `volume`, `depth`,
 `integration.source`, and `extraction.weight_threshold` are map-compatibility fields:
-changing one requires rebuilding the initial map rather than loading an old map. Do
-not use `--force` to replace a measured private config.
+changing one requires rebuilding the initial map rather than loading an old map. Back
+up any measured private config before rerunning its generator.
 
 ### 20.2 Record static depth
 

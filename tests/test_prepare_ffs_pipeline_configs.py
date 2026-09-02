@@ -4,11 +4,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
 import yaml
 
 from pointcloud_builder.config import load_config
-
 
 ROOT = Path(__file__).parents[1]
 SCRIPT_PATH = ROOT / "scripts/prepare_ffs_pipeline_configs.py"
@@ -68,7 +66,7 @@ def test_render_configs_binds_every_checked_route(tmp_path: Path) -> None:
     }
 
 
-def test_write_configs_validates_and_refuses_implicit_overwrite(
+def test_write_configs_validates_and_overwrites_existing_files(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / ".local/configs"
@@ -79,13 +77,14 @@ def test_write_configs_validates_and_refuses_implicit_overwrite(
         camera_name="camera_a",
     )
 
-    paths = MODULE.write_configs(configs, output_dir=output, force=False)
+    paths = MODULE.write_configs(configs, output_dir=output)
     assert [path.name for path in paths] == list(MODULE.OUTPUT_NAMES)
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
     for path in paths:
         assert load_config(path).depth_source.ffs is not None
 
-    with pytest.raises(FileExistsError, match="refusing to overwrite"):
-        MODULE.write_configs(configs, output_dir=output, force=False)
-
-    MODULE.write_configs(configs, output_dir=output, force=True)
+    changed = yaml.safe_load(paths[0].read_text(encoding="utf-8"))
+    changed["camera"]["name"] = "stale_name"
+    paths[0].write_text(yaml.safe_dump(changed), encoding="utf-8")
+    MODULE.write_configs(configs, output_dir=output)
+    assert yaml.safe_load(paths[0].read_text(encoding="utf-8"))["camera"]["name"] == "camera_a"

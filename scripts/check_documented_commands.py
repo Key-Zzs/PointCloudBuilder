@@ -59,7 +59,6 @@ CAMERA_RIG_PREPARATION_FLAGS = (
     "--expected-camera-count",
     "--runtime-only",
     "--workspace-equals-target",
-    "--update-existing",
     "--check",
     "--report",
 )
@@ -67,7 +66,6 @@ FFS_PIPELINE_CONFIG_FLAGS = (
     "--asset-root",
     "--output-dir",
     "--camera-name",
-    "--force",
 )
 LIVE_RECONSTRUCTION_CONFIG_FLAGS = (
     "--identity-map",
@@ -75,7 +73,6 @@ LIVE_RECONSTRUCTION_CONFIG_FLAGS = (
     "--ffs-config",
     "--output-dir",
     "--expected-camera-count",
-    "--force",
 )
 PROMOTION_FLAGS = (
     "--solution",

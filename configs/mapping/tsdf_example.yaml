@@ -32,9 +32,9 @@ postprocess:
   crop:
     enabled: true
     frame: workspace
-    x: [-0.5, 0.5]
-    y: [-0.5, 0.5]
-    z: [-0.05, 1.0]
+    x: [-0.3, 0.4]
+    y: [-0.2, 0.4]
+    z: [-0.05, 0.8]
   sampling:
     enabled: true
     mode: voxel_fps

@@ -323,9 +323,8 @@ python scripts/prepare_camera_rig_calibration.py \
 若实际改用第 9.2 节新打印的 A4 板，只把 `PCB_TARGET_SPEC` 改成
 `.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`。
 
-若之前手工创建的 YAML 与自动合同不同，脚本默认停止且不覆盖。核对差异后，可在同一命令
-追加 `--update-existing`；脚本会先在原目录生成 `*.bak-<UTC>` 私有备份，再替换冲突文件。
-随后执行配置只读检查（除写入指定 report 外，不修改私有配置）：
+脚本会在相同的私有路径以原子方式替换所生成的 runtime 和 provision YAML。重跑前请先备份
+任何必须保留的本地修改。随后执行配置只读检查（除写入指定 report 外，不修改私有配置）：
 
 ```bash
 PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
@@ -456,8 +455,8 @@ python scripts/prepare_ffs_pipeline_configs.py \
 
 命令生成 `.local/configs/ffs_{pytorch,tensorrt_single,tensorrt_two_stage,tensorrt_plugin}.yaml`
 以及 `.local/configs/ffs_tensorrt_plugin_rgb.yaml`，并以相对于声明 YAML 的 `../ffs/...`
-路径绑定已经检查的资产。默认拒绝覆盖已有配置；只有明确要重新生成这五个私有 YAML 时才可
-加 `--force`。四份 standalone smoke 配置保持 `pointcloud.use_rgb: false`，因为它们没有
+路径绑定已经检查的资产。每次运行都会以原子方式替换同名的五个私有 YAML。四份 standalone
+smoke 配置保持 `pointcloud.use_rgb: false`，因为它们没有
 权威 IR→color 外参；RGB 配置只供读取 provision bundle 的 live CameraRig 集成使用。
 
 第 9.1 节已采集的同一新鲜 CameraRig snapshot 位于
@@ -500,9 +499,9 @@ python scripts/prepare_live_reconstruction_configs.py \
 它生成 `.local/configs/mapping.yaml`、`mapping_acceptance.yaml`、
 `live_rig_ffs_rgb.yaml`、`live_rig_ffs_rgb_raw.yaml`、
 `live_rig_ffs_rgb_compact.yaml` 和 `tsdf_frozen_ffs.yaml`；最后一项来自已跟踪模板
-`configs/mapping/tsdf_example.yaml`。如果 workspace 专属的
-`mapping.yaml` 已存在，默认保留它；其余已有文件只有内容完全一致才接受，禁止用 `--force`
-静默覆盖测量过的 crop、plane ROI、rig 或 TSDF 配置。
+`configs/mapping/tsdf_example.yaml`。每次运行都会根据当前已跟踪的模板和已验证的本地输入，
+以原子方式替换这些同名私有文件。重跑前请先备份并在生成后重新应用任何必须保留的测量 crop、
+plane ROI、rig 或 TSDF 修改。
 
 生成的三个 live rig YAML 故意不含 `rig_calibration`。若最终目标是 production 多相机几何，
 此时先执行第 32–35 节完成 multi-pose validation、实体 acceptance 与 promotion，把
@@ -673,7 +672,7 @@ postprocess:
 integration。`crop.frame` 必须为 `workspace`，边界单位为米；关闭 crop 或 sampling 时只改
 相应 `enabled`。`volume`、`depth`、`integration.source` 和
 `extraction.weight_threshold` 属于 map 兼容合同，修改后必须重建 initial map，不能加载旧
-map。不要用 `--force` 覆盖已经测量过的私有配置。
+map。重跑生成器前请先备份已经测量过的私有配置。
 
 ### 20.2 录制静态 depth
 

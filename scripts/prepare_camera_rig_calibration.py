@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import hashlib
 import json
 import os
 import re
-import shutil
 import sys
 import uuid
 from copy import deepcopy
@@ -259,21 +257,11 @@ def _atomic_write_yaml(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _backup(path: Path, timestamp: str) -> Path:
-    backup = path.with_name(f"{path.name}.bak-{timestamp}")
-    if backup.exists():
-        raise PreparationError(f"refusing to replace existing backup: {backup}")
-    shutil.copy2(path, backup)
-    backup.chmod(0o600)
-    return backup
-
-
 def plan_yaml(
     path: Path,
     desired: dict[str, Any],
     *,
     check: bool,
-    update_existing: bool,
 ) -> str:
     if not path.exists():
         if check:
@@ -282,10 +270,10 @@ def plan_yaml(
     existing = load_yaml_mapping(path)
     if existing == desired:
         return "UNCHANGED"
-    if check or not update_existing:
+    if check:
         raise PreparationError(
             f"private config differs from the prepared contract: {path}; "
-            "review it, then rerun with --update-existing to create a backup and replace it"
+            "rerun without --check to replace it"
         )
     return "UPDATED"
 
@@ -295,13 +283,10 @@ def apply_yaml_plan(
     desired: dict[str, Any],
     *,
     status: str,
-    timestamp: str,
 ) -> dict[str, str]:
     result = {"status": status, "path": str(path)}
     if status == "UNCHANGED":
         return result
-    if status == "UPDATED":
-        result["backup"] = str(_backup(path, timestamp))
     _atomic_write_yaml(path, desired)
     return result
 
@@ -321,8 +306,6 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.expected_camera_count < 1:
         raise PreparationError("--expected-camera-count must be positive")
-    if args.check and args.update_existing:
-        raise PreparationError("--check and --update-existing cannot be used together")
     if args.runtime_only and args.target is not None:
         raise PreparationError("--runtime-only does not accept --target")
     if args.runtime_only and args.workspace_equals_target:
@@ -341,7 +324,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     provision_template = (
         None if args.runtime_only else load_yaml_mapping(PROVISION_TEMPLATE)
     )
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     desired_configs: dict[str, dict[str, tuple[Path, dict[str, Any]]]] = {}
     plans: dict[str, dict[str, str]] = {}
     for label, serial in cameras.items():
@@ -371,7 +353,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 path,
                 desired,
                 check=args.check,
-                update_existing=args.update_existing,
             )
             for name, (path, desired) in desired_configs[label].items()
         }
@@ -382,7 +363,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 path,
                 desired,
                 status=plans[label][name],
-                timestamp=timestamp,
             )
             for name, (path, desired) in configs.items()
         }
@@ -402,7 +382,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "camera_labels": list(cameras),
         "identity_map_sha256": sha256_file(args.identity_map),
         "target_spec_sha256": None if target is None else target["sha256"],
-        "workspace_equals_target": False if args.runtime_only else True,
+        "workspace_equals_target": not args.runtime_only,
         "prepared": prepared,
     }
     _atomic_write_json(args.report, report)
@@ -429,11 +409,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace-equals-target",
         action="store_true",
         help="acknowledge that the fixed-provision workspace frame equals the target frame",
-    )
-    parser.add_argument(
-        "--update-existing",
-        action="store_true",
-        help="back up and replace conflicting private configs with the prepared contract",
     )
     parser.add_argument(
         "--check", action="store_true", help="verify without changing configs"

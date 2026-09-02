@@ -5,7 +5,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 import yaml
 
 from pointcloud_builder.mapping.config import load_tsdf_config
@@ -81,7 +80,7 @@ def test_render_configs_creates_fixed_provision_three_camera_profiles(
         )
 
 
-def test_write_configs_preserves_workspace_mapping_and_refuses_other_drift(
+def test_write_configs_overwrites_existing_generated_configs(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / ".local/configs"
@@ -93,7 +92,7 @@ def test_write_configs_preserves_workspace_mapping_and_refuses_other_drift(
         workspace_frame="workspace",
         mapping=_mapping(),
     )
-    statuses = MODULE.write_configs(configs, output_dir=output, force=False)
+    statuses = MODULE.write_configs(configs, output_dir=output)
     assert all(status == "written" for status in statuses.values())
     for name in MODULE.PROFILE_TEMPLATES:
         assert len(load_rig_config(output / name).cameras) == 3
@@ -104,12 +103,14 @@ def test_write_configs_preserves_workspace_mapping_and_refuses_other_drift(
     custom = yaml.safe_load((output / "mapping.yaml").read_text(encoding="utf-8"))
     custom["workspace_crop"]["x"] = [-0.5, 0.5]
     (output / "mapping.yaml").write_text(yaml.safe_dump(custom), encoding="utf-8")
-    statuses = MODULE.write_configs(configs, output_dir=output, force=False)
-    assert statuses["mapping.yaml"] == "preserved_existing_workspace_mapping"
+    statuses = MODULE.write_configs(configs, output_dir=output)
+    assert statuses["mapping.yaml"] == "written"
+    assert yaml.safe_load((output / "mapping.yaml").read_text(encoding="utf-8")) == configs["mapping.yaml"]
 
     raw = output / "live_rig_ffs_rgb_raw.yaml"
     changed = yaml.safe_load(raw.read_text(encoding="utf-8"))
     changed["timing"]["maximum_skew_ms"] = 99
     raw.write_text(yaml.safe_dump(changed), encoding="utf-8")
-    with pytest.raises(FileExistsError, match="different content"):
-        MODULE.write_configs(configs, output_dir=output, force=False)
+    statuses = MODULE.write_configs(configs, output_dir=output)
+    assert statuses["live_rig_ffs_rgb_raw.yaml"] == "written"
+    assert yaml.safe_load(raw.read_text(encoding="utf-8")) == configs["live_rig_ffs_rgb_raw.yaml"]

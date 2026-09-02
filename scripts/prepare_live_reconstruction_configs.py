@@ -52,14 +52,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output-dir", default=".local/configs")
     parser.add_argument("--expected-camera-count", type=int, default=3)
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Explicitly replace differing generated configs, including mapping.yaml; "
-            "normally preserve an existing workspace-specific mapping.yaml."
-        ),
-    )
     args = parser.parse_args(argv)
 
     identity_path = _private_path(args.identity_map, label="identity map")
@@ -73,13 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         ffs_config=ffs_config,
     )
 
-    existing_mapping = output_dir / "mapping.yaml"
-    if existing_mapping.is_file() and not args.force:
-        mapping = _load_yaml(existing_mapping)
-        validate_mapping(mapping, workspace_frame)
-    else:
-        mapping = _load_yaml(MAPPING_TEMPLATE)
-        mapping["expected_plane"]["frame"] = workspace_frame
+    mapping = _load_yaml(MAPPING_TEMPLATE)
+    mapping["expected_plane"]["frame"] = workspace_frame
 
     configs = render_configs(
         camera_names,
@@ -89,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         workspace_frame=workspace_frame,
         mapping=mapping,
     )
-    statuses = write_configs(configs, output_dir=output_dir, force=args.force)
+    statuses = write_configs(configs, output_dir=output_dir)
     print(
         json.dumps(
             {
@@ -205,7 +192,7 @@ def render_configs(
 
 
 def write_configs(
-    configs: dict[str, dict[str, Any]], *, output_dir: Path, force: bool
+    configs: dict[str, dict[str, Any]], *, output_dir: Path
 ) -> dict[str, str]:
     if set(configs) != set(OUTPUT_NAMES):
         raise ValueError("generated live reconstruction config set is incomplete")
@@ -215,18 +202,6 @@ def write_configs(
     try:
         for name in OUTPUT_NAMES:
             destination = output_dir / name
-            if destination.is_file() and not force:
-                existing = _load_yaml(destination)
-                if name == "mapping.yaml":
-                    statuses[name] = "preserved_existing_workspace_mapping"
-                    continue
-                if existing == configs[name]:
-                    statuses[name] = "unchanged"
-                    continue
-                raise FileExistsError(
-                    f"private config already exists with different content: {destination}; "
-                    "inspect it before using --force"
-                )
             temporary = output_dir / f".{name}.tmp"
             temporary.write_text(
                 yaml.safe_dump(configs[name], sort_keys=False, allow_unicode=True),

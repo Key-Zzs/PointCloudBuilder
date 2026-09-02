@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 SCRIPT_PATH = ROOT / "scripts/prepare_camera_rig_calibration.py"
 CAMERA_RIG_SRC = ROOT / "third_party/CameraRig/src"
 sys.path.insert(0, str(CAMERA_RIG_SRC))
-from camera_rig.provision.config import load_provision_config  # noqa: E402
+from camera_rig.provision.config import load_provision_config
 
 SPEC = importlib.util.spec_from_file_location(
     "prepare_camera_rig_calibration", SCRIPT_PATH
@@ -157,7 +157,7 @@ def test_prepare_is_idempotent_and_check_mode_is_read_only(tmp_path: Path) -> No
     )
 
 
-def test_prepare_rejects_conflict_then_backs_up_explicit_update(tmp_path: Path) -> None:
+def test_prepare_overwrites_conflicting_config_by_default(tmp_path: Path) -> None:
     _write_identity(tmp_path / "camera_rig/camera_identity_map.json")
     _write_target(tmp_path / "camera_rig/shared_target/charuco_a4_v1")
     assert MODULE.main(_arguments(tmp_path)) == 0
@@ -166,25 +166,24 @@ def test_prepare_rejects_conflict_then_backs_up_explicit_update(tmp_path: Path) 
     runtime["camera"]["name"] = "wrong_name"
     runtime_path.write_text(yaml.safe_dump(runtime), encoding="utf-8")
 
-    assert MODULE.main(_arguments(tmp_path)) == 2
-    assert MODULE.main(_arguments(tmp_path, extra=("--update-existing",))) == 0
+    assert MODULE.main(_arguments(tmp_path)) == 0
 
     updated = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
     assert updated["camera"]["name"] == "camera_a"
-    assert len(list(runtime_path.parent.glob("runtime.yaml.bak-*"))) == 1
+    assert not list(runtime_path.parent.glob("runtime.yaml.bak-*"))
 
 
-def test_prepare_plans_all_cameras_before_writing(tmp_path: Path) -> None:
+def test_prepare_overwrites_all_camera_configs_after_validation(tmp_path: Path) -> None:
     _write_identity(tmp_path / "camera_rig/camera_identity_map.json")
     _write_target(tmp_path / "camera_rig/shared_target/charuco_a4_v1")
     conflicting = tmp_path / "camera_rig/camera_b/configs/runtime.yaml"
     conflicting.parent.mkdir(parents=True)
     conflicting.write_text("camera: {}\n", encoding="utf-8")
 
-    assert MODULE.main(_arguments(tmp_path)) == 2
+    assert MODULE.main(_arguments(tmp_path)) == 0
 
-    assert not (tmp_path / "camera_rig/camera_a/configs/runtime.yaml").exists()
-    assert conflicting.read_text(encoding="utf-8") == "camera: {}\n"
+    assert (tmp_path / "camera_rig/camera_a/configs/runtime.yaml").exists()
+    assert yaml.safe_load(conflicting.read_text(encoding="utf-8"))["camera"]["name"] == "camera_b"
 
 
 def test_prepare_fails_closed_for_wrong_count_and_bad_target(tmp_path: Path) -> None:
