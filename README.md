@@ -393,7 +393,7 @@ done
 ### 10.3 Physical-board preflight
 
 Keep the cameras, workspace, and board fixed, with the same board clearly visible in
-each color image. Capture the strict 60-frame pose-validated preflight for every camera;
+each color image. Capture the strict 60-frame uncertainty-validated preflight for every camera;
 stop on any failure and do not relax thresholds:
 
 ```bash
@@ -403,7 +403,7 @@ for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
     --target "$PCB_TARGET_SPEC" \
-    --frames 60 --policy pose_validated \
+    --frames 60 --policy uncertainty_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
 done
@@ -426,7 +426,14 @@ done
 ```
 
 Generated provision YAML uses a portable path to the selected target artifact, its
-actual SHA-256, and `target.detection_policy: pose_validated`. Never reuse old
+actual SHA-256, and `target.detection_policy: uncertainty_validated`. Coverage and image
+span remain operator guidance, target-size diagnostics, and visual-quality warnings, but
+they are not pose accuracy. The hard decision uses physical PnP, conditional pose uncertainty,
+scaled observability, IPPE ambiguity, temporal stability, reprojection, split-half stability,
+and native depth. Low coverage does not guarantee PASS; it only cannot cause rejection by
+itself. Raw-stream validation remains an earlier independent gate: discontinuity, timeout,
+timestamp/sync, dtype/shape, or empty-stream failures are
+`NOT_APPLICABLE_TO_POSE_OBSERVABILITY`. Never reuse old
 extrinsics after a physical coverage, residual, or pose-stability failure, and never
 use `--force` to hide a failed gate. `--force` is only for explicitly replacing an
 existing CameraRig-owned artifact, which must still pass complete validation.
@@ -1091,7 +1098,7 @@ Follow this order; keep cameras fixed after step 12 and stop on every failed gat
 10. Capture existing-board identity evidence from the 500 x 700 `DICT_4X4_50` board.
 11. Identify and register the existing board with the commands in section 34.
 12. Deliberately fixture the board at canonical workspace `pose_0`.
-13. Run CameraRig `pose_validated` target preflight for every camera.
+13. Run CameraRig `uncertainty_validated` target preflight for every camera.
 14. Create initial fixed provisions for every camera while `pose_0` is sufficiently visible.
 15. Validate every provision.
 16. Use the Section 11 automation to generate private three-camera candidate rig configs

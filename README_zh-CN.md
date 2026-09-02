@@ -359,7 +359,7 @@ done
 ### 10.3 实体板 preflight
 
 保持相机、workspace 和实体板固定，让同一实体板清晰出现在每台相机的 color 画面中。逐台
-采集严格的 60 帧 pose-validated preflight；任一相机失败就停止，不要降低阈值：
+采集严格的 60 帧 uncertainty-validated preflight；任一相机失败就停止，不要降低阈值：
 
 ```bash
 set -euo pipefail
@@ -368,7 +368,7 @@ for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
     --target "$PCB_TARGET_SPEC" \
-    --frames 60 --policy pose_validated \
+    --frames 60 --policy uncertainty_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
 done
@@ -390,7 +390,13 @@ done
 ```
 
 脚本生成的 provision YAML 使用指向所选 target artifact 的可移植相对路径、实际 target
-SHA-256 和 `target.detection_policy: pose_validated`。实体 coverage、残差或姿态稳定性 gate
+SHA-256 和 `target.detection_policy: uncertainty_validated`。Coverage 和 image span 仍用于
+操作员引导、target 尺寸诊断与视觉质量 warning，但它们不等于 pose accuracy。硬验收由 PnP
+物理有效性、条件 pose uncertainty、scaled observability、IPPE ambiguity、时间稳定性、
+reprojection、split-half stability 与 native depth 共同决定。低 coverage 不保证 PASS；它
+只是不会再被 coverage 数值单独拒绝。Raw-stream validation 仍是更早且独立的 gate：
+discontinuity、timeout、timestamp/sync、dtype/shape 或 empty-stream failure 必须报告
+`NOT_APPLICABLE_TO_POSE_OBSERVABILITY`。实体 coverage、残差或姿态稳定性 gate
 失败后禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个
 已存在且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
 
@@ -998,7 +1004,7 @@ N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。�
 10. 从 500 x 700 `DICT_4X4_50` 现有板采集 identity 证据。
 11. 使用第 34 节命令 identify/register existing board。
 12. 把板精确 fixture 在 canonical workspace `pose_0`。
-13. 对每台相机运行 CameraRig `pose_validated` target preflight。
+13. 对每台相机运行 CameraRig `uncertainty_validated` target preflight。
 14. 在所有相机充分看到 `pose_0` 时创建逐相机 initial fixed provision。
 15. 验证每份 provision。
 16. 用第 11 节自动化脚本生成不含 deployment 的私有三相机 candidate rig configs。

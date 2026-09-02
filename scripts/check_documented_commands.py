@@ -181,8 +181,8 @@ def main() -> int:
             checks[f"{name}_flag:{flag}"] = flag in result.stdout
     for readme in READMES:
         text = readme.read_text(encoding="utf-8")
-        checks[f"{readme.name}:policy:pose_validated"] = (
-            "target.detection_policy: pose_validated" in text
+        checks[f"{readme.name}:policy:uncertainty_validated"] = (
+            "target.detection_policy: uncertainty_validated" in text
         )
         for relative in REQUIRED_PATHS:
             checks[f"{readme.name}:reference:{relative}"] = relative in text
