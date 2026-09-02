@@ -230,7 +230,7 @@ def build_provision_config(
         )
     ).as_posix()
     target["expected_sha256"] = target_sha256
-    target["detection_policy"] = "pose_validated"
+    target["detection_policy"] = "uncertainty_validated"
     workspace["target_frame"] = target_frame
     workspace["T_workspace_from_target"] = {
         "matrix": [

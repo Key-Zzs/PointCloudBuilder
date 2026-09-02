@@ -115,7 +115,7 @@ def test_prepare_creates_private_configs_without_reporting_serials(
         "artifact": "../../shared_target/charuco_a4_v1/target_spec.json",
         "expected_sha256": _sha256(target),
         "detection_stream": "color",
-        "detection_policy": "pose_validated",
+        "detection_policy": "uncertainty_validated",
     }
     assert provision["workspace"]["T_workspace_from_target"]["matrix"] == [
         [1.0, 0.0, 0.0, 0.0],
@@ -127,7 +127,7 @@ def test_prepare_creates_private_configs_without_reporting_serials(
     assert provision_path.stat().st_mode & 0o777 == 0o600
     strict_config = load_provision_config(provision_path)
     assert strict_config.camera_config.camera.name == "camera_a"
-    assert strict_config.target.detection_policy == "pose_validated"
+    assert strict_config.target.detection_policy == "uncertainty_validated"
     assert strict_config.target.artifact_path == target.resolve()
     public_output = capsys.readouterr().out
     report_text = (tmp_path / "reports/preparation.json").read_text(encoding="utf-8")
