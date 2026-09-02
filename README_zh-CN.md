@@ -356,10 +356,13 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-### 10.3 实体板 preflight
+### 10.3 实体板与 fixed-provision preflight
 
 保持相机、workspace 和实体板固定，让同一实体板清晰出现在每台相机的 color 画面中。逐台
-采集严格的 60 帧 uncertainty-validated preflight；任一相机失败就停止，不要降低阈值：
+采集严格的 60 帧 uncertainty-validated target preflight，然后针对同一 config 和未改变的
+物理场景运行完整 fixed-provision viability preflight。Target preflight PASS 只证明 target-pose
+viability；它不保证 raw-stream、shared-pose、repeatability、split-half、native-depth 和最终
+provision gate 一定通过。任一项失败就停止，不要降低阈值：
 
 ```bash
 set -euo pipefail
@@ -371,12 +374,17 @@ for camera in camera_a camera_b camera_c; do
     --frames 60 --policy uncertainty_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
+  camera-rig provision preflight \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --report ".local/reports/${camera}-provision-preflight.json" \
+    --overlays ".local/overlays/${camera}-provision-preflight"
 done
 ```
 
 ### 10.4 Provision 与验证
 
-全部 preflight PASS 后，在相机、workspace 和实体板均未移动的情况下逐台 provision：
+每台相机的两类 preflight 全部 PASS 后，在相机、workspace 和实体板均未移动的情况下逐台
+provision：
 
 ```bash
 set -euo pipefail

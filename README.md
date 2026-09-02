@@ -390,11 +390,14 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-### 10.3 Physical-board preflight
+### 10.3 Physical-board and fixed-provision preflights
 
 Keep the cameras, workspace, and board fixed, with the same board clearly visible in
-each color image. Capture the strict 60-frame uncertainty-validated preflight for every camera;
-stop on any failure and do not relax thresholds:
+each color image. Capture the strict 60-frame uncertainty-validated target preflight, then run the
+full fixed-provision viability preflight against the same config and unchanged physical scene.
+Target preflight PASS proves only target-pose viability; it does not guarantee that raw-stream,
+shared-pose, repeatability, split-half, native-depth, and final provision gates will pass. Stop on
+any failure and do not relax thresholds:
 
 ```bash
 set -euo pipefail
@@ -406,12 +409,16 @@ for camera in camera_a camera_b camera_c; do
     --frames 60 --policy uncertainty_validated \
     --report ".local/reports/${camera}-preflight.json" \
     --overlays ".local/overlays/${camera}"
+  camera-rig provision preflight \
+    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
+    --report ".local/reports/${camera}-provision-preflight.json" \
+    --overlays ".local/overlays/${camera}-provision-preflight"
 done
 ```
 
 ### 10.4 Provision and validate
 
-After every preflight passes, provision each camera without moving any camera,
+After both preflights pass for every camera, provision each camera without moving any camera,
 workspace, or board:
 
 ```bash
