@@ -310,7 +310,7 @@ holdout、实体 acceptance 和 promotion，再返回第 12 节开始重建。
 `configs/fixed_provision.yaml`：
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --target "$PCB_TARGET_SPEC" \
@@ -320,14 +320,14 @@ python scripts/prepare_camera_rig_calibration.py \
   --report .local/reports/camera-rig-calibration-preparation.json
 ```
 
-若实际改用第 9.2 节新打印的 A4 板，只把 `PCB_TARGET_SPEC` 改成
-`.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`。
+本次 gate-closure 阶段固定使用已经放置好的第 9.2 节 A4 板。第 9.1 节的 500 x 700 路线
+保持 deferred，不得替换进下面这些命令。
 
 脚本会在相同的私有路径以原子方式替换所生成的 runtime 和 provision YAML。重跑前请先备份
 任何必须保留的本地修改。随后执行配置只读检查（除写入指定 report 外，不修改私有配置）：
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --target "$PCB_TARGET_SPEC" \
@@ -345,7 +345,7 @@ python scripts/prepare_camera_rig_calibration.py \
 
 ```bash
 set -euo pipefail
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig device inspect \
     --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
@@ -360,13 +360,14 @@ done
 
 保持相机、workspace 和实体板固定，让同一实体板清晰出现在每台相机的 color 画面中。逐台
 采集严格的 60 帧 uncertainty-validated target preflight，然后针对同一 config 和未改变的
-物理场景运行完整 fixed-provision viability preflight。Target preflight PASS 只证明 target-pose
+物理场景运行完整 fixed-provision viability preflight。Target preflight 的
+`NUMERICAL_PASS RELEASE_HOLD` 只证明 candidate target-pose
 viability；它不保证 raw-stream、shared-pose、repeatability、split-half、native-depth 和最终
 provision gate 一定通过。任一项失败就停止，不要降低阈值：
 
 ```bash
 set -euo pipefail
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
@@ -377,30 +378,32 @@ for camera in camera_a camera_b camera_c; do
   camera-rig provision preflight \
     --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
     --report ".local/reports/${camera}-provision-preflight.json" \
-    --overlays ".local/overlays/${camera}-provision-preflight"
+    --overlays ".local/overlays/${camera}-provision-preflight" \
+    --evidence-root ".local/validation/structured-gate/${camera}/repeat_01"
 done
 ```
 
-### 10.4 Provision 与验证
+### 10.4 Provision 与验证——HOLD 期间禁止
 
-每台相机的两类 preflight 全部 PASS 后，在相机、workspace 和实体板均未移动的情况下逐台
-provision：
+`uncertainty_validated_v1` 当前是 `HOLD`，不是 released preset。候选 preflight 可以完成数值
+评估，但会报告 `UNCERTAINTY_VALIDATED_PRESET_NOT_RELEASED` 与 `would_publish=false`。
+CameraRig 会拒绝为该 profile 发布 canonical CameraBundle/provision；不得运行
+`provision fixed`、覆盖任何现有相机 provision 或开始 multipose。当前 CameraRig 没有
+authenticated release loader；未来实现仍需 adequate preregistered split、通过未开启的
+holdout，并生成显式绑定 hash 的 `RELEASED` preset。
+独立命名的 `uncertainty_validated_v2` structured successor 同样为 `HOLD`；开发集未达到 5%
+false-reject/false-accept 上界。已保留的 repeat evidence 可交给
+`camera-rig calibration evaluate-model-counterfactuals`；其相对 baseline 的敏感度报告仅供分析，
+不会修改 provision artifact。
 
-```bash
-set -euo pipefail
-for camera in camera_a camera_b camera_c; do
-  camera-rig provision fixed \
-    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
-    --output ".local/camera_rig/${camera}/provision"
-  camera-rig provision validate \
-    --artifact ".local/camera_rig/${camera}/provision"
-done
-```
+当前真实 structured-gate 实验只使用已经固定的 A4 target。合成测试覆盖
+500×700-equivalent geometry，但 `REAL_500X700_STRUCTURED_GATE_VALIDATION=DEFERRED`。
 
 脚本生成的 provision YAML 使用指向所选 target artifact 的可移植相对路径、实际 target
 SHA-256 和 `target.detection_policy: uncertainty_validated`。Coverage 和 image span 仍用于
 操作员引导、target 尺寸诊断与视觉质量 warning，但它们不等于 pose accuracy。硬验收由 PnP
-物理有效性、条件 pose uncertainty、scaled observability、IPPE ambiguity、时间稳定性、
+物理有效性、灾难性 scalar 上限、cross-validated structured residual diagnostic、条件 pose
+uncertainty、scaled observability、IPPE ambiguity、时间稳定性、
 reprojection、split-half stability 与 native depth 共同决定。低 coverage 不保证 PASS；它
 只是不会再被 coverage 数值单独拒绝。Raw-stream validation 仍是更早且独立的 gate：
 discontinuity、timeout、timestamp/sync、dtype/shape 或 empty-stream failure 必须报告
@@ -1013,9 +1016,10 @@ N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。�
 11. 使用第 34 节命令 identify/register existing board。
 12. 把板精确 fixture 在 canonical workspace `pose_0`。
 13. 对每台相机运行 CameraRig `uncertainty_validated` target preflight。
-14. 在所有相机充分看到 `pose_0` 时创建逐相机 initial fixed provision。
-15. 验证每份 provision。
-16. 用第 11 节自动化脚本生成不含 deployment 的私有三相机 candidate rig configs。
+14. 使用互不相同的私有 `--evidence-root` 路径重复运行 CameraRig provision preflight。
+15. `uncertainty_validated_v1/v2` 仍为 HOLD 时在此停止；fixed provision 与第 16-32 步均为
+    `NOT_RUN`。
+16. 仅在另行完成 authenticated release 后，才用第 11 节自动化脚本生成不含 deployment 的私有三相机 candidate rig configs。
 17. 若 profile/model 有变化，运行 projection-parity smoke。
 18. 采集约 24-30 个 diverse multi-pose target pose。
 19. 预先指定最后约 4-6 个 pose 为 holdout。

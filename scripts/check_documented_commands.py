@@ -187,10 +187,14 @@ def main() -> int:
         checks[f"{readme.name}:command:provision_preflight"] = (
             "camera-rig provision preflight" in text
         )
+        target_preflight_pass_is_scoped = (
+            "NUMERICAL_PASS RELEASE_HOLD" in text
+            or "Target preflight PASS" in text
+        )
         checks[f"{readme.name}:semantics:target_preflight_not_provision_guarantee"] = (
-            "Target preflight PASS" in text and "does not guarantee" in text
+            target_preflight_pass_is_scoped and "does not guarantee" in text
             if readme.name == "README.md"
-            else "Target preflight PASS" in text and "不保证" in text
+            else target_preflight_pass_is_scoped and "不保证" in text
         )
         for relative in REQUIRED_PATHS:
             checks[f"{readme.name}:reference:{relative}"] = relative in text

@@ -341,7 +341,7 @@ artifact and generates `configs/runtime.yaml` plus `configs/fixed_provision.yaml
 every camera:
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --target "$PCB_TARGET_SPEC" \
@@ -351,9 +351,8 @@ python scripts/prepare_camera_rig_calibration.py \
   --report .local/reports/camera-rig-calibration-preparation.json
 ```
 
-If actually using the newly printed Section 9.2 A4 board, change only
-`PCB_TARGET_SPEC` to
-`.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json`.
+This gate-closure stage is pinned to the already positioned Section 9.2 A4 board. The
+Section 9.1 500 x 700 route is deferred and must not be substituted into these commands.
 
 The script always atomically replaces the generated runtime and provision YAML at the
 same private paths. Back up any local edits that must be retained before rerunning it.
@@ -361,7 +360,7 @@ Then run the config read-only check, which changes no private config and writes 
 the requested report:
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python scripts/prepare_camera_rig_calibration.py \
   --identity-map .local/camera_rig/camera_identity_map.json \
   --target "$PCB_TARGET_SPEC" \
@@ -379,7 +378,7 @@ fixed-provision inputs. Dry-run does not open a camera or write a provision arti
 
 ```bash
 set -euo pipefail
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig device inspect \
     --config ".local/camera_rig/${camera}/configs/runtime.yaml" --show-profiles
@@ -395,13 +394,14 @@ done
 Keep the cameras, workspace, and board fixed, with the same board clearly visible in
 each color image. Capture the strict 60-frame uncertainty-validated target preflight, then run the
 full fixed-provision viability preflight against the same config and unchanged physical scene.
-Target preflight PASS proves only target-pose viability; it does not guarantee that raw-stream,
+Target preflight `NUMERICAL_PASS RELEASE_HOLD` proves only candidate target-pose viability; it does
+not guarantee that raw-stream,
 shared-pose, repeatability, split-half, native-depth, and final provision gates will pass. Stop on
 any failure and do not relax thresholds:
 
 ```bash
 set -euo pipefail
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 for camera in camera_a camera_b camera_c; do
   camera-rig target preflight \
     --camera-config ".local/camera_rig/${camera}/configs/runtime.yaml" \
@@ -412,30 +412,35 @@ for camera in camera_a camera_b camera_c; do
   camera-rig provision preflight \
     --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
     --report ".local/reports/${camera}-provision-preflight.json" \
-    --overlays ".local/overlays/${camera}-provision-preflight"
+    --overlays ".local/overlays/${camera}-provision-preflight" \
+    --evidence-root ".local/validation/structured-gate/${camera}/repeat_01"
 done
 ```
 
-### 10.4 Provision and validate
+### 10.4 Provision and validate — blocked while HOLD
 
-After both preflights pass for every camera, provision each camera without moving any camera,
-workspace, or board:
+`uncertainty_validated_v1` is currently `HOLD`, not a released preset. Candidate preflight may
+complete its numerical evaluation, but it reports
+`UNCERTAINTY_VALIDATED_PRESET_NOT_RELEASED` and `would_publish=false`. CameraRig rejects canonical
+CameraBundle/provision publication for this profile. Do not run `provision fixed`, overwrite any
+existing camera provision, or begin multipose. Current CameraRig has no authenticated release
+loader; a future implementation would require an adequate preregistered split, passing unopened
+holdout, and an explicitly hash-bound `RELEASED` preset. The separately named
+`uncertainty_validated_v2` structured
+successor is also `HOLD`; development data did not meet the 5% false-reject/false-accept bounds.
+Retained repeat evidence may be passed to
+`camera-rig calibration evaluate-model-counterfactuals`; its baseline-relative sensitivity report
+is analysis-only and never modifies a provision artifact.
 
-```bash
-set -euo pipefail
-for camera in camera_a camera_b camera_c; do
-  camera-rig provision fixed \
-    --config ".local/camera_rig/${camera}/configs/fixed_provision.yaml" \
-    --output ".local/camera_rig/${camera}/provision"
-  camera-rig provision validate \
-    --artifact ".local/camera_rig/${camera}/provision"
-done
-```
+The current real structured-gate experiment uses the already fixed A4 target only. Synthetic
+testing includes 500×700-equivalent geometry, but
+`REAL_500X700_STRUCTURED_GATE_VALIDATION=DEFERRED`.
 
 Generated provision YAML uses a portable path to the selected target artifact, its
 actual SHA-256, and `target.detection_policy: uncertainty_validated`. Coverage and image
 span remain operator guidance, target-size diagnostics, and visual-quality warnings, but
-they are not pose accuracy. The hard decision uses physical PnP, conditional pose uncertainty,
+they are not pose accuracy. The candidate decision uses physical PnP, a catastrophic scalar
+ceiling, cross-validated structured residual diagnostics, conditional pose uncertainty,
 scaled observability, IPPE ambiguity, temporal stability, reprojection, split-half stability,
 and native depth. Low coverage does not guarantee PASS; it only cannot cause rejection by
 itself. Raw-stream validation remains an earlier independent gate: discontinuity, timeout,
@@ -1106,9 +1111,10 @@ Follow this order; keep cameras fixed after step 12 and stop on every failed gat
 11. Identify and register the existing board with the commands in section 34.
 12. Deliberately fixture the board at canonical workspace `pose_0`.
 13. Run CameraRig `uncertainty_validated` target preflight for every camera.
-14. Create initial fixed provisions for every camera while `pose_0` is sufficiently visible.
-15. Validate every provision.
-16. Use the Section 11 automation to generate private three-camera candidate rig configs
+14. Run repeated CameraRig provision preflights with distinct private `--evidence-root` paths.
+15. While `uncertainty_validated_v1/v2` remain HOLD, stop here: fixed provisions and steps 16-32
+    are `NOT_RUN`.
+16. Only after a separately authenticated release, use the Section 11 automation to generate private three-camera candidate rig configs
     without a deployment.
 17. Run projection-parity smoke if a profile/model changed.
 18. Capture about 24-30 diverse multi-pose target poses.
