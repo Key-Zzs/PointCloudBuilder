@@ -301,7 +301,7 @@ def validate_bootstrap_qualifications(
         return result
     if set(result) != camera_ids:
         raise ValueError("bootstrap qualification authority must cover every camera")
-    expected = {
+    common = {
         "schema_version",
         "qualification_scope",
         "production_authoritative",
@@ -311,24 +311,50 @@ def validate_bootstrap_qualifications(
         "metric_depth_receipt_sha256",
     }
     for camera_id, value in result.items():
+        schema_version = value.get("schema_version")
+        waived = schema_version == "camera-rig.calibration-authority.v2"
+        expected = (
+            common | {"machine_status", "waived_check", "waiver_fingerprint"}
+            if waived
+            else common
+        )
         if set(value) != expected:
             raise ValueError(
                 f"{camera_id}: bootstrap qualification authority is incomplete"
             )
         if (
-            value.get("schema_version") != "camera-rig.calibration-authority.v1"
+            schema_version
+            not in {
+                "camera-rig.calibration-authority.v1",
+                "camera-rig.calibration-authority.v2",
+            }
             or value.get("qualification_scope") != "bootstrap_only"
             or value.get("production_authoritative") is not False
-            or value.get("qualification_state") != "BOOTSTRAP_QUALIFIED"
+            or value.get("qualification_state")
+            != (
+                "BOOTSTRAP_QUALIFIED_WITH_MANUAL_DEPTH_WAIVER"
+                if waived
+                else "BOOTSTRAP_QUALIFIED"
+            )
         ):
             raise ValueError(
                 f"{camera_id}: bootstrap qualification authority is invalid"
             )
-        for name in (
+        if waived and (
+            value.get("machine_status") != "FAIL"
+            or value.get("waived_check") != "metric_native_depth_integrity"
+        ):
+            raise ValueError(
+                f"{camera_id}: bootstrap qualification waiver authority is invalid"
+            )
+        digest_names = [
             "qualification_fingerprint",
             "target_metrology_sha256",
             "metric_depth_receipt_sha256",
-        ):
+        ]
+        if waived:
+            digest_names.append("waiver_fingerprint")
+        for name in digest_names:
             if (
                 not isinstance(value.get(name), str)
                 or _SHA256.fullmatch(value[name]) is None

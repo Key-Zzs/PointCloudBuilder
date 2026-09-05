@@ -35,6 +35,7 @@ from pointcloud_builder.rig_calibration.physical_acceptance import (
     REAL_DUAL_MULTIPOSE_V1_THRESHOLDS,
 )
 from pointcloud_builder.rig_calibration.solver import solve_rig_calibration
+from pointcloud_builder.rig_calibration.types import validate_bootstrap_qualifications
 from pointcloud_builder.rig_calibration.validation import (
     validate_rig_calibration_solution,
 )
@@ -568,6 +569,36 @@ def test_deployment_rejects_malformed_bootstrap_after_rehash(tmp_path: Path) -> 
     output.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="bootstrap qualification authority"):
         load_rig_calibration_deployment(output)
+
+
+def test_bootstrap_manual_depth_waiver_authority_is_explicit_and_narrow() -> None:
+    authority = {
+        "schema_version": "camera-rig.calibration-authority.v2",
+        "qualification_scope": "bootstrap_only",
+        "production_authoritative": False,
+        "qualification_state": "BOOTSTRAP_QUALIFIED_WITH_MANUAL_DEPTH_WAIVER",
+        "qualification_fingerprint": "a" * 64,
+        "target_metrology_sha256": "b" * 64,
+        "metric_depth_receipt_sha256": "c" * 64,
+        "machine_status": "FAIL",
+        "waived_check": "metric_native_depth_integrity",
+        "waiver_fingerprint": "d" * 64,
+    }
+    values = {
+        camera_id: dict(authority) for camera_id in ("camera_a", "camera_b", "camera_c")
+    }
+    assert (
+        validate_bootstrap_qualifications(
+            values, camera_ids={"camera_a", "camera_b", "camera_c"}
+        )
+        == values
+    )
+    forged = deepcopy(values)
+    forged["camera_b"]["waived_check"] = "raw_stream_quality"
+    with pytest.raises(ValueError, match="waiver authority"):
+        validate_bootstrap_qualifications(
+            forged, camera_ids={"camera_a", "camera_b", "camera_c"}
+        )
 
 
 def test_promotion_rejects_forged_intrinsic_camera_stub(tmp_path: Path) -> None:

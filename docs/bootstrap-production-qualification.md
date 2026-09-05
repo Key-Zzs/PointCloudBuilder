@@ -9,6 +9,12 @@ retains factory K/D, internal stream extrinsics, depth scale, device identity, a
 single-pose workspace initializer. Its authority says `bootstrap_only` and
 `production_authoritative=false`.
 
+PCB also accepts the explicit
+`BOOTSTRAP_QUALIFIED_WITH_MANUAL_DEPTH_WAIVER` bootstrap authority. That authority must expose
+`machine_status=FAIL`, identify `metric_native_depth_integrity` as the only waived check, and carry
+a waiver fingerprint. It changes neither the captured machine evidence nor any production gate;
+holdout, intrinsic health, joint validation, and physical 3-D acceptance still fail closed.
+
 `PRODUCTION_QUALIFIED` belongs only to a PCB rig deployment. Before promotion, PCB
 requires the exact three bootstrap authorities, a preregistered 30-pose capture with
 six untouched holdouts, passed per-camera factory-vs-diagnostic-refit intrinsic health,

@@ -8,6 +8,11 @@ depth 的平面、法向和尺度证据。Bundle 保留 factory K/D、内部 str
 设备身份和单姿态 workspace initializer；其权限必须是 `bootstrap_only` 且
 `production_authoritative=false`。
 
+PCB 也接受显式的 `BOOTSTRAP_QUALIFIED_WITH_MANUAL_DEPTH_WAIVER` bootstrap authority。该权限
+必须公开 `machine_status=FAIL`，把 `metric_native_depth_integrity` 标成唯一豁免项，并携带
+waiver fingerprint。它既不修改机器采集证据，也不改变任何 production 门禁；holdout、
+intrinsic health、联合验证和三维物理验收仍然 fail closed。
+
 `PRODUCTION_QUALIFIED` 只属于 PCB rig deployment。Promotion 前必须精确绑定三台相机的
 bootstrap authority、预注册的 30 姿态（6 个未参与训练的 holdout）、每相机
 factory-vs-diagnostic-refit intrinsic health PASS、联合求解与 holdout PASS，以及全部必需
