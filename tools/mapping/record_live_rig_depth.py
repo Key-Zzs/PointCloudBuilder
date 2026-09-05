@@ -12,6 +12,7 @@ from pointcloud_builder.mapping.provenance import rig_backend_provenance
 from pointcloud_builder.mapping.recording import RigDepthRecordingWriter
 from pointcloud_builder.rig import build_live_rig, load_rig_config
 from pointcloud_builder.rig_calibration.deployment import (
+    configured_rig_calibration_provenance,
     runtime_rig_calibration_provenance,
 )
 
@@ -24,6 +25,11 @@ def main() -> None:
         "--depth-source", choices=("native", "ffs_stereo"), required=True
     )
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--candidate-physical-acceptance",
+        action="store_true",
+        help="Allow bootstrap geometry only for the pre-promotion physical acceptance recording.",
+    )
     args = parser.parse_args()
     if args.matched_sets <= 0:
         raise ValueError("--matched-sets must be positive")
@@ -35,9 +41,16 @@ def main() -> None:
             f"rig depth modes {sorted(actual_sources)} differ from --depth-source"
         )
     pipeline = build_live_rig(config, device="cuda")
-    calibration_provenance = runtime_rig_calibration_provenance(
-        pipeline.processor.runtimes
-    )
+    if args.candidate_physical_acceptance:
+        calibration_provenance = configured_rig_calibration_provenance(config)
+        if calibration_provenance["production_applied"] is not False:
+            raise ValueError(
+                "candidate physical recording requires undeployed bootstrap geometry"
+            )
+    else:
+        calibration_provenance = runtime_rig_calibration_provenance(
+            pipeline.processor.runtimes
+        )
     backend_provenance = (
         rig_backend_provenance(config) if args.depth_source == "ffs_stereo" else None
     )
@@ -45,6 +58,11 @@ def main() -> None:
         output,
         depth_source=args.depth_source,
         backend_provenance=backend_provenance,
+        calibration_purpose=(
+            "physical_acceptance_candidate"
+            if args.candidate_physical_acceptance
+            else "production"
+        ),
     )
     started = time.perf_counter()
     try:

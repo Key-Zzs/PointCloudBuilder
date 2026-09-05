@@ -142,6 +142,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     rig_config = load_rig_config(args.rig_config)
     live_calibration_provenance = configured_rig_calibration_provenance(rig_config)
+    if live_calibration_provenance["production_applied"] is not True:
+        raise ValueError(
+            "live TSDF production requires a validated multi-pose deployment"
+        )
     tsdf_config = load_tsdf_config(args.tsdf_config)
     baseline = (
         None

@@ -52,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output-dir", default=".local/configs")
     parser.add_argument("--expected-camera-count", type=int, default=3)
+    parser.add_argument(
+        "--rig-calibration",
+        help="Validated PRODUCTION_QUALIFIED deployment to install in every live profile.",
+    )
     args = parser.parse_args(argv)
 
     identity_path = _private_path(args.identity_map, label="identity map")
@@ -64,6 +68,18 @@ def main(argv: list[str] | None = None) -> int:
         camera_rig_root=camera_rig_root,
         ffs_config=ffs_config,
     )
+    rig_calibration = (
+        _private_path(args.rig_calibration, label="rig calibration deployment")
+        if args.rig_calibration is not None
+        else None
+    )
+    if rig_calibration is not None:
+        validate_production_deployment(
+            rig_calibration,
+            camera_names=camera_names,
+            workspace_frame=workspace_frame,
+            camera_rig_root=camera_rig_root,
+        )
 
     mapping = _load_yaml(MAPPING_TEMPLATE)
     mapping["expected_plane"]["frame"] = workspace_frame
@@ -75,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         workspace_frame=workspace_frame,
         mapping=mapping,
+        rig_calibration=rig_calibration,
     )
     statuses = write_configs(configs, output_dir=output_dir)
     print(
@@ -85,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
                 "camera_names": camera_names,
                 "workspace_frame": workspace_frame,
                 "files": statuses,
-                "rig_calibration": "omitted_until_validated_multipose_promotion",
+                "rig_calibration": (
+                    "PRODUCTION_QUALIFIED"
+                    if rig_calibration is not None
+                    else "omitted_for_bootstrap_candidate_only"
+                ),
             },
             indent=2,
             sort_keys=True,
@@ -134,10 +155,17 @@ def validate_private_inputs(
         provision_path = camera_rig_root / camera_name / "provision"
         runtime = load_camera_config(runtime_path)
         bundle = load_provisioned_camera_bundle(provision_path)
-        if runtime.camera.name != camera_name or bundle.device.camera_name != camera_name:
-            raise ValueError(f"{camera_name}: runtime/provision logical identity mismatch")
+        if (
+            runtime.camera.name != camera_name
+            or bundle.device.camera_name != camera_name
+        ):
+            raise ValueError(
+                f"{camera_name}: runtime/provision logical identity mismatch"
+            )
         if runtime.camera.serial != bundle.device.serial:
-            raise ValueError(f"{camera_name}: runtime/provision serial identity mismatch")
+            raise ValueError(
+                f"{camera_name}: runtime/provision serial identity mismatch"
+            )
         if bundle.status != "passed" or bundle.fixed_mount_calibration is None:
             raise ValueError(f"{camera_name}: provision bundle has not passed")
         workspace_frames.add(bundle.fixed_mount_calibration.parent_frame)
@@ -154,6 +182,7 @@ def render_configs(
     output_dir: Path,
     workspace_frame: str,
     mapping: dict[str, Any],
+    rig_calibration: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     validate_mapping(mapping, workspace_frame)
     rendered = {
@@ -186,9 +215,46 @@ def render_configs(
         config["output_frame"] = workspace_frame
         config["cameras"] = cameras
         config["timing"]["reference_camera"] = camera_names[0]
-        config.pop("rig_calibration", None)
+        if rig_calibration is None:
+            config.pop("rig_calibration", None)
+        else:
+            config["rig_calibration"] = {
+                "type": "validated_multipose",
+                "artifact": _portable_path(rig_calibration, output_dir),
+            }
         rendered[output_name] = config
     return rendered
+
+
+def validate_production_deployment(
+    path: Path,
+    *,
+    camera_names: list[str],
+    workspace_frame: str,
+    camera_rig_root: Path,
+) -> None:
+    from camera_rig.api import load_provisioned_camera_bundle
+
+    from pointcloud_builder.rig_calibration.deployment import (
+        camera_bundle_artifact_sha256,
+        load_rig_calibration_deployment,
+    )
+
+    deployment = load_rig_calibration_deployment(path)
+    if list(deployment.camera_ids) != camera_names:
+        raise ValueError("deployment camera set differs from private identity map")
+    if deployment.workspace_frame != workspace_frame:
+        raise ValueError("deployment workspace differs from bootstrap provisions")
+    for camera_name in camera_names:
+        provision = camera_rig_root / camera_name / "provision"
+        bundle = load_provisioned_camera_bundle(provision)
+        expected = deployment.per_camera[camera_name]
+        if expected["camera_identity"] != bundle.device.to_dict():
+            raise ValueError(f"{camera_name}: deployment camera identity mismatch")
+        if expected["camera_bundle_sha256"] != camera_bundle_artifact_sha256(
+            provision, bundle=bundle
+        ):
+            raise ValueError(f"{camera_name}: deployment CameraBundle hash mismatch")
 
 
 def write_configs(
@@ -213,7 +279,9 @@ def write_configs(
             elif name.startswith("tsdf_"):
                 load_tsdf_config(temporary)
             else:
-                validate_mapping(_load_yaml(temporary), configs[name]["expected_plane"]["frame"])
+                validate_mapping(
+                    _load_yaml(temporary), configs[name]["expected_plane"]["frame"]
+                )
             staged.append((temporary, destination))
             statuses[name] = "written"
         for temporary, destination in staged:
@@ -252,7 +320,9 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _portable_path(path: Path, declaring_dir: Path) -> str:
-    return Path(os.path.relpath(path.resolve(), start=declaring_dir.resolve())).as_posix()
+    return Path(
+        os.path.relpath(path.resolve(), start=declaring_dir.resolve())
+    ).as_posix()
 
 
 def _private_path(value: str, *, label: str) -> Path:

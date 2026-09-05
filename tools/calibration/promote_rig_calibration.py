@@ -14,6 +14,7 @@ def main() -> None:
     parser.add_argument("--solution", required=True)
     parser.add_argument("--validation", required=True)
     parser.add_argument("--physical-acceptance", required=True)
+    parser.add_argument("--intrinsic-health", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     artifact = promote_rig_calibration(
@@ -21,15 +22,14 @@ def main() -> None:
         args.validation,
         args.physical_acceptance,
         args.output,
+        intrinsic_health_path=args.intrinsic_health,
     )
     print(
         json.dumps(
             {
                 "schema_version": artifact["schema_version"],
                 "status": artifact["status"],
-                "rig_calibration_fingerprint": artifact[
-                    "rig_calibration_fingerprint"
-                ],
+                "rig_calibration_fingerprint": artifact["rig_calibration_fingerprint"],
                 "camera_set": sorted(artifact["cameras"]),
                 "production_applied": True,
             },

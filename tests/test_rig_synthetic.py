@@ -88,7 +88,9 @@ def test_full_pipeline_supports_one_two_three_and_four_analytic_cameras() -> Non
         names = all_names[:count]
         result = build_synthetic_rig(parse_rig_config(_raw(names)), scene).build(1)
         assert result.canonical_camera_order == tuple(sorted(names))
-        assert [item.camera_name for item in result.per_camera_workspace_clouds] == sorted(names)
+        assert [
+            item.camera_name for item in result.per_camera_workspace_clouds
+        ] == sorted(names)
         assert result.sampled.points.shape == (1024, 3)
         assert result.sampled.metadata["pre_sampling_count"] == sum(
             item.cloud.points.shape[0] for item in result.per_camera_workspace_clouds
@@ -118,12 +120,37 @@ def test_three_camera_deployed_multipose_runtime_and_provenance(tmp_path) -> Non
         "target_identity": target_identity,
         "target_identity_sha256": canonical_json_sha256(target_identity),
         "solution_fingerprint": "a" * 64,
+        "solution_sha256": "5" * 64,
+        "source_observations_sha256": "2" * 64,
+        "pose_plan_sha256": "3" * 64,
+        "pose_plan_summary": {},
         "validation_sha256": "b" * 64,
         "physical_acceptance_sha256": "c" * 64,
+        "intrinsic_health_sha256": "d" * 64,
+        "production_qualification_state": "PRODUCTION_QUALIFIED",
+        "bootstrap_qualifications": {
+            name: {
+                "schema_version": "camera-rig.calibration-authority.v1",
+                "qualification_scope": "bootstrap_only",
+                "production_authoritative": False,
+                "qualification_state": "BOOTSTRAP_QUALIFIED",
+                "qualification_fingerprint": "e" * 64,
+                "target_metrology_sha256": "f" * 64,
+                "metric_depth_receipt_sha256": "1" * 64,
+            }
+            for name in names
+        },
         "source_receipts": {
-            "solution": {},
-            "validation": {},
-            "physical_acceptance": {},
+            "solution": {"path": "synthetic://solution", "sha256": "5" * 64},
+            "validation": {"path": "synthetic://validation", "sha256": "b" * 64},
+            "physical_acceptance": {
+                "path": "synthetic://physical-acceptance",
+                "sha256": "c" * 64,
+            },
+            "intrinsic_health": {
+                "path": "synthetic://intrinsic-health",
+                "sha256": "d" * 64,
+            },
         },
         "cameras": cameras,
         "creation_metadata": {"synthetic": True},
@@ -140,13 +167,15 @@ def test_three_camera_deployed_multipose_runtime_and_provenance(tmp_path) -> Non
     _assert_scene_geometry(result)
     for observation in result.depth_frame_set.observations:
         assert observation.calibration_mode == "validated_multipose_deployment"
-        assert observation.rig_calibration_fingerprint == artifact[
-            "rig_calibration_fingerprint"
-        ]
+        assert (
+            observation.rig_calibration_fingerprint
+            == artifact["rig_calibration_fingerprint"]
+        )
         assert observation.solution_fingerprint == "a" * 64
-        assert observation.camera_bundle_sha256 == cameras[observation.camera_name][
-            "camera_bundle_sha256"
-        ]
+        assert (
+            observation.camera_bundle_sha256
+            == cameras[observation.camera_name]["camera_bundle_sha256"]
+        )
     assert all(
         value["production_applied"] is True
         for value in result.per_camera_provenance.values()
@@ -164,9 +193,7 @@ def test_analytic_renderer_produces_pose_specific_depth_images() -> None:
 def test_missing_bundle_and_output_frame_mismatch_fail_closed() -> None:
     scene = create_synthetic_scene(("camera_a",))
     with pytest.raises(ValueError, match="missing bundle"):
-        build_synthetic_rig(
-            parse_rig_config(_raw(("camera_a", "camera_b"))), scene
-        )
+        build_synthetic_rig(parse_rig_config(_raw(("camera_a", "camera_b"))), scene)
     raw = _raw(("camera_a",))
     raw["output_frame"] = "world"
     with pytest.raises(ValueError, match="output frame differs"):
@@ -188,7 +215,9 @@ def test_yaml_camera_order_does_not_change_identity_or_concatenated_output() -> 
         reverse.sampled.points,
     )
     for left, right in zip(
-        forward.per_camera_workspace_clouds, reverse.per_camera_workspace_clouds, strict=True
+        forward.per_camera_workspace_clouds,
+        reverse.per_camera_workspace_clouds,
+        strict=True,
     ):
         assert left.camera_name == right.camera_name
         assert torch.equal(left.cloud.points, right.cloud.points)

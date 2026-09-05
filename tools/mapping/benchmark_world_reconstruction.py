@@ -54,9 +54,7 @@ def main() -> None:
     if args.input_mode == "replay":
         factories = {
             name: (
-                lambda selected=selected: build_replay_rig(
-                    selected, device=args.device
-                )
+                lambda selected=selected: build_replay_rig(selected, device=args.device)
             )
             for name, selected in scenario_configs.items()
         }
@@ -93,6 +91,11 @@ def main() -> None:
         warmup=min(args.warmup, len(indices)),
     )
     backend_binding = _production_backend_binding(config)
+    rig_calibration = configured_rig_calibration_provenance(config)
+    if rig_calibration["production_applied"] is not True:
+        raise ValueError(
+            "production benchmark requires a validated multi-pose deployment"
+        )
     report.update(
         {
             "rig_schema_version": config.schema_version,
@@ -101,7 +104,7 @@ def main() -> None:
             "depth_sources": {
                 camera.name: camera.depth.mode for camera in config.enabled_cameras
             },
-            "rig_calibration": configured_rig_calibration_provenance(config),
+            "rig_calibration": rig_calibration,
             "production_backend_binding": backend_binding,
             "passed": bool(
                 report["same_inputs"]
@@ -154,7 +157,9 @@ def _capture_frozen_live_inputs(config, device: str, count: int):
             started = time.perf_counter()
             frame_set = live.acquisition.next_frame_set()
             if frame_set is None:
-                raise TimeoutError("live benchmark did not receive a complete frame set")
+                raise TimeoutError(
+                    "live benchmark did not receive a complete frame set"
+                )
             match_wait_ms.append((time.perf_counter() - started) * 1000.0)
             frame_sets.append(frame_set)
     finally:

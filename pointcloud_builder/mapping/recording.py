@@ -37,6 +37,7 @@ class RigDepthRecordingWriter:
         *,
         depth_source: str,
         backend_provenance: dict[str, dict[str, object]] | None = None,
+        calibration_purpose: str = "production",
     ) -> None:
         if depth_source not in {"native", "ffs_stereo"}:
             raise ValueError("unsupported rig-depth recording source")
@@ -51,6 +52,9 @@ class RigDepthRecordingWriter:
         (self._temporary / "frames").mkdir()
         (self._temporary / "reports").mkdir()
         self.depth_source = depth_source
+        if calibration_purpose not in {"production", "physical_acceptance_candidate"}:
+            raise ValueError("unsupported recording calibration purpose")
+        self.calibration_purpose = calibration_purpose
         self.backend_provenance = dict(backend_provenance or {})
         if depth_source == "ffs_stereo" and not self.backend_provenance:
             raise ValueError("FFS recording requires backend provenance")
@@ -162,7 +166,9 @@ class RigDepthRecordingWriter:
         solutions = {
             value["solution_fingerprint"] for value in self._calibrations.values()
         }
-        if any(len(values) != 1 for values in (modes, schemas, fingerprints, solutions)):
+        if any(
+            len(values) != 1 for values in (modes, schemas, fingerprints, solutions)
+        ):
             raise ValueError("recording cameras do not share one rig calibration")
         calibration_provenance = {
             "calibration_mode": next(iter(modes)),
@@ -173,8 +179,15 @@ class RigDepthRecordingWriter:
                 name: self._calibrations[name]["camera_bundle_sha256"]
                 for name in camera_names
             },
-            "production_applied": True,
+            "production_applied": next(iter(modes)) == "validated_multipose_deployment",
         }
+        if (
+            self.calibration_purpose == "production"
+            and calibration_provenance["production_applied"] is not True
+        ):
+            raise ValueError(
+                "production recording requires a validated multi-pose deployment"
+            )
         manifest = {
             "schema_version": _SCHEMA,
             "depth_source": self.depth_source,
@@ -187,6 +200,7 @@ class RigDepthRecordingWriter:
             "calibrations": [f"calibration/{name}.json" for name in camera_names],
             "backend_provenance": backend_provenance,
             "rig_calibration": calibration_provenance,
+            "calibration_purpose": self.calibration_purpose,
         }
         _write_json(self._temporary / "manifest.json", manifest)
         _write_json(self._temporary / "reports" / "recording.json", report or {})
@@ -251,7 +265,9 @@ def validate_rig_depth_recording(root: str | Path) -> dict[str, Any]:
             raise ValueError("native recording cannot contain FFS backend provenance")
     if schema == _SCHEMA:
         _validate_rig_calibration_provenance(
-            manifest.get("rig_calibration"), camera_names
+            manifest.get("rig_calibration"),
+            camera_names,
+            calibration_purpose=manifest.get("calibration_purpose"),
         )
     indices = [
         item.get("matched_set_index") for item in matched_sets if isinstance(item, dict)
@@ -367,9 +383,7 @@ def iter_rig_depth_recording(
                     calibration_mode=calibration.get(
                         "calibration_mode", "fixed_provision"
                     ),
-                    rig_calibration_schema=calibration.get(
-                        "rig_calibration_schema"
-                    ),
+                    rig_calibration_schema=calibration.get("rig_calibration_schema"),
                     rig_calibration_fingerprint=calibration.get(
                         "rig_calibration_fingerprint"
                     ),
@@ -381,9 +395,7 @@ def iter_rig_depth_recording(
             matched_set_index=item["matched_set_index"],
             host_timestamp_ns=item["host_timestamp_ns"],
             maximum_skew_ms=item["maximum_skew_ms"],
-            raw_to_depth_frame_set_ms=float(
-                item.get("raw_to_depth_frame_set_ms", 0.0)
-            ),
+            raw_to_depth_frame_set_ms=float(item.get("raw_to_depth_frame_set_ms", 0.0)),
             observations=tuple(observations),
         )
 
@@ -396,7 +408,10 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _validate_rig_calibration_provenance(
-    value: object, camera_names: list[str]
+    value: object,
+    camera_names: list[str],
+    *,
+    calibration_purpose: object,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("recording rig calibration provenance must be a mapping")
@@ -408,13 +423,29 @@ def _validate_rig_calibration_provenance(
         "camera_bundle_hashes",
         "production_applied",
     }
-    if set(value) != expected or value.get("production_applied") is not True:
+    if set(value) != expected:
         raise ValueError("recording rig calibration provenance field mismatch")
+    if calibration_purpose not in {"production", "physical_acceptance_candidate"}:
+        raise ValueError("recording calibration purpose is invalid")
+    if (
+        calibration_purpose == "production"
+        and value.get("production_applied") is not True
+    ):
+        raise ValueError("production recording requires deployed calibration")
+    if (
+        calibration_purpose == "physical_acceptance_candidate"
+        and value.get("production_applied") is not False
+    ):
+        raise ValueError(
+            "candidate physical recording must not claim production calibration"
+        )
     hashes = value.get("camera_bundle_hashes")
     if not isinstance(hashes, dict) or sorted(hashes) != camera_names:
         raise ValueError("recording CameraBundle hash set mismatch")
     mode = value.get("calibration_mode")
     if mode == "fixed_provision":
+        if value.get("production_applied") is not False:
+            raise ValueError("fixed provision is bootstrap-only, not production")
         if any(
             value.get(name) is not None
             for name in (
@@ -425,6 +456,8 @@ def _validate_rig_calibration_provenance(
         ):
             raise ValueError("fixed recording cannot claim deployed calibration")
     elif mode == "validated_multipose_deployment":
+        if value.get("production_applied") is not True:
+            raise ValueError("deployed recording must claim production application")
         if value.get("rig_calibration_schema") != (
             "pointcloud-builder.rig-calibration-deployment.v1"
         ):

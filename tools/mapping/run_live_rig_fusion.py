@@ -6,10 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import resource
 import statistics
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,6 +26,9 @@ from pointcloud_builder.fusion import (
     voxel_centroids,
 )
 from pointcloud_builder.rig import build_live_rig, load_rig_config
+from pointcloud_builder.rig_calibration.deployment import (
+    runtime_rig_calibration_provenance,
+)
 from pointcloud_builder.visualization import save_ascii_ply
 from pointcloud_builder.workspace import ExpectedPlaneRegion
 
@@ -73,6 +76,9 @@ def main() -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     pipeline = build_live_rig(config, device="cuda")
+    calibration_provenance = runtime_rig_calibration_provenance(
+        pipeline.processor.runtimes
+    )
     viewer = None
     viewer_error: str | None = None
     viewer_overheads_ms: list[float] = []
@@ -93,7 +99,7 @@ def main() -> None:
                 )
             )
             viewer.start()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - viewer failure must not lose acquisition
             viewer_error = f"{type(error).__name__}: {str(error)[:500]}"
             viewer = None
     board_records: dict[str, list[dict[str, Any]]] = {}
@@ -156,7 +162,7 @@ def main() -> None:
                         raise RuntimeError(
                             status.child_error or "Rerun viewer process is not running"
                         )
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 - preserve acquisition evidence
                     viewer_error = f"{type(error).__name__}: {str(error)[:500]}"
                     viewer_telemetry = vars(viewer.close(timeout_s=5.0))
                     viewer = None
@@ -284,6 +290,7 @@ def main() -> None:
         "snapshot_only": True,
         "persistent_mapping": False,
         "rig_config_sha256": _sha256_file(args.rig_config),
+        "rig_calibration": calibration_provenance,
         "matched_sets": args.matched_sets,
         "duration_s": duration_s,
         "throughput_fps": throughput_fps,

@@ -90,7 +90,11 @@ def test_same_pass_depth_contract_preserves_native_rays_and_pose() -> None:
 def test_recording_is_atomic_checksums_exact_and_replayable(tmp_path: Path) -> None:
     output = tmp_path / "recording"
     frames = _depth_frame_sets(2)
-    writer = RigDepthRecordingWriter(output, depth_source="native")
+    writer = RigDepthRecordingWriter(
+        output,
+        depth_source="native",
+        calibration_purpose="physical_acceptance_candidate",
+    )
     for frame in frames:
         writer.append(frame)
     writer.finalize(report={"synthetic": True})
@@ -113,7 +117,11 @@ def test_recording_is_atomic_checksums_exact_and_replayable(tmp_path: Path) -> N
 
 def test_recording_rejects_tamper_and_cross_file_forgery(tmp_path: Path) -> None:
     output = tmp_path / "recording"
-    writer = RigDepthRecordingWriter(output, depth_source="native")
+    writer = RigDepthRecordingWriter(
+        output,
+        depth_source="native",
+        calibration_purpose="physical_acceptance_candidate",
+    )
     writer.append(_depth_frame_sets(1)[0])
     writer.finalize()
     meta = output / "frames/set_000000/camera_a_meta.json"
@@ -153,22 +161,18 @@ def test_three_camera_deployed_recording_write_validate_and_replay(
     assert manifest["camera_names"] == list(names)
     assert manifest["rig_calibration"] == {
         "calibration_mode": "validated_multipose_deployment",
-        "rig_calibration_schema": (
-            "pointcloud-builder.rig-calibration-deployment.v1"
-        ),
+        "rig_calibration_schema": ("pointcloud-builder.rig-calibration-deployment.v1"),
         "rig_calibration_fingerprint": "a" * 64,
         "solution_fingerprint": "b" * 64,
         "camera_bundle_hashes": {
-            name: chr(ord("c") + index) * 64
-            for index, name in enumerate(names)
+            name: chr(ord("c") + index) * 64 for index, name in enumerate(names)
         },
         "production_applied": True,
     }
     replayed = next(iter_rig_depth_recording(output))
     assert [item.camera_name for item in replayed.observations] == list(names)
     assert all(
-        item.rig_calibration_fingerprint == "a" * 64
-        for item in replayed.observations
+        item.rig_calibration_fingerprint == "a" * 64 for item in replayed.observations
     )
 
 
