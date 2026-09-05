@@ -145,18 +145,30 @@ The operator workflow captures stationary matched sets:
 ```bash
 python tools/calibration/capture_multicamera_target_poses.py \
   --rig-config .local/configs/live_rig.yaml \
-  --target .local/target/target_spec.json \
-  --pose-count 24 \
-  --holdout-pose-count 4 \
+  --target .local/camera_rig/shared_target/charuco_a4_v1/target_spec.json \
+  --pose-count 30 \
+  --holdout-pose-count 6 \
   --min-corners-per-observation 6 \
   --output .local/calibration/observations.json
 ```
 
-Use 15 to 30 poses spanning center, left, right, top, bottom, near, far, positive and
-negative yaw, positive and negative pitch, and combined rotations. Holdout poses are
-predeclared as the final N captures and are never used by the optimizer. For each
-prompt: move the board, stop it, then capture. Connected partial visibility is
-expected and supported.
+The production route is frozen at 30 poses with six holdouts spanning center, left,
+right, top, bottom, near, far, positive/negative yaw and pitch, and combined rotations.
+The pose-plan receipt is written before hardware opens. Holdouts are never used by the
+optimizer. For each prompt: move the board, stop it, then capture; never move a camera.
+
+Every consumed CameraBundle must carry `BOOTSTRAP_QUALIFIED`, `bootstrap_only`, and
+`production_authoritative=false`. Evaluate immutable factory K/D against a constrained
+diagnostic refit using solve poses and the frozen holdout poses:
+
+```bash
+python tools/calibration/evaluate_intrinsic_health.py \
+  --observations .local/calibration/observations.json \
+  --output .local/calibration/intrinsic_health.json
+```
+
+`SUSPECT` and `INSUFFICIENT_EVIDENCE` both block promotion. The diagnostic refit is
+never written into a CameraBundle.
 
 ## Synthetic acceptance and real status
 

@@ -55,6 +55,7 @@ USB_FLAGS = ("--identity-map", "--expected-count", "--report")
 CAMERA_RIG_PREPARATION_FLAGS = (
     "--identity-map",
     "--target",
+    "--target-metrology",
     "--asset-root",
     "--expected-camera-count",
     "--runtime-only",
@@ -73,11 +74,13 @@ LIVE_RECONSTRUCTION_CONFIG_FLAGS = (
     "--ffs-config",
     "--output-dir",
     "--expected-camera-count",
+    "--rig-calibration",
 )
 PROMOTION_FLAGS = (
     "--solution",
     "--validation",
     "--physical-acceptance",
+    "--intrinsic-health",
     "--output",
 )
 NCAMERA_FLAGS = (

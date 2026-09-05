@@ -360,9 +360,9 @@ done
 
 保持相机、workspace 和实体板固定，让同一实体板清晰出现在每台相机的 color 画面中。逐台
 采集严格的 60 帧 uncertainty-validated target preflight，然后针对同一 config 和未改变的
-物理场景运行完整 fixed-provision viability preflight。Target preflight 的
-`NUMERICAL_PASS RELEASE_HOLD` 只证明 candidate target-pose
-viability；它不保证 raw-stream、shared-pose、repeatability、split-half、native-depth 和最终
+物理场景运行完整 fixed-provision viability preflight。Target preflight 的 numerical PASS
+只证明 candidate target-pose viability；它不保证 metrology、raw-stream、shared-pose、
+repeatability、split-half、native-depth 和最终
 provision gate 一定通过。任一项失败就停止，不要降低阈值：
 
 ```bash
@@ -383,33 +383,32 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-### 10.4 Provision 与验证——HOLD 期间禁止
+### 10.4 目标板实测、bootstrap provision 与验证
 
-`uncertainty_validated_v1` 当前是 `HOLD`，不是 released preset。候选 preflight 可以完成数值
-评估，但会报告 `UNCERTAINTY_VALIDATED_PRESET_NOT_RELEASED` 与 `would_publish=false`。
-CameraRig 会拒绝为该 profile 发布 canonical CameraBundle/provision；不得运行
-`provision fixed`、覆盖任何现有相机 provision 或开始 multipose。当前 CameraRig 没有
-authenticated release loader；未来实现仍需 adequate preregistered split、通过未开启的
-holdout，并生成显式绑定 hash 的 `RELEASED` preset。
-独立命名的 `uncertainty_validated_v2` structured successor 同样为 `HOLD`；开发集未达到 5%
-false-reject/false-accept 上界。已保留的 repeat evidence 可交给
-`camera-rig calibration evaluate-model-counterfactuals`；其相对 baseline 的敏感度报告仅供分析，
-不会修改 provision artifact。
+A4 实体板在 provision 前必须有真实、重复测量的 metrology 回执。允许的相对尺度误差由下游
+平移误差预算、最大工作距离和测量不确定度推导；回执记录 nominal/measured 长基线、水平与
+垂直尺度、各向异性以及 PASS/FAIL。禁止从图像反推实体尺寸。
+在获得任何读数前先创建并保存 `metrology-policy-create` artifact；之后的
+`metrology-create` 只接受 `--acceptance-policy`，不提供阈值覆盖参数。
 
-当前真实 structured-gate 实验只使用已经固定的 A4 target。合成测试覆盖
-500×700-equivalent geometry，但 `REAL_500X700_STRUCTURED_GATE_VALIDATION=DEFERRED`。
+`uncertainty_validated` 只有在 raw-stream、target identity/metrology、物理 PnP、灾难性重投影、
+uncertainty/observability、IPPE ambiguity、时间与 split-half 稳定性，以及独立 native metric
+depth 的平面/法向/尺度检查全部通过后才可发布。Structured residual 永远是
+`diagnostic_only`；通用 hard gate 明确为
+`NOT_SUPPORTED_DUE_TO_PLANAR_IDENTIFIABILITY_LIMIT`。生成的 CameraBundle 只能是
+`BOOTSTRAP_QUALIFIED`、`qualification_scope=bootstrap_only`、
+`production_authoritative=false`：它提供不可变 K/D、内部 stream 几何、depth scale、身份和
+初始化值，不是多相机 production authority。
 
-脚本生成的 provision YAML 使用指向所选 target artifact 的可移植相对路径、实际 target
-SHA-256 和 `target.detection_policy: uncertainty_validated`。Coverage 和 image span 仍用于
-操作员引导、target 尺寸诊断与视觉质量 warning，但它们不等于 pose accuracy。硬验收由 PnP
-物理有效性、灾难性 scalar 上限、cross-validated structured residual diagnostic、条件 pose
-uncertainty、scaled observability、IPPE ambiguity、时间稳定性、
-reprojection、split-half stability 与 native depth 共同决定。低 coverage 不保证 PASS；它
-只是不会再被 coverage 数值单独拒绝。Raw-stream validation 仍是更早且独立的 gate：
-discontinuity、timeout、timestamp/sync、dtype/shape 或 empty-stream failure 必须报告
-`NOT_APPLICABLE_TO_POSE_OBSERVABILITY`。实体 coverage、残差或姿态稳定性 gate
-失败后禁止复用旧 extrinsics，也禁止使用 `--force` 掩盖失败；`--force` 只用于明确替换一个
-已存在且由 CameraRig 管理的 artifact，并且仍须通过完整验证。
+完整 artifact 链和停止条件见[资格合同](docs/bootstrap-production-qualification.zh-CN.md)。
+500 x 700 路线保持 deferred，不得替换权威 A4 target。
+
+私有 provision YAML 使用 `target.detection_policy: uncertainty_validated`。
+Target preflight PASS 只覆盖 target/pose 证据，不保证完整 provision PASS。
+
+生成 PASS 回执后，使用 `scripts/prepare_camera_rig_calibration.py --target-metrology
+.local/camera_rig/shared_target/charuco_a4_v1/target_metrology.json` 重新生成私有 provision
+configs，使每份 provision 固定绑定准确的回执 hash。
 
 ### 10.5 与 multi-pose production 外参的职责边界
 
@@ -843,15 +842,15 @@ CameraBundle bootstrap 的替代品。`capture_multicamera_target_poses.py` 会�
 provision，并把其中的相机身份、projection model、bundle hash 和 bootstrap pose 绑定到
 observations。`pose_0` 保持在 canonical workspace；相机始终固定，只移动后续标定板 pose。
 
-先固定 `pose_0`，并在开始采集前声明最后 4 个 pose 为 holdout。每次提示后只移动标定板，
+先固定 `pose_0`；硬件打开前固化全部 30 个 pose，并声明最后 6 个为 holdout。每次提示后只移动标定板，
 覆盖 center/left/right/top/bottom、near/far、正负 yaw/pitch 和组合旋转，停稳后按 Enter：
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python tools/calibration/capture_multicamera_target_poses.py \
   --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --target "$PCB_TARGET_SPEC" \
-  --pose-count 24 --holdout-pose-count 4 \
+  --pose-count 30 --holdout-pose-count 6 \
   --min-corners-per-observation 6 \
   --output .local/calibration/new-workspace/observations.json
 
@@ -864,6 +863,10 @@ python tools/calibration/validate_multicamera_multipose.py \
   --solution .local/calibration/new-workspace/solution.json \
   --observations .local/calibration/new-workspace/observations.json \
   --output .local/calibration/new-workspace/validation.json
+
+python tools/calibration/evaluate_intrinsic_health.py \
+  --observations .local/calibration/new-workspace/observations.json \
+  --output .local/calibration/new-workspace/intrinsic_health.json
 ```
 
 Solve 和 holdout 都 PASS 后，可先只读预览 candidate；它只在内存中应用外参，按 Ctrl+C
@@ -879,8 +882,9 @@ python tools/mapping/view_live_candidate_calibration.py \
 ## 33. Calibration lifecycle and production precedence
 
 ```text
-CameraRig fixed provision（仅作 initializer）
+CameraRig BOOTSTRAP_QUALIFIED provision（仅作 initializer，非 production）
 -> PCB multi-pose candidate
+-> frozen holdout 上 factory-vs-diagnostic-refit intrinsic health
 -> 精确 2D solve + holdout validation
 -> candidate-only live preview
 -> 实体 N-camera pairwise acceptance
@@ -888,9 +892,11 @@ CameraRig fixed provision（仅作 initializer）
 -> snapshot / recording / TSDF / Rerun production outputs
 ```
 
-Rig YAML 中的 `rig_calibration` 可选。省略时保持旧 CameraRig fixed-provision workspace
-geometry；配置后 PCB deployment 对 `T_workspace_from_camera` 具有最高优先级，identity、
-CameraBundle hash、camera set、frame 或 fingerprint 任一不匹配都直接失败，绝不 fallback。
+Rig YAML 中的 `rig_calibration` 在 bootstrap/candidate diagnostic 阶段可以省略；此时明确报告
+`production_applied=false`，production recording/mapping 入口会拒绝该状态。配置
+`PRODUCTION_QUALIFIED` PCB deployment 后，它对 `T_workspace_from_camera` 具有最高优先级；
+identity、CameraBundle hash、camera set、frame 或 fingerprint 任一不匹配都直接失败，绝不
+fallback。
 CameraRig 继续负责 K/D、depth scale、stream frame、device identity 与内部 stream
 extrinsics。FFS runtime 组合：
 `T_workspace_from_ir_left = T_workspace_from_color(deployed) @ T_color_from_ir_left`。
@@ -941,6 +947,7 @@ same-pass FFS depth artifact，再用预先冻结的 thresholds 对 candidate �
 python tools/mapping/record_live_rig_depth.py \
   --config .local/configs/live_rig_ffs_rgb.yaml \
   --matched-sets 300 --depth-source ffs_stereo \
+  --candidate-physical-acceptance \
   --output .local/recordings/new-workspace-physical-acceptance
 ```
 
@@ -964,6 +971,7 @@ python tools/calibration/promote_rig_calibration.py \
   --solution .local/calibration/new-workspace/solution.json \
   --validation .local/calibration/new-workspace/validation.json \
   --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --intrinsic-health .local/calibration/new-workspace/intrinsic_health.json \
   --output .local/calibration/deployment/new-workspace/rig_calibration.json
 ```
 
@@ -1012,19 +1020,18 @@ N-camera 功能是 generic，但不能从双相机 FPS 推断三相机吞吐。�
 7. 分配私有逻辑名 `camera_a`、`camera_b`、`camera_c`。
 8. 用 `--expected-count 3` 验证 USB topology。
 9. 为每台相机创建私有 CameraRig runtime YAML。
-10. 从 500 x 700 `DICT_4X4_50` 现有板采集 identity 证据。
-11. 使用第 34 节命令 identify/register existing board。
+10. 校验权威 A4 target artifact，并采集重复实体 metrology。
+11. 发布私有 metrology 回执；缺失或失败立即停止。
 12. 把板精确 fixture 在 canonical workspace `pose_0`。
 13. 对每台相机运行 CameraRig `uncertainty_validated` target preflight。
 14. 使用互不相同的私有 `--evidence-root` 路径重复运行 CameraRig provision preflight。
-15. `uncertainty_validated_v1/v2` 仍为 HOLD 时在此停止；fixed provision 与第 16-32 步均为
-    `NOT_RUN`。
-16. 仅在另行完成 authenticated release 后，才用第 11 节自动化脚本生成不含 deployment 的私有三相机 candidate rig configs。
+15. 要求每台相机 metric-depth 和 bootstrap qualification PASS；structured residual 仅作诊断。
+16. 校验三份 v2 provision，再生成不含 deployment 的私有 candidate rig configs。
 17. 若 profile/model 有变化，运行 projection-parity smoke。
-18. 采集约 24-30 个 diverse multi-pose target pose。
-19. 预先指定最后约 4-6 个 pose 为 holdout。
+18. 采集预注册的 30 个 diverse multi-pose target pose。
+19. 最后 6 个 pose 固定为 untouched holdout。
 20. 求解 PCB N-camera bundle adjustment。
-21. 用保留 holdout 验证精确 candidate。
+21. 验证每相机 intrinsic health，并用保留 holdout 验证精确 candidate。
 22. 运行 candidate-only live preview。
 23. 记录并通过 generic N-camera pairwise physical acceptance。
 24. 把精确 candidate 与 acceptance receipts promote 到 production，并把同一 deployment

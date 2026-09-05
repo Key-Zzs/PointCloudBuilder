@@ -394,8 +394,8 @@ done
 Keep the cameras, workspace, and board fixed, with the same board clearly visible in
 each color image. Capture the strict 60-frame uncertainty-validated target preflight, then run the
 full fixed-provision viability preflight against the same config and unchanged physical scene.
-Target preflight `NUMERICAL_PASS RELEASE_HOLD` proves only candidate target-pose viability; it does
-not guarantee that raw-stream,
+Target preflight numerical PASS proves only candidate target-pose viability; it does not
+guarantee that metrology, raw-stream,
 shared-pose, repeatability, split-half, native-depth, and final provision gates will pass. Stop on
 any failure and do not relax thresholds:
 
@@ -417,38 +417,35 @@ for camera in camera_a camera_b camera_c; do
 done
 ```
 
-### 10.4 Provision and validate — blocked while HOLD
+### 10.4 Target metrology, bootstrap provision, and validation
 
-`uncertainty_validated_v1` is currently `HOLD`, not a released preset. Candidate preflight may
-complete its numerical evaluation, but it reports
-`UNCERTAINTY_VALIDATED_PRESET_NOT_RELEASED` and `would_publish=false`. CameraRig rejects canonical
-CameraBundle/provision publication for this profile. Do not run `provision fixed`, overwrite any
-existing camera provision, or begin multipose. Current CameraRig has no authenticated release
-loader; a future implementation would require an adequate preregistered split, passing unopened
-holdout, and an explicitly hash-bound `RELEASED` preset. The separately named
-`uncertainty_validated_v2` structured
-successor is also `HOLD`; development data did not meet the 5% false-reject/false-accept bounds.
-Retained repeat evidence may be passed to
-`camera-rig calibration evaluate-model-counterfactuals`; its baseline-relative sensitivity report
-is analysis-only and never modifies a provision artifact.
+The A4 board needs a genuine, repeated physical metrology receipt before provisioning. The
+receipt derives its allowed relative scale error from the downstream translation budget,
+maximum working distance, and measurement uncertainty; it records nominal/measured baselines,
+horizontal and vertical scale, anisotropy, and PASS/FAIL. Never infer dimensions from an image.
+Create and preserve a `metrology-policy-create` artifact before receiving any readings; the later
+`metrology-create` command accepts only `--acceptance-policy` and has no threshold override.
 
-The current real structured-gate experiment uses the already fixed A4 target only. Synthetic
-testing includes 500×700-equivalent geometry, but
-`REAL_500X700_STRUCTURED_GATE_VALIDATION=DEFERRED`.
+An `uncertainty_validated` provision may publish only after raw-stream, target identity and
+metrology, physical PnP, catastrophic reprojection, uncertainty/observability, IPPE ambiguity,
+temporal and split-half repeatability, and independent native metric-depth plane/normal/scale
+checks pass. Its structured residual remains `diagnostic_only`; the universal hard gate is
+`NOT_SUPPORTED_DUE_TO_PLANAR_IDENTIFIABILITY_LIMIT`. The resulting CameraBundle is explicitly
+`BOOTSTRAP_QUALIFIED`, `qualification_scope=bootstrap_only`, and
+`production_authoritative=false`. It supplies immutable K/D, internal stream geometry, depth
+scale, identity, and an initializer; it is never production multi-camera authority.
 
-Generated provision YAML uses a portable path to the selected target artifact, its
-actual SHA-256, and `target.detection_policy: uncertainty_validated`. Coverage and image
-span remain operator guidance, target-size diagnostics, and visual-quality warnings, but
-they are not pose accuracy. The candidate decision uses physical PnP, a catastrophic scalar
-ceiling, cross-validated structured residual diagnostics, conditional pose uncertainty,
-scaled observability, IPPE ambiguity, temporal stability, reprojection, split-half stability,
-and native depth. Low coverage does not guarantee PASS; it only cannot cause rejection by
-itself. Raw-stream validation remains an earlier independent gate: discontinuity, timeout,
-timestamp/sync, dtype/shape, or empty-stream failures are
-`NOT_APPLICABLE_TO_POSE_OBSERVABILITY`. Never reuse old
-extrinsics after a physical coverage, residual, or pose-stability failure, and never
-use `--force` to hide a failed gate. `--force` is only for explicitly replacing an
-existing CameraRig-owned artifact, which must still pass complete validation.
+See [the qualification contract](docs/bootstrap-production-qualification.md) for the exact
+artifact chain and stop conditions. The 500 x 700 route remains deferred and cannot replace the
+authoritative A4 target.
+
+The private provision YAML uses `target.detection_policy: uncertainty_validated`.
+Target preflight PASS is scoped to target/pose evidence and does not guarantee complete provision PASS.
+
+After a PASS receipt is created, regenerate the private provision configs with
+`scripts/prepare_camera_rig_calibration.py --target-metrology
+.local/camera_rig/shared_target/charuco_a4_v1/target_metrology.json` so every provision
+pins its exact receipt hash.
 
 ### 10.5 Responsibility boundary with multi-pose production extrinsics
 
@@ -766,6 +763,7 @@ up any measured private config before rerunning its generator.
 python tools/mapping/record_live_rig_depth.py \
   --config .local/configs/live_rig_ffs_rgb.yaml \
   --matched-sets 300 --depth-source ffs_stereo \
+  --candidate-physical-acceptance \
   --output .local/recordings/rig-depth-static-v1
 ```
 
@@ -924,17 +922,18 @@ identity, projection model, bundle hash, and bootstrap pose into the observation
 Keep `pose_0` at the canonical workspace, keep every camera fixed, and move only the
 board for later poses.
 
-Fixture `pose_0` first and predeclare the final four poses as holdout before capture.
+Fixture `pose_0` first and preregister all 30 poses, including the final six holdouts,
+before hardware opens.
 At each prompt, move only the board through center/left/right/top/bottom, near/far,
 positive and negative yaw/pitch, and combined rotations; let it settle before pressing
 Enter:
 
 ```bash
-PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_500x700/target_spec.json
+PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python tools/calibration/capture_multicamera_target_poses.py \
   --rig-config .local/configs/live_rig_ffs_rgb.yaml \
   --target "$PCB_TARGET_SPEC" \
-  --pose-count 24 --holdout-pose-count 4 \
+  --pose-count 30 --holdout-pose-count 6 \
   --min-corners-per-observation 6 \
   --output .local/calibration/new-workspace/observations.json
 
@@ -947,6 +946,10 @@ python tools/calibration/validate_multicamera_multipose.py \
   --solution .local/calibration/new-workspace/solution.json \
   --observations .local/calibration/new-workspace/observations.json \
   --output .local/calibration/new-workspace/validation.json
+
+python tools/calibration/evaluate_intrinsic_health.py \
+  --observations .local/calibration/new-workspace/observations.json \
+  --output .local/calibration/new-workspace/intrinsic_health.json
 ```
 
 After solve and holdout both pass, preview the candidate read-only. It applies the
@@ -963,8 +966,9 @@ python tools/mapping/view_live_candidate_calibration.py \
 ## 33. Calibration lifecycle and production precedence
 
 ```text
-CameraRig fixed provision (initializer only)
+CameraRig BOOTSTRAP_QUALIFIED provision (initializer only; not production)
 -> PCB multi-pose candidate
+-> factory-vs-diagnostic-refit intrinsic health on frozen holdout
 -> exact 2D solve plus holdout validation
 -> candidate-only live preview
 -> physical N-camera pairwise acceptance
@@ -972,10 +976,11 @@ CameraRig fixed provision (initializer only)
 -> snapshot / recording / TSDF / Rerun production outputs
 ```
 
-`rig_calibration` is optional in a rig YAML. When omitted, the legacy CameraRig fixed
-provision supplies workspace geometry. When configured, the PCB deployment is
-authoritative for `T_workspace_from_camera` and any identity, CameraBundle hash,
-camera-set, frame, or fingerprint mismatch fails without fallback. CameraRig remains
+`rig_calibration` is structurally optional for bootstrap and candidate diagnostics. When
+omitted, runtime reports `production_applied=false`, and production recording/mapping entry
+points reject that state. When configured, a `PRODUCTION_QUALIFIED` PCB deployment is
+authoritative for `T_workspace_from_camera`; any identity, CameraBundle hash, camera-set,
+frame, or fingerprint mismatch fails without fallback. CameraRig remains
 authoritative for K/D, depth scale, stream frames, device identity, and internal stream
 extrinsics. For FFS, runtime composes
 `T_workspace_from_ir_left = T_workspace_from_color(deployed) @ T_color_from_ir_left`.
@@ -1057,6 +1062,7 @@ python tools/calibration/promote_rig_calibration.py \
   --solution .local/calibration/new-workspace/solution.json \
   --validation .local/calibration/new-workspace/validation.json \
   --physical-acceptance .local/calibration/new-workspace/physical_acceptance.json \
+  --intrinsic-health .local/calibration/new-workspace/intrinsic_health.json \
   --output .local/calibration/deployment/new-workspace/rig_calibration.json
 ```
 
@@ -1107,20 +1113,19 @@ Follow this order; keep cameras fixed after step 12 and stop on every failed gat
 7. Assign private logical names `camera_a`, `camera_b`, and `camera_c`.
 8. Validate USB topology with `--expected-count 3`.
 9. Create one private CameraRig runtime YAML per camera.
-10. Capture existing-board identity evidence from the 500 x 700 `DICT_4X4_50` board.
-11. Identify and register the existing board with the commands in section 34.
+10. Validate the authoritative A4 target artifact and collect repeated physical metrology.
+11. Publish the private metrology receipt; stop if it is absent or fails.
 12. Deliberately fixture the board at canonical workspace `pose_0`.
 13. Run CameraRig `uncertainty_validated` target preflight for every camera.
 14. Run repeated CameraRig provision preflights with distinct private `--evidence-root` paths.
-15. While `uncertainty_validated_v1/v2` remain HOLD, stop here: fixed provisions and steps 16-32
-    are `NOT_RUN`.
-16. Only after a separately authenticated release, use the Section 11 automation to generate private three-camera candidate rig configs
-    without a deployment.
+15. Require metric-depth and bootstrap qualification PASS for every camera; structured residual
+    remains diagnostic-only.
+16. Validate the three v2 provisions, then generate private candidate rig configs without a deployment.
 17. Run projection-parity smoke if a profile/model changed.
-18. Capture about 24-30 diverse multi-pose target poses.
-19. Predeclare about 4-6 final poses as holdout.
+18. Capture the preregistered 30 diverse multi-pose target poses.
+19. Keep the final six poses as untouched holdout.
 20. Solve PCB N-camera bundle adjustment.
-21. Validate the exact candidate on the reserved holdout.
+21. Validate per-camera intrinsic health and the exact candidate on the reserved holdout.
 22. Run candidate-only live preview.
 23. Record and pass generic N-camera pairwise physical acceptance.
 24. Promote the exact candidate and acceptance receipts to production, then configure
