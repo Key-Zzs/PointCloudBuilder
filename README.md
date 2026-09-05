@@ -928,6 +928,13 @@ At each prompt, move only the board through center/left/right/top/bottom, near/f
 positive and negative yaw/pitch, and combined rotations; let it settle before pressing
 Enter:
 
+The production capture path fixes target detection to CameraRig's
+`uncertainty_validated` policy: minimum corner support, corner fraction, and marker
+pixel scale remain hard gates, while low image coverage is recorded as an advisory.
+The tool prints each camera's accepted/rejected result after every pose and exits
+nonzero, while preserving its capture log, if the completed run contains no accepted
+observations.
+
 ```bash
 PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python tools/calibration/capture_multicamera_target_poses.py \

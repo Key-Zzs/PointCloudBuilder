@@ -845,6 +845,11 @@ observations。`pose_0` 保持在 canonical workspace；相机始终固定，只
 先固定 `pose_0`；硬件打开前固化全部 30 个 pose，并声明最后 6 个为 holdout。每次提示后只移动标定板，
 覆盖 center/left/right/top/bottom、near/far、正负 yaw/pitch 和组合旋转，停稳后按 Enter：
 
+生产采集路径固定使用 CameraRig 的 `uncertainty_validated` 检测策略：最少角点数、角点比例和
+marker 像素尺度仍是硬门禁，低图像覆盖率仅记录为告警。工具会在每个 pose 后打印各相机的
+accepted/rejected 结果；如果完整采集最终没有任何 accepted observation，则保留 capture log
+并以非零状态退出。
+
 ```bash
 PCB_TARGET_SPEC=.local/camera_rig/shared_target/charuco_a4_v1/target_spec.json
 python tools/calibration/capture_multicamera_target_poses.py \

@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from camera_rig.api import load_camera_config, load_provisioned_camera_bundle
-from camera_rig.targets import load_target, registry
+from camera_rig.targets import load_target
+from camera_rig.targets.charuco.detector import CharucoDetector
+from camera_rig.targets.charuco.quality import CharucoQualityThresholds
 
 from pointcloud_builder.integrations.camera_rig import calibration_from_camera_bundle
 from pointcloud_builder.local_paths import require_repo_local_path
@@ -85,7 +87,7 @@ def main() -> int:
         raise ValueError(
             "production capture requires the authoritative charuco_a4_v1 target"
         )
-    detector = registry.create(plugin_name=target.plugin, target_spec=target)
+    detector = _production_detector(target)
     camera_configs = {}
     bundles = {}
     projection_models = {}
@@ -169,6 +171,7 @@ def main() -> int:
         "poses": pose_plan,
         "rules": {
             "camera_mounts_stationary": True,
+            "detection_policy": detector.thresholds.policy,
             "pose_0_canonical_first": True,
             "train_holdout_split_predeclared": True,
             "holdout_not_used_by_bundle_adjustment": True,
@@ -229,6 +232,7 @@ def main() -> int:
                             split=split,
                         )
                     )
+            print(_pose_capture_result(pose_log), flush=True)
             capture_log.append(pose_log)
     artifact = RigCalibrationObservations(
         target_identity={
@@ -276,6 +280,8 @@ def main() -> int:
                 "pose_count": args.pose_count,
                 "holdout_pose_count": args.holdout_pose_count,
                 "min_corners_per_observation": args.min_corners_per_observation,
+                "detection_policy": detector.thresholds.policy,
+                "detection_thresholds": detector.thresholds.__dict__,
                 "poses": capture_log,
                 "pose_plan_path": str(plan_path),
                 "pose_plan_sha256": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
@@ -287,12 +293,39 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
-    print(
+    summary = (
         f"CAPTURED_POSES={args.pose_count}; HOLDOUT_POSES={args.holdout_pose_count}; "
         f"ACCEPTED_OBSERVATIONS={len(observations)}; "
         "local-only artifact written"
     )
+    print(summary)
+    if not observations:
+        print(
+            "CAPTURE_STATUS=FAIL; REASON=NO_ACCEPTED_OBSERVATIONS; "
+            "preserved capture log for diagnosis"
+        )
+        return 2
     return 0
+
+
+def _production_detector(target: object) -> CharucoDetector:
+    """Use the preregistered pose-observability detection policy for multipose."""
+    return CharucoDetector(
+        target,
+        thresholds=CharucoQualityThresholds.uncertainty_validated(),
+    )
+
+
+def _pose_capture_result(pose_log: dict[str, Any]) -> str:
+    camera_results = []
+    for camera_id, value in sorted(pose_log["cameras"].items()):
+        accepted = "ACCEPTED" if value["accepted"] else "REJECTED"
+        reasons = value["quality"]["failure_reasons"]
+        reason_suffix = f",reasons={'|'.join(reasons)}" if reasons else ""
+        camera_results.append(
+            f"{camera_id}={accepted}(corners={value['corner_count']}{reason_suffix})"
+        )
+    return f"POSE_RESULT={pose_log['pose_id']}; " + "; ".join(camera_results)
 
 
 def _bundle_sha256(path: str | Path) -> str:

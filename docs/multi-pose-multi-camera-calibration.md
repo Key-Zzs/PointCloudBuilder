@@ -156,6 +156,10 @@ The production route is frozen at 30 poses with six holdouts spanning center, le
 right, top, bottom, near, far, positive/negative yaw and pitch, and combined rotations.
 The pose-plan receipt is written before hardware opens. Holdouts are never used by the
 optimizer. For each prompt: move the board, stop it, then capture; never move a camera.
+Target detection is fixed to CameraRig's preregistered `uncertainty_validated` policy.
+It retains hard corner-count, corner-fraction, and marker-pixel-scale checks while
+reporting low image coverage as an advisory. Each prompt prints per-camera acceptance;
+a zero-observation run preserves its diagnostics but exits nonzero.
 
 Every consumed CameraBundle must carry `BOOTSTRAP_QUALIFIED`, `bootstrap_only`, and
 `production_authoritative=false`. Evaluate immutable factory K/D against a constrained
