@@ -31,7 +31,9 @@ def validate_rig_calibration_solution(
     """Recompute solve residuals and optionally validate held-out target poses."""
 
     if config is not None and config.to_dict() != solution.config:
-        raise ValueError("validation config must exactly match the candidate solution config")
+        raise ValueError(
+            "validation config must exactly match the candidate solution config"
+        )
     config = RigCalibrationConfig(**solution.config)
     _require_matching_provenance(solution, data)
     failed_quality = [
@@ -65,6 +67,7 @@ def validate_rig_calibration_solution(
         "target_identity": solution.target_identity,
         "camera_bundle_hashes": solution.camera_bundle_hashes,
         "camera_identities": solution.camera_identities,
+        "bootstrap_qualifications": solution.bootstrap_qualifications,
         "config": config.to_dict(),
         "solve_reprojection": solve_metrics,
         "holdout": holdout,
@@ -244,10 +247,15 @@ def _require_matching_provenance(
             solution.camera_bundle_hashes == data.camera_bundle_hashes
         ),
         "camera_identities": solution.camera_identities == data.camera_identities,
+        "bootstrap_qualifications": (
+            solution.bootstrap_qualifications == data.bootstrap_qualifications
+        ),
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
-        raise ValueError("solution/observation provenance mismatch: " + ", ".join(failed))
+        raise ValueError(
+            "solution/observation provenance mismatch: " + ", ".join(failed)
+        )
 
 
 def _errors_for_known_poses(

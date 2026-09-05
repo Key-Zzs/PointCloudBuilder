@@ -14,6 +14,7 @@ from pointcloud_builder.rig_calibration.se3 import validate_transform
 OBSERVATIONS_SCHEMA_VERSION = "pointcloud-builder.rig-calibration-observations.v1"
 SOLUTION_SCHEMA_VERSION = "pointcloud-builder.rig-calibration-solution.v1"
 _SAFE_CAMERA_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _validate_camera_id(value: object) -> str:
@@ -68,7 +69,9 @@ class RigTargetObservation:
         image_points.setflags(write=False)
         object.__setattr__(self, "object_points_m", object_points)
         object.__setattr__(self, "image_points_px", image_points)
-        object.__setattr__(self, "point_ids", tuple(int(value) for value in self.point_ids))
+        object.__setattr__(
+            self, "point_ids", tuple(int(value) for value in self.point_ids)
+        )
         object.__setattr__(self, "quality", dict(self.quality))
 
 
@@ -83,6 +86,9 @@ class RigCalibrationObservations:
     observations: tuple[RigTargetObservation, ...]
     workspace_frame: str = "workspace"
     initial_camera_poses: dict[str, np.ndarray] = field(default_factory=dict)
+    bootstrap_qualifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pose_plan_sha256: str | None = None
+    pose_plan_summary: dict[str, Any] = field(default_factory=dict)
     schema_version: str = OBSERVATIONS_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -105,7 +111,9 @@ class RigCalibrationObservations:
             )
         bundle_hashes = dict(self.camera_bundle_hashes)
         if set(bundle_hashes) != set(models):
-            raise ValueError("camera_bundle_hashes and projection_models must have identical keys")
+            raise ValueError(
+                "camera_bundle_hashes and projection_models must have identical keys"
+            )
         if any(not str(value).strip() for value in bundle_hashes.values()):
             raise ValueError("camera_bundle_hashes must be non-empty")
         if not self.target_identity:
@@ -115,7 +123,9 @@ class RigCalibrationObservations:
             for camera_id, identity in self.camera_identities.items()
         }
         if set(identities) != set(models):
-            raise ValueError("camera_identities and projection_models must have identical keys")
+            raise ValueError(
+                "camera_identities and projection_models must have identical keys"
+            )
         for camera_id, identity in identities.items():
             if str(identity.get("camera_name", "")) != camera_id:
                 raise ValueError(
@@ -142,16 +152,30 @@ class RigCalibrationObservations:
         initial: dict[str, np.ndarray] = {}
         for camera_id, matrix in self.initial_camera_poses.items():
             if camera_id not in models:
-                raise ValueError(f"initial pose references unknown camera {camera_id!r}")
+                raise ValueError(
+                    f"initial pose references unknown camera {camera_id!r}"
+                )
             initial[camera_id] = validate_transform(
                 matrix, name=f"initial_camera_poses[{camera_id!r}]"
             )
+        bootstrap = _validate_bootstrap_qualifications(
+            self.bootstrap_qualifications, camera_ids=set(models)
+        )
+        if (
+            self.pose_plan_sha256 is not None
+            and _SHA256.fullmatch(self.pose_plan_sha256) is None
+        ):
+            raise ValueError("pose_plan_sha256 must be a lowercase SHA-256")
+        if self.pose_plan_sha256 is None and self.pose_plan_summary:
+            raise ValueError("pose_plan_summary requires pose_plan_sha256")
         object.__setattr__(self, "target_identity", dict(self.target_identity))
         object.__setattr__(self, "camera_bundle_hashes", bundle_hashes)
         object.__setattr__(self, "camera_identities", identities)
         object.__setattr__(self, "projection_models", models)
         object.__setattr__(self, "observations", observations)
         object.__setattr__(self, "initial_camera_poses", initial)
+        object.__setattr__(self, "bootstrap_qualifications", bootstrap)
+        object.__setattr__(self, "pose_plan_summary", dict(self.pose_plan_summary))
 
     @property
     def camera_ids(self) -> tuple[str, ...]:
@@ -186,6 +210,10 @@ class RigCalibrationSolution:
     observability: dict[str, Any]
     validation: dict[str, Any]
     config: dict[str, Any]
+    bootstrap_qualifications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    pose_plan_sha256: str | None = None
+    pose_plan_summary: dict[str, Any] = field(default_factory=dict)
+    observations_sha256: str | None = None
     schema_version: str = SOLUTION_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -193,7 +221,9 @@ class RigCalibrationSolution:
             raise ValueError(f"schema_version must be {SOLUTION_SCHEMA_VERSION!r}")
         if not self.workspace_frame.strip() or not self.anchor_pose_id.strip():
             raise ValueError("workspace_frame and anchor_pose_id must be non-empty")
-        camera_frames = {str(key): str(value) for key, value in self.camera_frames.items()}
+        camera_frames = {
+            str(key): str(value) for key, value in self.camera_frames.items()
+        }
         for camera_id in camera_frames:
             _validate_camera_id(camera_id)
         if set(camera_frames) != set(self.T_workspace_from_camera) or any(
@@ -201,12 +231,16 @@ class RigCalibrationSolution:
         ):
             raise ValueError("camera_frames must name every optimized camera frame")
         object.__setattr__(self, "camera_frames", camera_frames)
-        bundle_hashes = {str(key): str(value) for key, value in self.camera_bundle_hashes.items()}
+        bundle_hashes = {
+            str(key): str(value) for key, value in self.camera_bundle_hashes.items()
+        }
         identities = {
             str(camera_id): dict(identity)
             for camera_id, identity in self.camera_identities.items()
         }
-        if set(bundle_hashes) != set(camera_frames) or set(identities) != set(camera_frames):
+        if set(bundle_hashes) != set(camera_frames) or set(identities) != set(
+            camera_frames
+        ):
             raise ValueError(
                 "solution provenance must identify every optimized camera frame"
             )
@@ -221,6 +255,26 @@ class RigCalibrationSolution:
         object.__setattr__(self, "target_identity", dict(self.target_identity))
         object.__setattr__(self, "camera_bundle_hashes", bundle_hashes)
         object.__setattr__(self, "camera_identities", identities)
+        object.__setattr__(
+            self,
+            "bootstrap_qualifications",
+            _validate_bootstrap_qualifications(
+                self.bootstrap_qualifications, camera_ids=set(camera_frames)
+            ),
+        )
+        if (
+            self.pose_plan_sha256 is not None
+            and _SHA256.fullmatch(self.pose_plan_sha256) is None
+        ):
+            raise ValueError("solution pose_plan_sha256 must be a lowercase SHA-256")
+        if self.pose_plan_sha256 is None and self.pose_plan_summary:
+            raise ValueError("solution pose_plan_summary requires pose_plan_sha256")
+        if (
+            self.observations_sha256 is not None
+            and _SHA256.fullmatch(self.observations_sha256) is None
+        ):
+            raise ValueError("solution observations_sha256 must be a lowercase SHA-256")
+        object.__setattr__(self, "pose_plan_summary", dict(self.pose_plan_summary))
         for field_name in (
             "T_workspace_from_camera",
             "T_workspace_from_target",
@@ -235,3 +289,52 @@ class RigCalibrationSolution:
     @property
     def passed(self) -> bool:
         return bool(self.validation.get("passed", False))
+
+
+def validate_bootstrap_qualifications(
+    values: dict[str, dict[str, Any]], *, camera_ids: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Validate portable CameraRig authority receipts without importing its runtime."""
+
+    result = {str(camera_id): dict(value) for camera_id, value in values.items()}
+    if not result:
+        return result
+    if set(result) != camera_ids:
+        raise ValueError("bootstrap qualification authority must cover every camera")
+    expected = {
+        "schema_version",
+        "qualification_scope",
+        "production_authoritative",
+        "qualification_state",
+        "qualification_fingerprint",
+        "target_metrology_sha256",
+        "metric_depth_receipt_sha256",
+    }
+    for camera_id, value in result.items():
+        if set(value) != expected:
+            raise ValueError(
+                f"{camera_id}: bootstrap qualification authority is incomplete"
+            )
+        if (
+            value.get("schema_version") != "camera-rig.calibration-authority.v1"
+            or value.get("qualification_scope") != "bootstrap_only"
+            or value.get("production_authoritative") is not False
+            or value.get("qualification_state") != "BOOTSTRAP_QUALIFIED"
+        ):
+            raise ValueError(
+                f"{camera_id}: bootstrap qualification authority is invalid"
+            )
+        for name in (
+            "qualification_fingerprint",
+            "target_metrology_sha256",
+            "metric_depth_receipt_sha256",
+        ):
+            if (
+                not isinstance(value.get(name), str)
+                or _SHA256.fullmatch(value[name]) is None
+            ):
+                raise ValueError(f"{camera_id}: {name} must be a lowercase SHA-256")
+    return result
+
+
+_validate_bootstrap_qualifications = validate_bootstrap_qualifications

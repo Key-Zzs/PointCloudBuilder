@@ -44,6 +44,8 @@ class _ParameterLayout:
 def solve_rig_calibration(
     data: RigCalibrationObservations,
     config: RigCalibrationConfig | None = None,
+    *,
+    observations_sha256: str | None = None,
 ) -> RigCalibrationSolution:
     """Solve candidate camera extrinsics without mutating any CameraBundle."""
 
@@ -97,7 +99,9 @@ def solve_rig_calibration(
     try:
         from scipy.optimize import least_squares
     except ImportError as error:
-        raise RuntimeError("rig calibration requires the optional scipy dependency") from error
+        raise RuntimeError(
+            "rig calibration requires the optional scipy dependency"
+        ) from error
     optimized = least_squares(
         lambda values: _residuals(
             values,
@@ -160,7 +164,9 @@ def solve_rig_calibration(
         "candidate_only": True,
         "production_applied": False,
         "solve_pose_split": "solve",
-        "holdout": "AVAILABLE" if any(item.split == "holdout" for item in data.observations) else "NOT_RUN",
+        "holdout": "AVAILABLE"
+        if any(item.split == "holdout" for item in data.observations)
+        else "NOT_RUN",
         "failure_reasons": _failure_reasons(
             optimized.success,
             final_metrics,
@@ -218,6 +224,10 @@ def solve_rig_calibration(
         observability=observability,
         validation=validation,
         config=config.to_dict(),
+        bootstrap_qualifications=data.bootstrap_qualifications,
+        pose_plan_sha256=data.pose_plan_sha256,
+        pose_plan_summary=data.pose_plan_summary,
+        observations_sha256=observations_sha256,
     )
 
 
@@ -243,9 +253,7 @@ def _validate_observations(
         if len(item.point_ids) < config.min_corners_per_observation
     ]
     if too_few:
-        raise CalibrationPreflightError(
-            "TOO_FEW_CORNERS", ", ".join(sorted(too_few))
-        )
+        raise CalibrationPreflightError("TOO_FEW_CORNERS", ", ".join(sorted(too_few)))
     counts = defaultdict(int)
     for item in observations:
         counts[item.camera_id] += 1
@@ -389,7 +397,10 @@ def _grouped_metrics(
         by_camera[observation.camera_id].extend(errors.tolist())
         by_pose[observation.pose_id].extend(errors.tolist())
     return (
-        {key: reprojection_metrics(values) for key, values in sorted(by_camera.items())},
+        {
+            key: reprojection_metrics(values)
+            for key, values in sorted(by_camera.items())
+        },
         {key: reprojection_metrics(values) for key, values in sorted(by_pose.items())},
     )
 
@@ -414,7 +425,10 @@ def _failure_reasons(
     reasons: list[str] = []
     if not optimizer_success:
         reasons.append("optimizer_did_not_converge")
-    if final_metrics["p95_px"] is None or final_metrics["p95_px"] > config.final_reprojection_p95_px:
+    if (
+        final_metrics["p95_px"] is None
+        or final_metrics["p95_px"] > config.final_reprojection_p95_px
+    ):
         reasons.append("final_reprojection_p95_exceeds_gate")
     if observability["rank"] != parameter_count:
         reasons.append("rank_deficient_jacobian")

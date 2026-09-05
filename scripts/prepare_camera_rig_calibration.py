@@ -186,6 +186,24 @@ def validate_target_artifact(path: Path) -> dict[str, str]:
     return {"sha256": target_sha256, "target_frame": target_frame}
 
 
+def validate_target_metrology(path: Path, *, target_sha256: str) -> dict[str, str]:
+    source = path.resolve(strict=False)
+    if source.name != "target_metrology.json" or not source.is_file():
+        raise PreparationError(
+            "target metrology must be an existing target_metrology.json"
+        )
+    value = _load_json_mapping(source, "target metrology")
+    if (
+        value.get("schema_version") != "camera-rig.target-metrology.v1"
+        or value.get("status") != "PASS"
+        or value.get("target_identity_sha256") != target_sha256
+    ):
+        raise PreparationError(
+            "target metrology must PASS and bind the selected target"
+        )
+    return {"sha256": sha256_file(source)}
+
+
 def _camera_section(config: dict[str, Any], path: Path) -> dict[str, Any]:
     value = config.get("camera")
     if not isinstance(value, dict):
@@ -212,6 +230,8 @@ def build_provision_config(
     target_path: Path,
     target_sha256: str,
     target_frame: str,
+    target_metrology_path: Path | None = None,
+    target_metrology_sha256: str | None = None,
 ) -> dict[str, Any]:
     config = deepcopy(template)
     camera = _camera_section(config, PROVISION_TEMPLATE)
@@ -231,6 +251,14 @@ def build_provision_config(
     ).as_posix()
     target["expected_sha256"] = target_sha256
     target["detection_policy"] = "uncertainty_validated"
+    if target_metrology_path is not None and target_metrology_sha256 is not None:
+        target["metrology_artifact"] = Path(
+            os.path.relpath(
+                target_metrology_path.resolve(strict=False),
+                config_path.parent.resolve(strict=False),
+            )
+        ).as_posix()
+        target["metrology_expected_sha256"] = target_metrology_sha256
     workspace["target_frame"] = target_frame
     workspace["T_workspace_from_target"] = {
         "matrix": [
@@ -308,6 +336,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise PreparationError("--expected-camera-count must be positive")
     if args.runtime_only and args.target is not None:
         raise PreparationError("--runtime-only does not accept --target")
+    if args.runtime_only and args.target_metrology is not None:
+        raise PreparationError("--runtime-only does not accept --target-metrology")
     if args.runtime_only and args.workspace_equals_target:
         raise PreparationError(
             "--runtime-only does not accept --workspace-equals-target"
@@ -320,6 +350,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
     cameras = load_identity_map(args.identity_map, args.expected_camera_count)
     target = None if args.runtime_only else validate_target_artifact(args.target)
+    target_metrology = (
+        validate_target_metrology(args.target_metrology, target_sha256=target["sha256"])
+        if target is not None and args.target_metrology is not None
+        else None
+    )
     runtime_template = load_yaml_mapping(RUNTIME_TEMPLATE)
     provision_template = (
         None if args.runtime_only else load_yaml_mapping(PROVISION_TEMPLATE)
@@ -346,6 +381,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 target_path=args.target,
                 target_sha256=target["sha256"],
                 target_frame=target["target_frame"],
+                target_metrology_path=args.target_metrology,
+                target_metrology_sha256=(
+                    target_metrology["sha256"] if target_metrology is not None else None
+                ),
             )
             desired_configs[label]["fixed_provision"] = (provision_path, provision)
         plans[label] = {
@@ -382,6 +421,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "camera_labels": list(cameras),
         "identity_map_sha256": sha256_file(args.identity_map),
         "target_spec_sha256": None if target is None else target["sha256"],
+        "target_metrology_sha256": (
+            None if target_metrology is None else target_metrology["sha256"]
+        ),
         "workspace_equals_target": not args.runtime_only,
         "prepared": prepared,
     }
@@ -398,6 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--identity-map", type=Path, required=True)
     parser.add_argument("--target", type=Path)
+    parser.add_argument("--target-metrology", type=Path)
     parser.add_argument("--asset-root", type=Path, default=Path(".local/camera_rig"))
     parser.add_argument("--expected-camera-count", type=int, required=True)
     parser.add_argument(

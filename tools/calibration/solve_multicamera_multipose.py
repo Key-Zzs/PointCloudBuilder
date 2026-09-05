@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 
+from pointcloud_builder.local_paths import require_repo_local_path
 from pointcloud_builder.rig_calibration import (
     load_observations,
     solve_rig_calibration,
     write_solution,
 )
 from pointcloud_builder.rig_calibration.config import load_rig_calibration_config
-from pointcloud_builder.local_paths import require_repo_local_path
 
 
 def main() -> int:
@@ -27,9 +28,12 @@ def main() -> int:
     solution = solve_rig_calibration(
         load_observations(observation_path),
         load_rig_calibration_config(args.config),
+        observations_sha256=hashlib.sha256(observation_path.read_bytes()).hexdigest(),
     )
     write_solution(solution, output_path)
-    print(f"RIG_CALIBRATION={solution.validation['status']}; candidate-only output written")
+    print(
+        f"RIG_CALIBRATION={solution.validation['status']}; candidate-only output written"
+    )
     return 0 if solution.passed else 1
 
 

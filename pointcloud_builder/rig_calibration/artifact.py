@@ -43,6 +43,12 @@ def load_observations(path: str | Path) -> RigCalibrationObservations:
             str(key): np.asarray(value, dtype=np.float64)
             for key, value in raw.get("initial_camera_poses", {}).items()
         },
+        bootstrap_qualifications={
+            str(key): dict(value)
+            for key, value in raw.get("bootstrap_qualifications", {}).items()
+        },
+        pose_plan_sha256=raw.get("pose_plan_sha256"),
+        pose_plan_summary=dict(raw.get("pose_plan_summary", {})),
         observations=tuple(
             RigTargetObservation(
                 observation_id=str(value["observation_id"]),
@@ -76,8 +82,14 @@ def observations_to_dict(data: RigCalibrationObservations) -> dict[str, Any]:
             for key, value in sorted(data.projection_models.items())
         },
         "initial_camera_poses": {
-            key: value.tolist() for key, value in sorted(data.initial_camera_poses.items())
+            key: value.tolist()
+            for key, value in sorted(data.initial_camera_poses.items())
         },
+        "bootstrap_qualifications": {
+            key: value for key, value in sorted(data.bootstrap_qualifications.items())
+        },
+        "pose_plan_sha256": data.pose_plan_sha256,
+        "pose_plan_summary": data.pose_plan_summary,
         "observations": [
             {
                 "observation_id": item.observation_id,
@@ -90,7 +102,9 @@ def observations_to_dict(data: RigCalibrationObservations) -> dict[str, Any]:
                 "quality": item.quality,
                 "split": item.split,
             }
-            for item in sorted(data.observations, key=lambda value: value.observation_id)
+            for item in sorted(
+                data.observations, key=lambda value: value.observation_id
+            )
         ],
     }
 
@@ -105,7 +119,9 @@ def load_solution(path: str | Path) -> RigCalibrationSolution:
         schema_version=str(raw["schema_version"]),
         workspace_frame=str(raw["workspace_frame"]),
         anchor_pose_id=str(raw["anchor_pose_id"]),
-        camera_frames={str(key): str(value) for key, value in raw["camera_frames"].items()},
+        camera_frames={
+            str(key): str(value) for key, value in raw["camera_frames"].items()
+        },
         target_identity=dict(raw["target_identity"]),
         camera_bundle_hashes={
             str(key): str(value) for key, value in raw["camera_bundle_hashes"].items()
@@ -117,7 +133,9 @@ def load_solution(path: str | Path) -> RigCalibrationSolution:
         T_workspace_from_target=_matrix_mapping(raw["T_workspace_from_target"]),
         initial_camera_poses=_matrix_mapping(raw["initial_camera_poses"]),
         camera_corrections=dict(raw["camera_corrections"]),
-        quality_counts={str(key): int(value) for key, value in raw["quality_counts"].items()},
+        quality_counts={
+            str(key): int(value) for key, value in raw["quality_counts"].items()
+        },
         reprojection=dict(raw["reprojection"]),
         per_camera_metrics=dict(raw["per_camera_metrics"]),
         per_pose_metrics=dict(raw["per_pose_metrics"]),
@@ -127,6 +145,13 @@ def load_solution(path: str | Path) -> RigCalibrationSolution:
         observability=dict(raw["observability"]),
         validation=dict(raw["validation"]),
         config=dict(raw["config"]),
+        bootstrap_qualifications={
+            str(key): dict(value)
+            for key, value in raw.get("bootstrap_qualifications", {}).items()
+        },
+        pose_plan_sha256=raw.get("pose_plan_sha256"),
+        pose_plan_summary=dict(raw.get("pose_plan_summary", {})),
+        observations_sha256=raw.get("observations_sha256"),
     )
 
 
@@ -164,6 +189,13 @@ def solution_to_dict(solution: RigCalibrationSolution) -> dict[str, Any]:
         "observability": solution.observability,
         "validation": solution.validation,
         "config": solution.config,
+        "bootstrap_qualifications": {
+            key: value
+            for key, value in sorted(solution.bootstrap_qualifications.items())
+        },
+        "pose_plan_sha256": solution.pose_plan_sha256,
+        "pose_plan_summary": solution.pose_plan_summary,
+        "observations_sha256": solution.observations_sha256,
     }
 
 
@@ -200,7 +232,9 @@ def _projection_from_dict(value: dict[str, Any]) -> CameraIntrinsics:
         cx=float(value["cx"]),
         cy=float(value["cy"]),
         distortion_model=str(value.get("distortion_model", "none")),
-        distortion_coeffs=tuple(float(item) for item in value.get("distortion_coeffs", ())),
+        distortion_coeffs=tuple(
+            float(item) for item in value.get("distortion_coeffs", ())
+        ),
         pixel_geometry=str(value.get("pixel_geometry", "rectified")),
         frame=str(value.get("frame", "")),
     )
@@ -208,8 +242,7 @@ def _projection_from_dict(value: dict[str, Any]) -> CameraIntrinsics:
 
 def _matrix_mapping(value: dict[str, Any]) -> dict[str, np.ndarray]:
     return {
-        str(key): np.asarray(matrix, dtype=np.float64)
-        for key, matrix in value.items()
+        str(key): np.asarray(matrix, dtype=np.float64) for key, matrix in value.items()
     }
 
 
@@ -223,4 +256,6 @@ def _read_json(path: str | Path) -> dict[str, Any]:
 def _write_json(path: str | Path, value: dict[str, Any]) -> None:
     output = Path(path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
